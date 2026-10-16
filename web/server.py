@@ -1,0 +1,2326 @@
+# -*- coding: utf-8 -*-
+"""
+Rich modern Web Application for Aibubu Outbound Engine.
+Features:
+- Left sidebar navigation (线索作战中台, 组织与权限管理, 销售漏斗与数据)
+- User Authentication (完整的注册、登录、退出、会话维持与角色权限控制)
+- Two-Tier Filter:
+    - Tier 1: 市场区域 (全部/国内/海外), 公司数据来源筛选 (15个核心源), 客户分级筛选 (S/A/B/C)
+    - Tier 2 (二级筛选): 触达状态 (全部/未触达/已触达), 漏斗阶段 (pending/contacted/sample_sent...)
+- Customer Tier Badges (S级战略大客户, A级腰部核心, B级高意向, C级潜力)
+- Inline Customer Notes editor with SQLite persistence
+- Official clickable company links
+- Role-based Access Control (Admin, Sales Lead, Sales Rep, Observer)
+- Direct Pitch generator & CSV Export
+"""
+import http.server
+import socketserver
+import json
+import os
+import sys
+import urllib.parse
+from typing import Any
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.database import DatabaseManager
+
+PORT = 8899
+
+HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aibubu 工业级 ToB 销售作战中台</title>
+    <style>
+        :root {
+            --bg: #0b0f19;
+            --sidebar-bg: #111827;
+            --card-bg: #1f2937;
+            --border: #374151;
+            --primary: #3b82f6;
+            --primary-hover: #2563eb;
+            --text-main: #f9fafb;
+            --text-muted: #9ca3af;
+            --accent: #10b981;
+            --tag-cn: #0284c7;
+            --tag-global: #8b5cf6;
+            --tier-s: #ef4444;
+            --tier-a: #f59e0b;
+            --tier-b: #3b82f6;
+            --tier-c: #6b7280;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; }
+        body { background-color: var(--bg); color: var(--text-main); display: flex; height: 100vh; overflow: hidden; }
+        
+        /* 左侧菜单栏 Sidebar */
+        aside {
+            width: 250px;
+            background: var(--sidebar-bg);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            flex-shrink: 0;
+        }
+        .brand {
+            padding: 20px 18px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .brand-logo {
+            width: 34px;
+            height: 34px;
+            background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 19px;
+            color: #fff;
+        }
+        .brand-title {
+            font-size: 15px;
+            font-weight: 700;
+            color: #fff;
+            letter-spacing: 0.5px;
+        }
+        .nav-list {
+            list-style: none;
+            padding: 14px 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 14px;
+            border-radius: 6px;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 13.5px;
+            font-weight: 500;
+            transition: all 0.15s ease;
+        }
+        .nav-item:hover {
+            background: rgba(255, 255, 255, 0.05);
+            color: #fff;
+        }
+        .nav-item.active {
+            background: var(--primary);
+            color: #fff;
+            font-weight: 600;
+        }
+        .sidebar-footer {
+            padding: 16px;
+            border-top: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: rgba(0,0,0,0.25);
+        }
+        .user-block {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            overflow: hidden;
+        }
+        .user-avatar {
+            width: 36px;
+            height: 36px;
+            background: #2563eb;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            font-weight: 700;
+            color: #fff;
+            border: 2px solid #3b82f6;
+            flex-shrink: 0;
+        }
+        .user-info {
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .user-name {
+            font-size: 13px;
+            font-weight: 600;
+            color: #fff;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .user-role-badge {
+            font-size: 11px;
+            color: #10b981;
+            font-weight: 500;
+        }
+        .btn-auth-switch {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            font-size: 11px;
+            padding: 4px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .btn-auth-switch:hover {
+            background: #374151;
+            color: #fff;
+        }
+        
+        /* 主体区域 */
+        main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            padding: 24px 30px;
+        }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .page-title {
+            font-size: 21px;
+            font-weight: 700;
+            color: #fff;
+        }
+        .top-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        /* 卡片统计 */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        .stat-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 14px 16px;
+        }
+        .stat-label {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-bottom: 4px;
+        }
+        .stat-value {
+            font-size: 22px;
+            font-weight: 700;
+            color: #fff;
+        }
+        
+        /* 筛选器容器 (一级与二级两层结构) */
+        .controls-panel {
+            background: var(--sidebar-bg);
+            padding: 14px 16px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            margin-bottom: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .filter-tier {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+        }
+        .filter-tier-left {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 10px;
+        }
+        .filter-label {
+            font-size: 12px;
+            color: var(--text-muted);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            min-width: 65px;
+        }
+        .filter-group {
+            display: flex;
+            gap: 5px;
+            flex-wrap: wrap;
+        }
+        button, select {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            color: #fff;
+            padding: 5px 11px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12.5px;
+            outline: none;
+            transition: all 0.15s ease;
+        }
+        button:hover, select:hover {
+            background: #374151;
+        }
+        button.active {
+            background: var(--primary);
+            border-color: var(--primary);
+            font-weight: 600;
+        }
+        button.tier-btn-s.active { background: #dc2626; border-color: #dc2626; }
+        button.tier-btn-a.active { background: #d97706; border-color: #d97706; }
+        button.tier-btn-b.active { background: #2563eb; border-color: #2563eb; }
+        button.tier-btn-c.active { background: #4b5563; border-color: #4b5563; }
+
+        /* 来源胶囊按钮群 */
+        .source-capsules {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            align-items: center;
+        }
+        .capsule-btn {
+            font-size: 11.5px;
+            padding: 3px 9px;
+            border-radius: 14px;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.12);
+            color: #94a3b8;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            user-select: none;
+        }
+        .capsule-btn:hover {
+            background: rgba(255,255,255,0.09);
+            color: #f1f5f9;
+        }
+        .capsule-btn.active {
+            background: #0284c7;
+            border-color: #38bdf8;
+            color: #ffffff;
+            font-weight: 600;
+        }
+        .capsule-btn.active-exclude {
+            background: #991b1b;
+            border-color: #f87171;
+            color: #ffffff;
+            font-weight: 600;
+        }
+        .capsule-lead-btn {
+            font-size: 11.5px;
+            padding: 3px 9px;
+            border-radius: 14px;
+            background: rgba(245, 158, 11, 0.05);
+            border: 1px solid rgba(245, 158, 11, 0.2);
+            color: #d97706;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            user-select: none;
+        }
+        .capsule-lead-btn:hover {
+            background: rgba(245, 158, 11, 0.15);
+            color: #fbbf24;
+        }
+        .capsule-lead-btn.active {
+            background: #d97706;
+            border-color: #fbbf24;
+            color: #ffffff;
+            font-weight: 600;
+        }
+        
+        .mode-toggle-btn {
+            font-size: 11px;
+            padding: 3px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            border: 1px solid var(--border);
+            background: #1e293b;
+            color: #cbd5e1;
+        }
+        .mode-toggle-btn.exclude-active {
+            background: #7f1d1d;
+            border-color: #ef4444;
+            color: #fca5a5;
+            font-weight: 600;
+        }
+
+        /* 可编辑单元格交互 */
+        .editable-cell {
+            cursor: pointer;
+            border-radius: 4px;
+            padding: 2px 4px;
+            transition: background 0.15s;
+            display: inline-block;
+        }
+        .editable-cell:hover {
+            background: rgba(56, 189, 248, 0.12);
+            outline: 1px dashed #38bdf8;
+        }
+        
+        .btn-export {
+            background: #059669;
+            border-color: #059669;
+            font-weight: 600;
+        }
+        .btn-export:hover {
+            background: #047857;
+        }
+
+        .filter-divider {
+            height: 1px;
+            background: var(--border);
+            width: 100%;
+            opacity: 0.7;
+        }
+        
+        /* 表格样式 */
+        .table-container {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow-x: auto;
+            background: var(--card-bg);
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 10px 12px;
+            text-align: left;
+            font-size: 12.5px;
+            border-bottom: 1px solid var(--border);
+            vertical-align: middle;
+        }
+        th {
+            background: #111827;
+            color: var(--text-muted);
+            font-weight: 600;
+            font-size: 11px;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+        tr:hover {
+            background: rgba(255, 255, 255, 0.02);
+        }
+        
+        .company-link {
+            color: #38bdf8;
+            text-decoration: none;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .company-link:hover {
+            color: #7dd3fc;
+            text-decoration: underline;
+        }
+        .company-link-icon {
+            font-size: 11px;
+            opacity: 0.8;
+        }
+
+        /* 客户等级徽章 */
+        .tier-badge {
+            display: inline-block;
+            font-size: 11px;
+            font-weight: 800;
+            padding: 2px 7px;
+            border-radius: 4px;
+            letter-spacing: 0.5px;
+            text-align: center;
+        }
+        .tier-S { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.5); }
+        .tier-A { background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.5); }
+        .tier-B { background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.5); }
+        .tier-C { background: rgba(107, 114, 128, 0.2); color: #9ca3af; border: 1px solid rgba(107, 114, 128, 0.5); }
+        
+        .source-tag {
+            font-size: 11px;
+            padding: 2px 7px;
+            border-radius: 4px;
+            background: rgba(148, 163, 184, 0.12);
+            color: #cbd5e1;
+            border: 1px solid rgba(148, 163, 184, 0.25);
+            white-space: nowrap;
+        }
+        .source-lead-tag {
+            font-size: 11px;
+            padding: 2px 7px;
+            border-radius: 4px;
+            background: rgba(245, 158, 11, 0.12);
+            color: #fcd34d;
+            border: 1px solid rgba(245, 158, 11, 0.25);
+            white-space: nowrap;
+        }
+        .tag {
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 600;
+        }
+        .tag-cn {
+            background: rgba(2, 132, 199, 0.2);
+            color: #38bdf8;
+            border: 1px solid rgba(2, 132, 199, 0.4);
+        }
+        .tag-global {
+            background: rgba(139, 92, 246, 0.2);
+            color: #c084fc;
+            border: 1px solid rgba(139, 92, 246, 0.4);
+        }
+        
+        .status-badge {
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-weight: 600;
+            white-space: nowrap;
+            display: inline-block;
+        }
+        .status-pending { background: #374151; color: #d1d5db; }
+        .status-contacted { background: #0284c7; color: #bae6fd; }
+        .status-sample_sent { background: #0369a1; color: #e0f2fe; }
+        .status-team_trial { background: #7c3aed; color: #ede9fe; }
+        .status-negotiation { background: #d97706; color: #fef3c7; }
+        .status-won { background: #15803d; color: #bbf7d0; }
+        .status-lost { background: #991b1b; color: #fecaca; }
+        
+        /* 备注单元格 */
+        .notes-preview {
+            max-width: 200px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-size: 12px;
+            color: #cbd5e1;
+            cursor: pointer;
+            padding: 3px 6px;
+            border-radius: 4px;
+            background: rgba(255,255,255,0.03);
+            border: 1px dashed rgba(255,255,255,0.15);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .notes-preview:hover {
+            background: rgba(255,255,255,0.08);
+            border-color: #60a5fa;
+            color: #93c5fd;
+        }
+        .notes-preview > span:first-child {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .notes-preview:focus-visible {
+            outline: 2px solid var(--primary);
+            outline-offset: 2px;
+        }
+        
+        .action-cell {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .select-status {
+            font-size: 12px;
+            padding: 4px 6px;
+            border-radius: 4px;
+            background: #111827;
+            border: 1px solid var(--border);
+            color: #f8fafc;
+        }
+        .btn-pitch {
+            background: #2563eb;
+            color: #fff;
+            padding: 4px 8px;
+            font-size: 12px;
+            border-radius: 4px;
+            border: none;
+            white-space: nowrap;
+        }
+        .btn-pitch:hover { background: #1d4ed8; }
+        
+        /* View 管理 */
+        .view-section {
+            display: none;
+        }
+        .view-section.active {
+            display: block;
+        }
+        .perm-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .role-desc-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 14px;
+            margin-top: 14px;
+        }
+        .role-desc-item {
+            background: #111827;
+            border: 1px solid var(--border);
+            padding: 14px;
+            border-radius: 6px;
+        }
+        .role-title {
+            font-size: 13.5px;
+            font-weight: 700;
+            color: #60a5fa;
+            margin-bottom: 6px;
+        }
+        .role-rules {
+            font-size: 12px;
+            color: var(--text-muted);
+            line-height: 1.5;
+        }
+        
+        /* Modal 通用弹窗 */
+        #modal, #notes-modal, #auth-modal, #edit-company-modal, #edit-lead-modal {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.75);
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+        }
+        .modal-content {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            max-width: 650px;
+            width: 90%;
+            padding: 24px;
+            max-height: 85vh;
+            overflow-y: auto;
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 12px;
+        }
+        .modal-body pre {
+            background: #0f172a;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 14px;
+            color: #e2e8f0;
+            white-space: pre-wrap;
+            font-family: monospace;
+            font-size: 13px;
+            line-height: 1.5;
+            margin-top: 10px;
+        }
+        .pitch-section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 16px;
+            margin-bottom: 6px;
+        }
+        .pitch-section-header h4 {
+            margin: 0;
+            font-size: 13.5px;
+            color: #93c5fd;
+        }
+        .pitch-copy-btn {
+            background: #1e293b;
+            border: 1px solid #475569;
+            color: #cbd5e1;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .pitch-copy-btn:hover {
+            background: #334155;
+            color: #fff;
+        }
+        .pitch-trans-box {
+            background: rgba(30, 41, 59, 0.6);
+            border-left: 3px solid #38bdf8;
+            padding: 10px 14px;
+            border-radius: 0 6px 6px 0;
+            font-size: 13px;
+            color: #cbd5e1;
+            line-height: 1.5;
+            margin-top: 8px;
+            margin-bottom: 12px;
+        }
+        .pitch-lang-tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 14px;
+            background: #0f172a;
+            padding: 4px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            width: fit-content;
+        }
+        .pitch-lang-tab {
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            padding: 4px 12px;
+            font-size: 12px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .pitch-lang-tab.active {
+            background: #2563eb;
+            color: #fff;
+            font-weight: 600;
+        }
+        .notes-textarea {
+            width: 100%;
+            height: 140px;
+            background: #0f172a;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: #fff;
+            padding: 12px;
+            font-size: 13px;
+            line-height: 1.5;
+            outline: none;
+            resize: vertical;
+            margin: 12px 0 16px 0;
+        }
+        .notes-textarea:focus {
+            border-color: var(--primary);
+        }
+        .modal-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+        .btn-save {
+            background: var(--primary);
+            border-color: var(--primary);
+            font-weight: 600;
+        }
+
+        /* 登录/注册表单控件 */
+        .auth-tab-row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 8px;
+        }
+        .auth-tab {
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            font-size: 14px;
+            font-weight: 600;
+            padding: 6px 12px;
+            cursor: pointer;
+        }
+        .auth-tab.active {
+            color: #38bdf8;
+            border-bottom: 2px solid #38bdf8;
+        }
+        .form-group {
+            margin-bottom: 14px;
+        }
+        .form-group label {
+            display: block;
+            font-size: 12.5px;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+        }
+        .form-control {
+            width: 100%;
+            padding: 9px 12px;
+            background: #0f172a;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: #fff;
+            font-size: 13.5px;
+            outline: none;
+        }
+        .form-control:focus {
+            border-color: var(--primary);
+        }
+        .btn-primary {
+            width: 100%;
+            padding: 10px;
+            background: var(--primary);
+            border: none;
+            border-radius: 6px;
+            color: #fff;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 8px;
+        }
+        .btn-primary:hover {
+            background: var(--primary-hover);
+        }
+        .auth-msg {
+            margin-top: 10px;
+            font-size: 12.5px;
+            text-align: center;
+        }
+    
+        .compact-filters .filter-toolbar {display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:18px;flex-wrap:wrap}
+        .compact-filters .filter-toolbar-actions {display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+        .compact-filters .filter-toolbar-actions .filter-field {display:flex;align-items:center;gap:8px}
+        .compact-filters .filter-grid {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:18px 24px}
+        .compact-filters .filter-field {display:flex;flex-direction:column;gap:8px;min-width:0;color:#aab5c5;font-size:13px}
+        .compact-filters .filter-toolbar-actions .filter-field {flex-direction:row}
+        .compact-filters .filter-grid select {width:100%;height:40px;min-width:0;font-size:14px;border-radius:8px}
+        .compact-filters select:focus-visible {outline:2px solid #60a5fa;outline-offset:2px}
+        .compact-filters .filter-footer {display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:18px;padding-top:14px;border-top:1px solid #293344;color:#94a3b8;font-size:12px}
+        @media(max-width:900px){.compact-filters .filter-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+        @media(max-width:520px){.compact-filters .filter-grid{grid-template-columns:1fr}}
+    </style>
+</head>
+<body>
+    <!-- 左侧菜单栏 -->
+    <aside>
+        <div>
+            <div class="brand">
+                <div class="brand-logo">A</div>
+                <div>
+                    <div class="brand-title">Aibubu BD 中台</div>
+                    <div style="font-size: 11px; color: var(--text-muted);">ToB 大客户销售引擎</div>
+                </div>
+            </div>
+            <ul class="nav-list">
+                <li class="nav-item active" onclick="switchNav('pipeline', this)">
+                    <span>⚡</span> <span>线索作战中台</span>
+                </li>
+                <li class="nav-item" onclick="switchNav('permissions', this)">
+                    <span>🛡️</span> <span>组织与权限管理</span>
+                </li>
+                <li class="nav-item" onclick="switchNav('funnel', this)">
+                    <span>📊</span> <span>跟进漏斗与数据</span>
+                </li>
+            </ul>
+        </div>
+        <div class="sidebar-footer">
+            <div class="user-block">
+                <div class="user-avatar" id="current-user-avatar">管</div>
+                <div class="user-info">
+                    <div class="user-name" id="current-user-name">超级管理员</div>
+                    <div class="user-role-badge" id="current-user-role">● 超级管理员权限</div>
+                </div>
+            </div>
+            <button class="btn-auth-switch" onclick="openAuthModal()" title="登录、注册或切换账号">切换/登录</button>
+        </div>
+    </aside>
+
+    <!-- 主视窗 -->
+    <main>
+        <!-- 视窗 1: 线索作战中台 -->
+        <div id="view-pipeline" class="view-section active">
+            <header>
+                <div>
+                    <h2 class="page-title">线索作战中台</h2>
+                    <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">
+                        三段解耦流水线: 智能评级 ➔ 真实决策人 ➔ ROI话术直达 (双层精细筛选)
+                    </div>
+                </div>
+                <div class="top-actions">
+                    <span style="color: var(--text-muted); font-size: 12px;">每日增量客户池 • 公开来源核查</span>
+                    <button class="btn-export" onclick="exportData()">📥 导出至桌面 CSV</button>
+                </div>
+            </header>
+
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">🎯 目标企业总数</div>
+                    <div class="stat-value" id="stat-companies">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">🔥 S级战略大客户</div>
+                    <div class="stat-value" id="stat-tier-s" style="color:#f87171;">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">⭐ A级核心腰部</div>
+                    <div class="stat-value" id="stat-tier-a" style="color:#fbbf24;">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">🚀 B级高意向</div>
+                    <div class="stat-value" id="stat-tier-b" style="color:#60a5fa;">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">👤 真实决策人线索</div>
+                    <div class="stat-value" id="stat-leads">-</div>
+                </div>
+            </div>
+
+            <div class="controls-panel compact-filters">
+                <div class="filter-toolbar"><strong>筛选企业</strong><div class="filter-toolbar-actions"><label class="filter-field" title=""><span>名单</span><select id="exclusion-filter" onchange="renderTable()"><option value="active">待开发 / 跟进中</option><option value="excluded">已剔除</option><option value="all">全部（含已剔除）</option></select></label><button onclick="resetFilters()">重置筛选</button></div></div>
+                <div class="filter-grid"><label class="filter-field" title=""><span>市场区域</span><select id="country-filter" onchange="activeCountry=this.value;renderTable()"><option value="all">全部地区</option><option value="domestic">国内</option><option value="overseas">国外</option></select></label><label class="filter-field" title="沿用现有综合预估等级，非核实后的企业规模"><span>企业级别（预估）</span><select id="tier-filter" onchange="activeTier=this.value;renderTable()"><option value="all">全部级别</option><option value="S">S级 · 超大规模</option><option value="A">A级 · 大型企业</option><option value="B">B级 · 成长企业</option><option value="C">C级 · 小微 / 潜力企业</option></select></label><label class="filter-field" title=""><span>公司来源</span><select id="source-filter" onchange="selectedSources.clear();if(this.value!=='all')selectedSources.add(this.value);activeSourceMode='include';renderTable()"><option value="all">全部来源</option></select></label><label class="filter-field" title=""><span>跟进状态</span><select id="stage-filter" onchange="activeTouch=['untouched','touched'].includes(this.value)?this.value:'all';activeStage=activeTouch==='all'?this.value:'all';renderTable()"><option value="all">全部状态</option><option value="untouched">待触达（未跟进）</option><option value="touched">已触达（全部阶段）</option><option value="contacted">已初次触达</option><option value="sample_sent">已发商拍样张</option><option value="team_trial">团队空间试用</option><option value="negotiation">商务报价中</option><option value="won">已成交</option><option value="lost">已流失</option></select></label><label class="filter-field" title=""><span>客户类型</span><select id="type-filter" onchange="renderTable()"><option value="all">全部类型</option><option value="电商商拍客户">电商商拍客户</option><option value="API / AI 应用客户">API / AI 应用客户</option><option value="广告 / 代运营机构">广告 / 代运营机构</option><option value="unknown">待分类</option></select></label><label class="filter-field" title=""><span>跟进情况</span><select id="due-filter" onchange="renderTable()"><option value="all">全部情况</option><option value="due">今天到期 / 已逾期</option><option value="unclaimed">未领取</option></select></label><label class="filter-field" title=""><span>行业</span><select id="industry-filter" onchange="renderTable()"><option value="all">全部行业</option></select></label><label class="filter-field" title=""><span>每月预计消耗</span><select id="spend-filter" onchange="renderTable()"><option value="all">全部消耗</option><option value="unknown">待评估</option><option value="small">5,000 元以下</option><option value="medium">5,000–2万元（不含）</option><option value="large">2–5万元（不含）</option><option value="enterprise">5万元及以上</option></select></label></div>
+                <div class="filter-footer"><span>企业级别沿用现有综合预估；消耗单位为人民币 / 月，非已确认预算。</span><span id="filter-count" aria-live="polite">加载中…</span></div>
+            </div>
+
+            <!-- 数据总表 -->
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>等级</th>
+                            <th>企业名称 (官网直达)</th>
+                            <th>公司来源</th>
+                            <th>赛道/类目</th>
+                            <th>市场</th>
+                            <th>创始人 / X 主页</th>
+                            <th>职位/头衔</th>
+                            <th>直连渠道 (微信/电话/邮箱)</th>
+                            <th>线索来源</th>
+                            <th>客户情况备注 (点击查看 / 编辑)</th>
+                            <th>当前状态</th>
+                            <th style="min-width: 250px;">触达操作区域 (实时切换与话术)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="pipeline-body">
+                        <!-- 动态渲染 -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 视窗 2: 组织与权限管理 -->
+        <div id="view-permissions" class="view-section">
+            <header>
+                <div>
+                    <h2 class="page-title">组织架构与权限管理</h2>
+                    <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">
+                        包含用户注册登录鉴权、四级角色分权与销售团队成员配置
+                    </div>
+                </div>
+                <div>
+                    <button class="btn-save" onclick="openAuthModal('register')">+ 注册新团队成员</button>
+                </div>
+            </header>
+
+            <div class="perm-card">
+                <h3 style="font-size: 15px; margin-bottom: 8px;">四级权限体系与角色说明</h3>
+                <div class="role-desc-grid">
+                    <div class="role-desc-item">
+                        <div class="role-title">👑 超级管理员 (Admin)</div>
+                        <div class="role-rules">
+                            • 全局数据库读写与导出<br>
+                            • 企业导入与批量删除<br>
+                            • 分配销售人员与调配客户<br>
+                            • 管理全部账号密码与角色权限
+                        </div>
+                    </div>
+                    <div class="role-desc-item">
+                        <div class="role-title">💼 销售总监 (Sales Lead)</div>
+                        <div class="role-rules">
+                            • 跨大区客户数据查看<br>
+                            • 查看全员跟进进度与漏斗<br>
+                            • 审批商务报价与折扣额度<br>
+                            • 支持批量导出跟进表
+                        </div>
+                    </div>
+                    <div class="role-desc-item">
+                        <div class="role-title">📞 销售专员 (Sales Rep)</div>
+                        <div class="role-rules">
+                            • 查看分配的国内/海外客户<br>
+                            • 生成定制话术与样张建议<br>
+                            • 切换触达状态与填写沟通备注<br>
+                            • 推进至团队空间试用阶段
+                        </div>
+                    </div>
+                    <div class="role-desc-item">
+                        <div class="role-title">👀 运营观察员 (Observer)</div>
+                        <div class="role-rules">
+                            • 仅具有数据只读查看权限<br>
+                            • 不可修改客户状态与备注<br>
+                            • 不可导出核心客户隐私联系方式<br>
+                            • 供交付支持/客服团队查验
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>用户账号</th>
+                            <th>显示姓名</th>
+                            <th>权限角色</th>
+                            <th>电子邮箱</th>
+                            <th>联系电话</th>
+                            <th>账号状态</th>
+                            <th>角色权限调整 (实时生效)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="users-body">
+                        <!-- 动态渲染用户列表 -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 视窗 3: 跟进漏斗与数据 -->
+        <div id="view-funnel" class="view-section">
+            <header>
+                <div>
+                    <h2 class="page-title">销售漏斗分析与大盘数据</h2>
+                    <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">
+                        全局转化转化率与各阶段卡点透视
+                    </div>
+                </div>
+            </header>
+            <div id="funnel-container" class="perm-card">
+                正在统计漏斗节点...
+            </div>
+        </div>
+    </main>
+
+    <!-- 弹窗 1: 直触话术 -->
+    <div id="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modal-title">直触话术方案</h3>
+                <button onclick="closeModal()">✕ 关闭</button>
+            </div>
+            <div class="modal-body" id="modal-body"></div>
+        </div>
+    </div>
+
+    <!-- 弹窗 2: 编辑客户情况备注 -->
+    <div id="notes-modal">
+        <div class="modal-content" style="max-width: 550px;">
+            <div class="modal-header">
+                <h3 id="notes-modal-title">编辑客户情况备注</h3>
+                <button onclick="closeNotesModal()">✕ 关闭</button>
+            </div>
+            <div>
+                <label style="font-size: 12.5px; color: var(--text-muted);">客户当前痛点、沟通记录与跟进背景:</label>
+                <textarea id="notes-input" class="notes-textarea" placeholder="例如：客户视觉团队目前6人，月拍摄预算约4万，对换装与背景置换感兴趣，下周二演示团队空间..."></textarea>
+                <input type="hidden" id="notes-company-id">
+            </div>
+            <div class="modal-actions">
+                <button onclick="closeNotesModal()">取消</button>
+                <button id="notes-save-btn" class="btn-save" onclick="saveCompanyNotes()">💾 保存备注至本地数据库</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 弹窗 2.1: 编辑企业主体信息 (Company) -->
+    <div id="edit-company-modal">
+        <div class="modal-content" style="max-width: 600px;">
+            <div class="modal-header">
+                <h3 id="edit-company-title">编辑企业主体信息</h3>
+                <button onclick="closeEditCompanyModal()">✕ 关闭</button>
+            </div>
+            <form onsubmit="handleSaveCompany(event)">
+                <input type="hidden" id="edit-comp-id">
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+                    <div class="form-group" style="grid-column: 1 / -1;">
+                        <label>企业名称</label>
+                        <input type="text" id="edit-comp-name" class="form-control" required>
+                    </div>
+                    <div class="form-group">
+                        <label>客户等级</label>
+                        <select id="edit-comp-tier" class="form-control">
+                            <option value="S">S级 战略客户</option>
+                            <option value="A">A级 核心腰部</option>
+                            <option value="B">B级 高意向</option>
+                            <option value="C">C级 潜力探索</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>市场区域</label>
+                        <select id="edit-comp-country" class="form-control">
+                            <option value="domestic">🇨🇳 国内电商/千川</option>
+                            <option value="overseas">🌐 海外 DTC / Agency</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>赛道/类目</label>
+                        <input type="text" id="edit-comp-industry" class="form-control" required placeholder="例如: 美妆个护, 广告代投">
+                    </div>
+                    <div class="form-group">
+                        <label>企业规模</label>
+                        <input type="text" id="edit-comp-scale" class="form-control" placeholder="例如: 50-150人">
+                    </div>
+                    <div class="form-group">
+                        <label>公司来源渠道</label>
+                        <input type="text" id="edit-comp-source" class="form-control" required placeholder="例如: 千川核心服务商榜单">
+                    </div>
+                    <div class="form-group">
+                        <label>所在城市/地区</label>
+                        <input type="text" id="edit-comp-city" class="form-control" placeholder="例如: 杭州, 广州, 深圳">
+                    </div>
+                    <div class="form-group" style="grid-column: 1 / -1;">
+                        <label>官网地址 (URL)</label>
+                        <input type="text" id="edit-comp-website" class="form-control" placeholder="例如: https://example.com">
+                    </div>
+                </div>
+                <div class="modal-actions" style="margin-top:16px;">
+                    <button type="button" onclick="closeEditCompanyModal()">取消</button>
+                    <button type="submit" class="btn-save">💾 保存企业更新</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- 弹窗 2.2: 编辑决策人线索信息 (Lead) -->
+    <div id="edit-lead-modal">
+        <div class="modal-content" style="max-width: 600px;">
+            <div class="modal-header">
+                <h3 id="edit-lead-title">编辑决策人与触达联系方式</h3>
+                <button onclick="closeEditLeadModal()">✕ 关闭</button>
+            </div>
+            <form onsubmit="handleSaveLead(event)">
+                <input type="hidden" id="edit-lead-id">
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+                    <div class="form-group">
+                        <label>决策人姓名</label>
+                        <input type="text" id="edit-lead-name" class="form-control" required placeholder="如: 张总, 李总监">
+                    </div>
+                    <div class="form-group">
+                        <label>职位/头衔</label>
+                        <input type="text" id="edit-lead-title-input" class="form-control" required placeholder="如: 视觉总监, 营销VP">
+                    </div>
+                    <div class="form-group">
+                        <label>手机号码 (加企微/直呼)</label>
+                        <input type="text" id="edit-lead-phone" class="form-control" placeholder="138xxxxxxxx">
+                    </div>
+                    <div class="form-group">
+                        <label>微信号码</label>
+                        <input type="text" id="edit-lead-wechat" class="form-control" placeholder="微信ID">
+                    </div>
+                    <div class="form-group">
+                        <label>工作邮箱</label>
+                        <input type="email" id="edit-lead-email" class="form-control" placeholder="name@company.com">
+                    </div>
+                    <div class="form-group">
+                        <label>线索来源渠道</label>
+                        <input type="text" id="edit-lead-source" class="form-control" placeholder="如: 脉脉直通, 企查查">
+                    </div>
+                    <div class="form-group" style="grid-column: 1 / -1;">
+                        <label>LinkedIn 主页链接</label>
+                        <input type="text" id="edit-lead-linkedin" class="form-control" placeholder="https://linkedin.com/in/...">
+                    </div>
+                    <div class="form-group" style="grid-column: 1 / -1;">
+                        <label>创始人 X 主页链接</label>
+                        <input type="text" id="edit-lead-x" class="form-control" placeholder="https://x.com/...">
+                    </div>
+                </div>
+                <div class="modal-actions" style="margin-top:16px;">
+                    <button type="button" onclick="closeEditLeadModal()">取消</button>
+                    <button type="submit" class="btn-save">💾 保存决策人更新</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- 弹窗 3: 完整的用户登录与注册鉴权系统 -->
+    <div id="auth-modal">
+        <div class="modal-content" style="max-width: 440px;">
+            <div class="modal-header">
+                <h3 id="auth-modal-title">团队用户身份验证</h3>
+                <button onclick="closeAuthModal()">✕ 关闭</button>
+            </div>
+            
+            <div class="auth-tab-row">
+                <button class="auth-tab active" id="tab-login-btn" onclick="switchAuthTab('login')">账号登录</button>
+                <button class="auth-tab" id="tab-register-btn" onclick="switchAuthTab('register')">新成员注册</button>
+            </div>
+
+            <!-- 登录表单 -->
+            <form id="login-form" onsubmit="handleLogin(event)">
+                <div class="form-group">
+                    <label>用户名 / 账号 (默认: admin / 密码: admin123)</label>
+                    <input type="text" id="login-username" class="form-control" required placeholder="请输入用户名">
+                </div>
+                <div class="form-group">
+                    <label>登录密码</label>
+                    <input type="password" id="login-password" class="form-control" required placeholder="请输入密码">
+                </div>
+                <button type="submit" class="btn-primary">立即登录系统</button>
+                <div id="login-msg" class="auth-msg"></div>
+            </form>
+
+            <!-- 注册表单 -->
+            <form id="register-form" style="display:none;" onsubmit="handleRegister(event)">
+                <div class="form-group">
+                    <label>用户名 (英文字符/数字)</label>
+                    <input type="text" id="reg-username" class="form-control" required placeholder="例如: sales_hangzhou">
+                </div>
+                <div class="form-group">
+                    <label>登录密码</label>
+                    <input type="password" id="reg-password" class="form-control" required placeholder="至少6位密码">
+                </div>
+                <div class="form-group">
+                    <label>真实姓名 / 显示昵称</label>
+                    <input type="text" id="reg-name" class="form-control" required placeholder="例如: 杭州拓展专员-小李">
+                </div>
+                <div class="form-group">
+                    <label>初始权限角色</label>
+                    <select id="reg-role" class="form-control">
+                        <option value="sales_rep">📞 销售专员 (Sales Rep)</option>
+                        <option value="sales_lead">💼 销售总监 (Sales Lead)</option>
+                        <option value="observer">👀 运营观察员 (Observer)</option>
+                        <option value="admin">👑 超级管理员 (Admin)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>工作邮箱 (选填)</label>
+                    <input type="email" id="reg-email" class="form-control" placeholder="li@aibubu.com">
+                </div>
+                <div class="form-group">
+                    <label>手机号码 (选填)</label>
+                    <input type="text" id="reg-phone" class="form-control" placeholder="13800000000">
+                </div>
+                <button type="submit" class="btn-primary" style="background:#10b981;">完成注册并入库</button>
+                <div id="reg-msg" class="auth-msg"></div>
+            </form>
+        </div>
+    </div>
+
+    <div id="prospect-modal" style="display:none;position:fixed;inset:0;background:#0006;z-index:2000;align-items:stretch;justify-content:flex-end" onclick="if(event.target===this) closeProspectDetails()">
+        <div role="dialog" aria-modal="true" aria-labelledby="prospect-name" style="background:#111827;padding:28px;border-left:1px solid #374151;width:680px;max-width:95vw;height:100vh;overflow:auto;box-shadow:-12px 0 48px #0005">
+            <button style="float:right" onclick="closeProspectDetails()">关闭</button>
+            <h2 id="prospect-name"></h2><p id="prospect-summary" style="margin:12px 0;color:#9ca3af"></p>
+            <form id="prospect-form" onsubmit="saveProspectDetails(event)" style="display:grid;gap:12px">
+                <label>客户类型 <select id="p-type"><option value="">待分类</option><option>电商商拍客户</option><option>API / AI 应用客户</option><option>广告 / 代运营机构</option></select></label>
+                <label>涉及的模型 <input class="form-control" id="p-models" placeholder="如 Kling、GPT Image；仅填写有来源的信息"></label>
+                <label>用户 / 调用规模 <input class="form-control" id="p-audience" placeholder="注明单位、时间和出处；未核实写待核查"></label>
+                <label>为什么是客户（证据及来源）<textarea class="form-control" id="p-evidence" rows="3"></textarea></label>
+                <div id="p-score" style="background:#1f2937;padding:14px;border-radius:8px"></div>
+                <label>来源链接 <input type="url" class="form-control" id="p-source"></label>
+                <label>预计月消费（人民币）<input type="number" min="0" step="0.01" class="form-control" id="p-spend" placeholder="未知留空"></label>
+                <label>消费估算依据 <textarea class="form-control" id="p-basis" rows="2"></textarea></label>
+                <label>负责人 <input class="form-control" id="p-owner" readonly></label>
+                <div><button type="button" onclick="document.getElementById('p-owner').value=currentUser?.display_name || ''">领取给我</button> <button type="button" onclick="document.getElementById('p-owner').value=''">释放回线索池</button></div>
+                <label>阶段 <select id="p-status"><option value="pending">待联系</option><option value="contacted">已联系</option><option value="researching">背调中</option><option value="trial">试用中</option><option value="negotiation">洽谈中</option><option value="won">已成交</option><option value="lost">不适合</option></select></label>
+                <label>剔除原因（阶段为“不适合”时必填）<textarea class="form-control" id="p-exclusion" rows="2" placeholder="例如：同行、无采购需求、规模不符合"></textarea></label>
+                <label>下次跟进 <input type="date" id="p-date" class="form-control"></label>
+                <div><button type="button" onclick="copyResearchPrompt()">复制背调指令</button> <button type="submit">保存客户详情</button></div>
+                <p id="p-message" role="status"></p>
+            </form>
+        </div>
+    </div>
+    <script>
+        let currentData = [];
+        let currentUsers = [];
+        let currentSourceChannels = [];
+        let currentLeadSources = [];
+        
+        // 筛选状态
+        let activeCountry = 'all';
+        let selectedSources = new Set(); // 多选公司来源渠道集合
+        let activeSourceMode = 'include'; // 'include' (仅看所选) 或 'exclude' (排除所选/反选)
+        let selectedLeadSources = new Set(); // 多选线索来源集合
+        let activeTier = 'all';
+        let activeTouch = 'all';
+        let activeStage = 'all';
+
+        // 当前登录用户 (保存在 localStorage)
+        let currentUser = JSON.parse(localStorage.getItem('aibubu_current_user') || '{"username":"admin","display_name":"中台超级管理员","role":"admin"}');
+
+        const STATUS_TEXT_MAP = {
+            'pending': '⏳ 待触达 (未跟进)',
+            'contacted': '📞 已初次触达',
+            'sample_sent': '🖼️ 已发商拍样张',
+            'team_trial': '🏢 团队空间试用中',
+            'negotiation': '💼 商务报价推进',
+            'won': '🎉 已赢单签约',
+            'lost': '❌ 暂无预算/流失'
+        };
+
+        const ROLE_NAME_MAP = {
+            'admin': '👑 超级管理员',
+            'sales_lead': '💼 销售总监',
+            'sales_rep': '📞 销售专员',
+            'observer': '👀 运营观察员'
+        };
+
+        const TIER_NAME_MAP = {
+            'S': 'S级 战略客户',
+            'A': 'A级 核心腰部',
+            'B': 'B级 高意向',
+            'C': 'C级 潜力探索'
+        };
+
+        const EN_ZH_DICTIONARY = {
+            // 行业类目
+            'Clean Skincare DTC': '纯净护肤 DTC',
+            'Everyday Carry / DTC': 'EDC随身装备 / DTC',
+            'Apparel & Fashion DTC': '服装与时尚 DTC',
+            'Personal Care DTC': '个护美妆 DTC',
+            'DTC Performance Agency': 'DTC效果广告代理商',
+            'Growth Marketing Agency': '增长营销服务商',
+            'E-commerce DTC': '跨境电商 DTC',
+            'Consumer Tech': '消费电子 / 科技',
+            'Home & Living': '家居生活',
+            // 职位头衔
+            'Head of Creative & Brand Design': '创意与品牌设计负责人',
+            'VP of Growth & Performance Marketing': '增长与效果营销副总裁',
+            'Art & E-commerce Visual Director': '艺术与电商视觉总监',
+            'Creative Director': '创意总监',
+            'Head of Marketing': '市场负责人',
+            'VP of Marketing': '市场营销副总裁',
+            'Design Lead': '设计主管',
+            'Brand Director': '品牌总监'
+        };
+
+        function getEnZhHint(text) {
+            if (!text) return '';
+            const trimmed = text.trim();
+            return EN_ZH_DICTIONARY[trimmed] || '';
+        }
+
+        function updateCurrentUserUI() {
+            if (!currentUser) return;
+            document.getElementById('current-user-name').innerText = currentUser.display_name || currentUser.username;
+            document.getElementById('current-user-avatar').innerText = (currentUser.display_name || currentUser.username)[0].toUpperCase();
+            document.getElementById('current-user-role').innerText = `● ${ROLE_NAME_MAP[currentUser.role] || currentUser.role}`;
+        }
+
+        // 导航切换
+        function switchNav(navId, elem) {
+            document.querySelectorAll('.nav-list .nav-item').forEach(el => el.classList.remove('active'));
+            elem.classList.add('active');
+            
+            document.querySelectorAll('.view-section').forEach(el => el.classList.remove('active'));
+            document.getElementById('view-' + navId).classList.add('active');
+
+            if (navId === 'permissions') {
+                fetchUsers();
+            } else if (navId === 'funnel') {
+                renderFunnelView();
+            }
+        }
+
+        async function fetchPipeline() {
+            const res = await fetch('/api/pipeline');
+            currentData = await res.json();
+            const industrySelect = document.getElementById('industry-filter');
+            const previousIndustry = industrySelect.value;
+            industrySelect.innerHTML = '<option value="all">全部行业</option>';
+            [...new Set(currentData.map(r => r.industry).filter(Boolean))].sort().forEach(value => {
+                const option = document.createElement('option'); option.value = value; option.textContent = value;
+                industrySelect.appendChild(option);
+            });
+            industrySelect.value = [...industrySelect.options].some(o => o.value === previousIndustry) ? previousIndustry : 'all';
+            renderTable();
+        }
+
+        async function fetchStats() {
+            const res = await fetch('/api/stats');
+            const data = await res.json();
+            document.getElementById('stat-companies').innerText = data.total_companies;
+            const byTier = data.companies_by_tier || {};
+            document.getElementById('stat-tier-s').innerText = byTier['S'] || 0;
+            document.getElementById('stat-tier-a').innerText = byTier['A'] || 0;
+            document.getElementById('stat-tier-b').innerText = byTier['B'] || 0;
+            document.getElementById('stat-leads').innerText = data.total_leads;
+        }
+
+        async function fetchSources() {
+            const res = await fetch('/api/sources');
+            currentSourceChannels = await res.json();
+            renderSourceCapsules();
+        }
+
+        async function fetchLeadSources() {
+            const res = await fetch('/api/lead_sources');
+            currentLeadSources = await res.json();
+            renderLeadSourceCapsules();
+        }
+
+        function renderSourceCapsules() {
+            const select = document.getElementById('source-filter');
+            if (!select) return;
+            const previous = [...selectedSources][0] || 'all';
+            select.replaceChildren(new Option('全部来源', 'all'));
+            currentSourceChannels.forEach(src => select.add(new Option(src, src)));
+            select.value = previous;
+            if (select.selectedIndex < 0) {select.value='all';selectedSources.clear();}
+        }
+
+        function renderLeadSourceCapsules() {
+            const container = document.getElementById('lead-source-capsules-container');
+            if (!container) return;
+            let html = `<span class="capsule-lead-btn ${selectedLeadSources.size === 0 ? 'active' : ''}" onclick="clearLeadSourceFilter()">全部线索渠道 (${currentLeadSources.length}类)</span>`;
+            currentLeadSources.forEach(src => {
+                const isSelected = selectedLeadSources.has(src);
+                html += `<span class="capsule-lead-btn ${isSelected ? 'active' : ''}" onclick="toggleLeadSource('${escapeHtml(src)}')">${escapeHtml(src)}</span>`;
+            });
+            container.innerHTML = html;
+        }
+
+        function toggleSource(src) {
+            if (selectedSources.has(src)) {
+                selectedSources.delete(src);
+            } else {
+                selectedSources.add(src);
+            }
+            renderSourceCapsules();
+            renderTable();
+        }
+
+        function clearSourceFilter() {
+            selectedSources.clear();
+            renderSourceCapsules();
+            renderTable();
+        }
+
+        function toggleSourceMode() {
+            activeSourceMode = (activeSourceMode === 'include') ? 'exclude' : 'include';
+            const btn = document.getElementById('source-mode-btn');
+            if (activeSourceMode === 'exclude') {
+                btn.classList.add('exclude-active');
+                btn.innerHTML = '🚫 排除反选模式';
+            } else {
+                btn.classList.remove('exclude-active');
+                btn.innerHTML = '🔍 仅看模式';
+            }
+            renderSourceCapsules();
+            renderTable();
+        }
+
+        function toggleLeadSource(src) {
+            if (selectedLeadSources.has(src)) {
+                selectedLeadSources.delete(src);
+            } else {
+                selectedLeadSources.add(src);
+            }
+            renderLeadSourceCapsules();
+            renderTable();
+        }
+
+        function clearLeadSourceFilter() {
+            selectedLeadSources.clear();
+            renderLeadSourceCapsules();
+            renderTable();
+        }
+
+        async function fetchUsers() {
+            const res = await fetch('/api/users');
+            currentUsers = await res.json();
+            renderUsersTable();
+        }
+
+        // 筛选逻辑
+        function filterCountry(country, btn) {
+            activeCountry = country;
+            btn.parentElement.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            renderTable();
+        }
+
+        function filterTier(tier, btn) {
+            activeTier = tier;
+            btn.parentElement.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            renderTable();
+        }
+
+        function filterTouch(touchMode, btn) {
+            activeTouch = touchMode;
+            btn.parentElement.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            renderTable();
+        }
+
+        function filterStage(stage) {
+            activeStage = stage;
+            renderTable();
+        }
+
+        function resetFilters() {
+            activeCountry = 'all';
+            selectedSources.clear();
+            activeSourceMode = 'include';
+            selectedLeadSources.clear();
+            activeTier = 'all';
+            activeTouch = 'all';
+            activeStage = 'all';
+
+            document.querySelectorAll('.filter-group button').forEach(b => {
+                b.classList.remove('active');
+                if (b.innerText.includes('全部')) {
+                    b.classList.add('active');
+                }
+            });
+            const modeBtn = document.getElementById('source-mode-btn');
+            if (modeBtn) {
+                modeBtn.classList.remove('exclude-active');
+                modeBtn.innerHTML = '🔍 仅看模式';
+            }
+            document.getElementById('country-filter').value = 'all';
+            document.getElementById('tier-filter').value = 'all';
+            document.getElementById('type-filter').value = 'all';
+            document.getElementById('due-filter').value = 'all';
+            document.getElementById('industry-filter').value = 'all';
+            document.getElementById('spend-filter').value = 'all';
+            document.getElementById('stage-filter').value = 'all';
+            document.getElementById('exclusion-filter').value = 'active';
+            renderSourceCapsules();
+            renderLeadSourceCapsules();
+            renderTable();
+        }
+
+        function renderTable() {
+            const tbody = document.getElementById('pipeline-body');
+            tbody.innerHTML = '';
+            
+            const filtered = currentData.filter(item => {
+                const exclusion = document.getElementById('exclusion-filter').value;
+                const excluded = item.prospect_status === 'lost';
+                if (exclusion === 'active' && excluded || exclusion === 'excluded' && !excluded) return false;
+                const type = document.getElementById('type-filter').value;
+                if (type !== 'all' && (item.customer_type || 'unknown') !== type) return false;
+                const due = document.getElementById('due-filter').value;
+                const today = new Intl.DateTimeFormat('sv-SE', {timeZone:'Asia/Shanghai'}).format(new Date());
+                if (due === 'due' && (!item.company_follow_up_date || item.company_follow_up_date > today)) return false;
+                if (due === 'unclaimed' && item.owner) return false;
+                const industry = document.getElementById('industry-filter').value;
+                if (industry !== 'all' && item.industry !== industry) return false;
+                const spend = item.estimated_monthly_spend;
+                const bucket = spend == null ? 'unknown' : spend < 5000 ? 'small' : spend < 20000 ? 'medium' : spend < 50000 ? 'large' : 'enterprise';
+                const spendFilter = document.getElementById('spend-filter').value;
+                if (spendFilter !== 'all' && bucket !== spendFilter) return false;
+                if (activeCountry !== 'all' && item.country_type !== activeCountry) {
+                    return false;
+                }
+                
+                // 公司来源筛选 (支持正选'仅看'与反选'排除/不看'，且支持多选集合)
+                if (selectedSources.size > 0) {
+                    const itemSrc = item.source_channel || '';
+                    if (activeSourceMode === 'include') {
+                        if (!selectedSources.has(itemSrc)) return false;
+                    } else if (activeSourceMode === 'exclude') {
+                        if (selectedSources.has(itemSrc)) return false;
+                    }
+                }
+
+                // 线索来源多选筛选
+                if (selectedLeadSources.size > 0) {
+                    const itemLeadSrc = item.lead_source || '';
+                    if (!selectedLeadSources.has(itemLeadSrc)) return false;
+                }
+
+                if (activeTier !== 'all' && (item.client_tier || 'B') !== activeTier) {
+                    return false;
+                }
+                
+                const st = item.status || 'pending';
+                const isTouched = (st !== 'pending');
+
+                if (activeTouch === 'untouched' && isTouched) {
+                    return false;
+                }
+                if (activeTouch === 'touched' && !isTouched) {
+                    return false;
+                }
+
+                if (activeStage !== 'all' && st !== activeStage) {
+                    return false;
+                }
+
+                return true;
+            });
+
+            document.getElementById('filter-count').innerText = `筛选出 ${filtered.length} / ${currentData.length} 家企业`;
+
+            filtered.forEach(r => {
+                const tr = document.createElement('tr');
+                const isCn = r.country_type === 'domestic';
+                const tagClass = isCn ? 'tag-cn' : 'tag-global';
+                const tagLabel = isCn ? '国内' : '海外';
+                const contactName = r.contact_name || '';
+                const xUrl = /^https:\/\/(?:x\.com|twitter\.com)\//i.test(r.x_url || '') ? r.x_url : '';
+                const contact = contactName
+                    ? `${escapeHtml(contactName)}${xUrl ? ` <a href="${escapeHtml(xUrl)}" onclick="event.stopPropagation()" target="_blank" rel="noopener noreferrer" class="company-link" title="打开创始人 X 主页">X ↗</a>` : ''}`
+                    : '<span style="color:#64748b;">创始人待核验</span>';
+                const title = r.job_title || '-';
+                const direct = r.phone || r.email || r.wechat || '-';
+                const currentStatus = r.status || 'pending';
+                const statusClass = 'status-' + currentStatus;
+
+                // 等级徽章
+                const tier = r.client_tier || 'B';
+                const tierBadge = `<span class="tier-badge tier-${tier}" title="${TIER_NAME_MAP[tier] || tier}">${tier}级</span>`;
+
+                // 官网链接
+                let companyDisplay = `<strong>${escapeHtml(r.company_name)}</strong>`;
+                if (r.website && r.website.trim()) {
+                    let url = r.website.trim();
+                    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                        url = 'https://' + url;
+                    }
+                    companyDisplay = `<strong>${escapeHtml(r.company_name)}</strong> <a href="${escapeHtml(url)}" onclick="event.stopPropagation()" target="_blank" rel="noopener noreferrer" class="company-link" title="打开官网">↗</a>`;
+                }
+
+                companyDisplay += `<div style="font-size:11px;color:#9ca3af" title="${escapeHtml(r.spend_basis || '暂无可靠消费估算依据')}">行业：${escapeHtml(r.industry || '待评估')} · 月预计消费：${r.estimated_monthly_spend == null ? '待评估' : '约 ¥' + Number(r.estimated_monthly_spend).toLocaleString()}</div>`;
+
+                // 来源标签
+                const companySource = r.source_channel ? `<span class="source-tag">${r.source_channel}</span>` : '<span style="color:#64748b;">-</span>';
+                const leadSource = r.lead_source ? `<span class="source-lead-tag">${r.lead_source}</span>` : '<span style="color:#64748b;">-</span>';
+
+                // 客户情况备注展示
+                const notesContent = r.company_notes || '';
+                const notesDisplay = notesContent.trim() ? notesContent : '点击填写客户情况...';
+                const contactUrl = /^https?:\/\//i.test(r.discovery_url || '') ? r.discovery_url : '';
+
+                // 权限限制
+                const canEdit = currentUser && (currentUser.role === 'admin' || currentUser.role === 'sales_lead' || currentUser.role === 'sales_rep');
+
+                const rJson = escapeHtml(JSON.stringify(r));
+
+                const indHint = getEnZhHint(r.industry);
+                const titleHint = getEnZhHint(r.job_title);
+                const industryDisplay = indHint ? `${escapeHtml(r.industry)} <span style="color:#38bdf8;font-size:11px;">(${escapeHtml(indHint)})</span>` : escapeHtml(r.industry || '-');
+                const titleDisplay = titleHint ? `${escapeHtml(title)} <div style="color:#38bdf8;font-size:11px;">${escapeHtml(titleHint)}</div>` : escapeHtml(title);
+
+                tr.innerHTML = `
+                    <td style="text-align:center;">
+                        <span class="editable-cell" onclick="${canEdit ? `openEditCompanyModal(${rJson})` : `alert('无权限编辑')`}" title="点击修改等级与企业信息">${tierBadge}</span>
+                    </td>
+                    <td>
+                        <span class="editable-cell" onclick="openProspectDetails(${r.company_id})" title="查看企业详情">
+                            ${companyDisplay}
+                        </span>
+                    </td>
+                    <td>
+                        <span class="editable-cell" onclick="${canEdit ? `openEditCompanyModal(${rJson})` : `alert('无权限编辑')`}" title="点击修改公司来源渠道">${companySource}</span>
+                    </td>
+                    <td>
+                        <span class="editable-cell" onclick="${canEdit ? `openEditCompanyModal(${rJson})` : `alert('无权限编辑')`}" title="点击修改赛道/类目">${industryDisplay}</span>
+                    </td>
+                    <td>
+                        <span class="editable-cell" onclick="${canEdit ? `openEditCompanyModal(${rJson})` : `alert('无权限编辑')`}" title="点击修改市场区域"><span class="tag ${tagClass}">${tagLabel}</span></span>
+                    </td>
+                    <td>
+                        <span class="editable-cell" onclick="${canEdit && r.lead_id ? `openEditLeadModal(${rJson})` : canEdit ? `alert('暂未录入决策人，请在数据库添加')` : `alert('无权限编辑')`}" title="点击修改决策人姓名">${contact}</span>
+                    </td>
+                    <td>
+                        <span class="editable-cell" onclick="${canEdit && r.lead_id ? `openEditLeadModal(${rJson})` : `alert('无权限编辑')`}" title="点击修改决策人头衔">${titleDisplay}</span>
+                    </td>
+                    <td>
+                        <span class="editable-cell" onclick="${canEdit && r.lead_id ? `openEditLeadModal(${rJson})` : `alert('无权限编辑')`}" title="点击修改电话/微信/邮箱"><code>${escapeHtml(direct)}</code></span>
+                    </td>
+                    <td>
+                        <span class="editable-cell" onclick="${canEdit && r.lead_id ? `openEditLeadModal(${rJson})` : `alert('无权限编辑')`}" title="点击修改线索来源渠道">${leadSource}</span>
+                    </td>
+                    <td>
+                        <div class="notes-preview" role="button" tabindex="0" aria-label="${canEdit ? '查看或编辑客户情况备注' : '查看客户情况备注'}" title="${escapeHtml(notesContent || '暂无备注')}">
+                            <span>${escapeHtml(notesDisplay)}</span>
+                            <span style="opacity:0.6; font-size:11px; flex-shrink:0;">${canEdit ? '编辑' : '查看'}</span>
+                        </div>
+                    </td>
+                    <td><span class="status-badge ${statusClass}">${STATUS_TEXT_MAP[currentStatus] || currentStatus}</span></td>
+                    <td>
+                        <div class="action-cell">
+                            <button onclick="openProspectDetails(${r.company_id})">客户详情</button>
+                            ${contactUrl ? `<a href="${escapeHtml(contactUrl)}" target="_blank" rel="noopener noreferrer" class="btn-pitch" style="text-decoration:none;">建联入口</a>` : ''}
+                            ${r.prospect_status === 'lost' ? `<span title="${escapeHtml(r.exclusion_reason || '历史标记，未填写原因')}">已剔除</span><button onclick="restoreProspect(${r.company_id})" ${!canEdit ? 'disabled' : ''}>恢复</button>` : `<button onclick="excludeProspect(${r.company_id})" ${!canEdit ? 'disabled' : ''}>剔除</button>`}
+                            ${r.lead_id ? `
+                                <select class="select-status" onchange="updateLeadStatus(${r.lead_id}, this.value, this)" ${!canEdit ? 'disabled' : ''}>
+                                    <optgroup label="未触达">
+                                        <option value="pending" ${currentStatus === 'pending' ? 'selected' : ''}>⏳ 待触达 (未跟进)</option>
+                                    </optgroup>
+                                    <optgroup label="已触达推进阶段">
+                                        <option value="contacted" ${currentStatus === 'contacted' ? 'selected' : ''}>📞 已初次触达</option>
+                                        <option value="sample_sent" ${currentStatus === 'sample_sent' ? 'selected' : ''}>🖼️ 已发商拍样张</option>
+                                        <option value="team_trial" ${currentStatus === 'team_trial' ? 'selected' : ''}>🏢 团队空间试用</option>
+                                        <option value="negotiation" ${currentStatus === 'negotiation' ? 'selected' : ''}>💼 商务报价中</option>
+                                        <option value="won" ${currentStatus === 'won' ? 'selected' : ''}>🎉 已赢单签约</option>
+                                        <option value="lost" ${currentStatus === 'lost' ? 'selected' : ''}>❌ 已流失</option>
+                                    </optgroup>
+                                </select>
+                                <button class="btn-pitch" onclick="openPitch(${r.lead_id})">🎯 直触方案</button>
+                            ` : `<button disabled style="opacity:0.4;">待补线索</button>`}
+                        </div>
+                    </td>
+                `;
+                const notesPreview = tr.querySelector('.notes-preview');
+                notesPreview.addEventListener('click', () => openNotesModal(r.company_id, r.company_name, notesContent));
+                notesPreview.addEventListener('keydown', event => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        openNotesModal(r.company_id, r.company_name, notesContent);
+                    }
+                });
+                tbody.appendChild(tr);
+            });
+        }
+
+        function renderUsersTable() {
+            const tbody = document.getElementById('users-body');
+            tbody.innerHTML = '';
+            const isAdmin = currentUser && currentUser.role === 'admin';
+            currentUsers.forEach(u => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td><strong>${u.username}</strong></td>
+                    <td>${u.display_name}</td>
+                    <td><span class="source-tag">${ROLE_NAME_MAP[u.role] || u.role}</span></td>
+                    <td><code>${u.email || '-'}</code></td>
+                    <td>${u.phone || '-'}</td>
+                    <td><span style="color:#10b981; font-weight:600;">● 激活启用</span></td>
+                    <td>
+                        <select onchange="updateUserRole(${u.id}, this.value)" ${!isAdmin ? 'disabled title="仅超级管理员可调整角色"' : ''}>
+                            <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>👑 超级管理员</option>
+                            <option value="sales_lead" ${u.role === 'sales_lead' ? 'selected' : ''}>💼 销售总监</option>
+                            <option value="sales_rep" ${u.role === 'sales_rep' ? 'selected' : ''}>📞 销售专员</option>
+                            <option value="observer" ${u.role === 'observer' ? 'selected' : ''}>👀 运营观察员</option>
+                        </select>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        async function updateUserRole(userId, newRole) {
+            const res = await fetch('/api/user/role', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: userId, role: newRole })
+            });
+            const result = await res.json();
+            if (result.success) {
+                alert('✅ 权限配置已实时更新生效！');
+                fetchUsers();
+            } else {
+                alert('修改失败: ' + result.error);
+            }
+        }
+
+        function renderFunnelView() {
+            const container = document.getElementById('funnel-container');
+            const counts = {};
+            currentData.forEach(r => {
+                const st = r.status || 'pending';
+                counts[st] = (counts[st] || 0) + 1;
+            });
+            let html = '<h3 style="margin-bottom:16px;">各阶段线索存量与转化分析</h3><div style="display:flex; flex-direction:column; gap:12px;">';
+            Object.keys(STATUS_TEXT_MAP).forEach(st => {
+                const num = counts[st] || 0;
+                const pct = currentData.length ? Math.round((num / currentData.length) * 100) : 0;
+                html += `
+                    <div>
+                        <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:5px;">
+                            <span>${STATUS_TEXT_MAP[st]}</span>
+                            <span><strong>${num}</strong> 家 (${pct}%)</span>
+                        </div>
+                        <div style="background:#111827; height:8px; border-radius:4px; overflow:hidden;">
+                            <div style="background:var(--primary); height:100%; width:${pct}%;"></div>
+                        </div>
+                    </div>
+                `;
+            });
+            html += '</div>';
+            container.innerHTML = html;
+        }
+
+        // 备注编辑功能
+        function openNotesModal(companyId, companyName, currentNotes) {
+            const canEdit = currentUser && ['admin', 'sales_lead', 'sales_rep'].includes(currentUser.role);
+            document.getElementById('notes-modal-title').innerText = `${canEdit ? '编辑' : '查看'}客户情况备注: ${companyName}`;
+            const input = document.getElementById('notes-input');
+            input.value = currentNotes || '';
+            input.readOnly = !canEdit;
+            document.getElementById('notes-save-btn').hidden = !canEdit;
+            document.getElementById('notes-company-id').value = companyId;
+            document.getElementById('notes-modal').style.display = 'flex';
+            input.focus();
+        }
+
+        function closeNotesModal() {
+            document.getElementById('notes-modal').style.display = 'none';
+        }
+
+        async function saveCompanyNotes() {
+            if (!currentUser || !['admin', 'sales_lead', 'sales_rep'].includes(currentUser.role)) return;
+            const saveButton = document.getElementById('notes-save-btn');
+            if (saveButton.disabled) return;
+            const companyId = document.getElementById('notes-company-id').value;
+            const notes = document.getElementById('notes-input').value;
+            saveButton.disabled = true;
+            try {
+                const res = await fetch('/api/company/notes', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ company_id: parseInt(companyId), notes: notes })
+                });
+                const result = await res.json();
+                if (res.ok && result.success) {
+                    closeNotesModal();
+                    await fetchPipeline();
+                } else {
+                    alert('保存备注失败: ' + (result.error || '未知错误'));
+                }
+            } catch (err) {
+                alert('网络异常: ' + err.message);
+            } finally {
+                saveButton.disabled = false;
+            }
+        }
+
+        async function updateLeadStatus(leadId, newStatus, selectElem) {
+            try {
+                selectElem.disabled = true;
+                const res = await fetch('/api/touch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        lead_id: leadId,
+                        status: newStatus,
+                        notes: `在 Web 作战台切换状态为: ${newStatus} (操作人: ${currentUser.display_name || currentUser.username})`
+                    })
+                });
+                const result = await res.json();
+                if (result.success) {
+                    await fetchStats();
+                    await fetchPipeline();
+                } else {
+                    alert('更新失败: ' + (result.error || '未知错误'));
+                }
+            } catch (err) {
+                alert('网络异常: ' + err.message);
+            } finally {
+                selectElem.disabled = false;
+            }
+        }
+
+        let currentPitchData = null;
+        let currentPitchLangMode = 'bilingual'; // 'bilingual', 'en_only', 'zh_only'
+
+        async function openPitch(leadId) {
+            const res = await fetch(`/api/pitch?lead_id=${leadId}`);
+            const data = await res.json();
+            currentPitchData = data;
+            document.getElementById('modal-title').innerText = data.headline;
+            renderPitchModalContent();
+            document.getElementById('modal').style.display = 'flex';
+        }
+
+        function setPitchLangMode(mode) {
+            currentPitchLangMode = mode;
+            renderPitchModalContent();
+        }
+
+        function copyPitchText(text, btnElem) {
+            navigator.clipboard.writeText(text).then(() => {
+                const orig = btnElem.innerText;
+                btnElem.innerText = '✓ 已复制';
+                btnElem.style.color = '#34d399';
+                setTimeout(() => {
+                    btnElem.innerText = orig;
+                    btnElem.style.color = '';
+                }, 1500);
+            }).catch(err => {
+                alert('复制失败，请手动选择复制');
+            });
+        }
+
+        function renderPitchModalContent() {
+            const data = currentPitchData;
+            if (!data) return;
+            let html = '';
+            if (data.phone_script) {
+                html += `<h4>【微信好友申请备注 (直击痛点)】</h4><pre>${escapeHtml(data.wechat_request)}</pre>`;
+                html += `<h4>【30秒电销直通脚本 (只谈ROI)】</h4><pre>${escapeHtml(data.phone_script)}</pre>`;
+                html += `<h4>【跟进策略】</h4><pre>${escapeHtml(data.strategy)}</pre>`;
+            } else {
+                // 海外直触 - 支持中英文双语对照与一键复制英文
+                html += `
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                        <div class="pitch-lang-tabs">
+                            <button class="pitch-lang-tab ${currentPitchLangMode === 'bilingual' ? 'active' : ''}" onclick="setPitchLangMode('bilingual')">📖 中英双语对照</button>
+                            <button class="pitch-lang-tab ${currentPitchLangMode === 'zh_only' ? 'active' : ''}" onclick="setPitchLangMode('zh_only')">🇨🇳 仅中文翻译</button>
+                            <button class="pitch-lang-tab ${currentPitchLangMode === 'en_only' ? 'active' : ''}" onclick="setPitchLangMode('en_only')">🌐 仅英文原文</button>
+                        </div>
+                        <div style="font-size:12px; color:var(--text-muted);">
+                            💡 提示：点击各模块右上角按钮可直接复制英文原版外发
+                        </div>
+                    </div>
+                `;
+
+                // 1. Cold Email 邮件标题
+                html += `
+                    <div class="pitch-section-header">
+                        <h4>📧 Cold Email 邮件标题 (Subject)</h4>
+                        <button class="pitch-copy-btn" onclick="copyPitchText(${JSON.stringify(data.email_subject || '')}, this)">📋 复制英文标题</button>
+                    </div>
+                `;
+                if (currentPitchLangMode !== 'zh_only') {
+                    html += `<pre style="margin-top:4px;">${escapeHtml(data.email_subject || '')}</pre>`;
+                }
+                if (currentPitchLangMode !== 'en_only' && data.email_subject_zh) {
+                    html += `<div class="pitch-trans-box"><strong>【中文翻译】</strong> ${escapeHtml(data.email_subject_zh)}</div>`;
+                }
+
+                // 2. Cold Email 正文
+                html += `
+                    <div class="pitch-section-header">
+                        <h4>📝 Cold Email 邮件正文 (Body)</h4>
+                        <button class="pitch-copy-btn" onclick="copyPitchText(${JSON.stringify(data.email_body || '')}, this)">📋 复制英文正文</button>
+                    </div>
+                `;
+                if (currentPitchLangMode !== 'zh_only') {
+                    html += `<pre style="margin-top:4px;">${escapeHtml(data.email_body || '')}</pre>`;
+                }
+                if (currentPitchLangMode !== 'en_only' && data.email_body_zh) {
+                    html += `<div class="pitch-trans-box" style="white-space: pre-wrap;"><strong>【中文对照翻译】</strong>
+${escapeHtml(data.email_body_zh)}</div>`;
+                }
+
+                // 3. LinkedIn 破冰
+                html += `
+                    <div class="pitch-section-header">
+                        <h4>💼 LinkedIn 领英破冰附言 (Connect Note)</h4>
+                        <button class="pitch-copy-btn" onclick="copyPitchText(${JSON.stringify(data.linkedin_note || '')}, this)">📋 复制英文附言</button>
+                    </div>
+                `;
+                if (currentPitchLangMode !== 'zh_only') {
+                    html += `<pre style="margin-top:4px;">${escapeHtml(data.linkedin_note || '')}</pre>`;
+                }
+                if (currentPitchLangMode !== 'en_only' && data.linkedin_note_zh) {
+                    html += `<div class="pitch-trans-box"><strong>【中文对照翻译】</strong> ${escapeHtml(data.linkedin_note_zh)}</div>`;
+                }
+            }
+            document.getElementById('modal-body').innerHTML = html;
+        }
+
+        function closeModal() {
+            document.getElementById('modal').style.display = 'none';
+        }
+
+        // 注册登录系统 Modal 与 API 处理
+        function openAuthModal(defaultTab = 'login') {
+            document.getElementById('auth-modal').style.display = 'flex';
+            switchAuthTab(defaultTab);
+        }
+
+        function closeAuthModal() {
+            document.getElementById('auth-modal').style.display = 'none';
+            document.getElementById('login-msg').innerText = '';
+            document.getElementById('reg-msg').innerText = '';
+        }
+
+        function switchAuthTab(tab) {
+            if (tab === 'login') {
+                document.getElementById('tab-login-btn').classList.add('active');
+                document.getElementById('tab-register-btn').classList.remove('active');
+                document.getElementById('login-form').style.display = 'block';
+                document.getElementById('register-form').style.display = 'none';
+                document.getElementById('auth-modal-title').innerText = '团队账号登录';
+            } else {
+                document.getElementById('tab-register-btn').classList.add('active');
+                document.getElementById('tab-login-btn').classList.remove('active');
+                document.getElementById('login-form').style.display = 'none';
+                document.getElementById('register-form').style.display = 'block';
+                document.getElementById('auth-modal-title').innerText = '注册新成员账号';
+            }
+        }
+
+        async function handleLogin(e) {
+            e.preventDefault();
+            const username = document.getElementById('login-username').value;
+            const password = document.getElementById('login-password').value;
+            const msgEl = document.getElementById('login-msg');
+            msgEl.innerText = '正在验证中...';
+            msgEl.style.color = '#38bdf8';
+
+            try {
+                const res = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                const result = await res.json();
+                if (result.success) {
+                    currentUser = result.user;
+                    localStorage.setItem('aibubu_current_user', JSON.stringify(currentUser));
+                    updateCurrentUserUI();
+                    msgEl.style.color = '#10b981';
+                    msgEl.innerText = '✅ 登录成功！正在进入作战台...';
+                    setTimeout(() => {
+                        closeAuthModal();
+                        renderTable();
+                        if (document.getElementById('view-permissions').classList.contains('active')) {
+                            renderUsersTable();
+                        }
+                    }, 500);
+                } else {
+                    msgEl.style.color = '#ef4444';
+                    msgEl.innerText = '❌ 登录失败: ' + (result.error || '用户名或密码错误');
+                }
+            } catch (err) {
+                msgEl.style.color = '#ef4444';
+                msgEl.innerText = '网络异常: ' + err.message;
+            }
+        }
+
+        async function handleRegister(e) {
+            e.preventDefault();
+            const username = document.getElementById('reg-username').value;
+            const password = document.getElementById('reg-password').value;
+            const display_name = document.getElementById('reg-name').value;
+            const role = document.getElementById('reg-role').value;
+            const email = document.getElementById('reg-email').value;
+            const phone = document.getElementById('reg-phone').value;
+            const msgEl = document.getElementById('reg-msg');
+            msgEl.innerText = '正在提交注册...';
+            msgEl.style.color = '#38bdf8';
+
+            try {
+                const res = await fetch('/api/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password, display_name, role, email, phone })
+                });
+                const result = await res.json();
+                if (result.success) {
+                    msgEl.style.color = '#10b981';
+                    msgEl.innerText = '✅ 成员注册成功！已自动入库。';
+                    setTimeout(() => {
+                        switchAuthTab('login');
+                        document.getElementById('login-username').value = username;
+                        document.getElementById('login-password').value = password;
+                    }, 800);
+                } else {
+                    msgEl.style.color = '#ef4444';
+                    msgEl.innerText = '❌ 注册失败: ' + (result.error || '未知错误');
+                }
+            } catch (err) {
+                msgEl.style.color = '#ef4444';
+                msgEl.innerText = '网络异常: ' + err.message;
+            }
+        }
+
+        async function exportData() {
+            const res = await fetch('/api/export');
+            const data = await res.json();
+            alert('✅ ' + data.message);
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            return text
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+
+        async function changeProspectStatus(id, updates) {
+            if (!currentUser || !['admin','sales_lead','sales_rep'].includes(currentUser.role)) return;
+            try {
+                const res = await fetch('/api/company/update', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({company_id:id,updates})});
+                const result = await res.json();
+                if (!res.ok || !result.success) throw Error(result.error || '保存失败');
+                await fetchPipeline();
+            } catch (err) { alert(err.message); }
+        }
+        function excludeProspect(id) {
+            const row = currentData.find(r => r.company_id === id);
+            const reason = prompt('剔除「' + row.company_name + '」的原因（可在已剔除名单恢复）：');
+            if (reason === null) return;
+            if (!reason.trim()) { alert('请填写剔除原因'); return; }
+            return changeProspectStatus(id, {prospect_status:'lost',exclusion_reason:reason.trim()});
+        }
+        function restoreProspect(id) {
+            const row = currentData.find(r => r.company_id === id);
+            if (!confirm('恢复「' + row.company_name + '」到开发名单？')) return;
+            return changeProspectStatus(id, {prospect_status:row.previous_prospect_status || 'pending'});
+        }
+        function closeProspectDetails() {
+            document.getElementById('prospect-modal').style.display='none';
+        }
+        document.addEventListener('keydown', event => {if(event.key === 'Escape') closeProspectDetails();});
+        let activeProspect = null;
+        const prospectFields = {exclusion_reason:'exclusion',customer_type:'type',models_used:'models',audience_scale:'audience',qualification_evidence:'evidence',discovery_url:'source',estimated_monthly_spend:'spend',spend_basis:'basis',owner:'owner',prospect_status:'status',company_follow_up_date:'date'};
+        function openProspectDetails(id) {
+            activeProspect = currentData.find(r => r.company_id === id);
+            const r = activeProspect;
+            document.getElementById('prospect-name').textContent = r.company_name;
+            document.getElementById('prospect-summary').textContent = `首次入库：${r.first_discovered || '未知'} · 行业：${r.industry} · 联系人：${r.contact_name || '待查找'}`;
+            for (const [key, field] of Object.entries(prospectFields)) document.getElementById('p-'+field).value = r[key] ?? (key === 'prospect_status' ? 'pending' : '');
+            const reasons = [];
+            if(r.qualification_evidence && r.discovery_url) reasons.push([30,'已记录需求证据和来源（仍需背调核实）']);
+            if(r.customer_type === 'API / AI 应用客户') reasons.push([20,'已标记为 API / AI 应用客户']);
+            if(r.models_used) reasons.push([10,'已记录模型需求']);
+            if(r.estimated_monthly_spend != null && r.spend_basis) reasons.push([20,'消费估算有文字依据']);
+            if(r.email || r.phone || r.wechat) reasons.push([10,'已记录联系渠道（未验证可达性）']);
+            document.getElementById('p-score').textContent = `资料完整度 ${reasons.reduce((n,x)=>n+x[0],0)}/90（不是成交概率）\n` + (reasons.map(x=>`+${x[0]} ${x[1]}`).join('；') || '暂无足够资料，建议先背调');
+            document.getElementById('p-message').textContent='';
+            document.getElementById('prospect-modal').style.display='flex';
+            const editable = currentUser && ['admin','sales_lead','sales_rep'].includes(currentUser.role);
+            document.querySelectorAll('#prospect-form input,#prospect-form textarea,#prospect-form select,#prospect-form button').forEach(el=>el.disabled=!editable);
+        }
+        async function saveProspectDetails(e) {
+            e.preventDefault();
+            const updates = {};
+            for (const [key,field] of Object.entries(prospectFields)) updates[key]=document.getElementById('p-'+field).value.trim();
+            updates.estimated_monthly_spend=updates.estimated_monthly_spend === '' ? null : Number(updates.estimated_monthly_spend);
+            const msg=document.getElementById('p-message');
+            if(updates.prospect_status === 'lost' && !updates.exclusion_reason) {msg.textContent='请填写剔除原因';return;}
+            if(updates.estimated_monthly_spend != null && !updates.spend_basis) {msg.textContent='请填写消费估算依据';return;}
+            try {
+                const res=await fetch('/api/company/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({company_id:activeProspect.company_id,updates})});
+                const result=await res.json();if(!res.ok || !result.success) throw Error(result.error || '保存失败');
+                await fetchPipeline(); openProspectDetails(activeProspect.company_id); msg.textContent='已保存';
+            } catch(err) {msg.textContent=err.message;}
+        }
+        async function copyResearchPrompt() {
+            const r=activeProspect;
+            const prompt=`请对 ${r.company_name} 进行客户背调。官网：${r.website || '待查找'}；来源：${r.discovery_url || '待查找'}。核查运营主体、官方联系方式、是否提供AI图片/视频服务、实际接入模型、收费方案及可验证用户/调用规模。每项给出来源链接和日期，区分事实与推测，不编造月活或联系人。估算采购API或商拍服务的需求，金额仅在有需求量和价格依据时计算。最后提出适合的合作切入点。`;
+            try {await navigator.clipboard.writeText(prompt);document.getElementById('p-message').textContent='背调指令已复制';} catch(e){document.getElementById('p-message').textContent=prompt;}
+        }
+
+        // 初始化加载
+        updateCurrentUserUI();
+        fetchStats();
+        fetchSources();
+        fetchPipeline();
+    </script>
+</body>
+</html>
+"""
+
+class CustomHandler(http.server.SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        self.db = DatabaseManager()
+        super().__init__(*args, **kwargs)
+
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+
+        if path == "/" or path == "/index.html":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(HTML_TEMPLATE.encode("utf-8"))
+
+        elif path == "/api/stats":
+            stats = self.db.get_stats()
+            self.send_json(stats)
+
+        elif path == "/api/sources":
+            sources = self.db.get_source_channels()
+            self.send_json(sources)
+
+        elif path == "/api/lead_sources":
+            lead_sources = self.db.get_lead_sources()
+            self.send_json(lead_sources)
+
+        elif path == "/api/pipeline":
+            params = urllib.parse.parse_qs(parsed.query)
+            country = params.get("country", [None])[0]
+            status = params.get("status", [None])[0]
+            source = params.get("source", [None])[0]
+            tier = params.get("tier", [None])[0]
+            rows = self.db.query_pipeline(country_type=country, status=status, source_channel=source, client_tier=tier)
+            self.send_json(rows)
+
+        elif path == "/api/users":
+            users = self.db.get_users()
+            self.send_json(users)
+
+        elif path == "/api/pitch":
+            from outreach.outreach_engine import OutreachEngine
+            params = urllib.parse.parse_qs(parsed.query)
+            lead_id = int(params.get("lead_id", [0])[0])
+            engine = OutreachEngine(self.db)
+            try:
+                pitch = engine.generate_pitch(lead_id)
+                self.send_json(pitch)
+            except Exception as e:
+                self.send_json({"error": str(e)}, status=400)
+
+        elif path == "/api/export":
+            import csv
+            out_path = os.path.expanduser("~/Desktop/Aibubu_销售作战跟进表.csv")
+            rows = self.db.query_pipeline()
+            with open(out_path, mode="w", encoding="utf-8-sig", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    "客户等级", "企业ID", "企业名称", "区域", "行业赛道", "规模", "企业官网", "公司数据来源", "客户情况备注",
+                    "线索ID", "决策人姓名", "真实职位", "手机/微信", "工作邮箱", "领英主页", "创始人X主页", "线索来源",
+                    "当前跟进状态", "触达渠道", "破冰切入点", "沟通纪要"
+                ])
+                for r in rows:
+                    writer.writerow([
+                        r.get('client_tier') or 'B', r['company_id'], r['company_name'], r['country_type'], r['industry'], r['scale'], r['website'], r['source_channel'], r.get('company_notes') or '',
+                        r['lead_id'], r['contact_name'], r['job_title'], r['phone'] or r['wechat'], r['email'], r['linkedin_url'], r.get('x_url') or '', r.get('lead_source') or '',
+                        r['status'], r['channel'], r['pitch_angle'], r['interaction_notes']
+                    ])
+            self.send_json({"message": f"成功导出至桌面: {out_path}"})
+
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+
+        if path == "/api/login":
+            try:
+                content_length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(content_length).decode('utf-8')
+                data = json.loads(body)
+                username = data.get('username', '')
+                password = data.get('password', '')
+                user = self.db.authenticate_user(username, password)
+                if user:
+                    self.send_json({"success": True, "user": user})
+                else:
+                    self.send_json({"success": False, "error": "用户名或密码不正确"}, status=401)
+            except Exception as e:
+                self.send_json({"success": False, "error": str(e)}, status=400)
+
+        elif path == "/api/register":
+            try:
+                content_length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(content_length).decode('utf-8')
+                data = json.loads(body)
+                res = self.db.register_user(
+                    username=data.get('username', ''),
+                    password=data.get('password', ''),
+                    display_name=data.get('display_name', ''),
+                    role=data.get('role', 'sales_rep'),
+                    email=data.get('email', ''),
+                    phone=data.get('phone', '')
+                )
+                self.send_json(res)
+            except Exception as e:
+                self.send_json({"success": False, "error": str(e)}, status=400)
+
+        elif path == "/api/touch":
+            try:
+                content_length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(content_length).decode('utf-8')
+                data = json.loads(body)
+                lead_id = int(data.get('lead_id'))
+                new_status = data.get('status', 'pending')
+                notes = data.get('notes', 'Web端状态快速切换')
+
+                from outreach.outreach_engine import OutreachEngine
+                engine = OutreachEngine(self.db)
+                engine.record_touch(
+                    lead_id=lead_id,
+                    channel='wechat_direct',
+                    status=new_status,
+                    pitch_angle='Web控制台触达更新',
+                    notes=notes
+                )
+                self.send_json({"success": True, "lead_id": lead_id, "status": new_status})
+            except Exception as e:
+                self.send_json({"success": False, "error": str(e)}, status=400)
+
+        elif path == "/api/company/notes":
+            try:
+                content_length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(content_length).decode('utf-8')
+                data = json.loads(body)
+                company_id = int(data.get('company_id'))
+                notes = data.get('notes', '')
+                self.db.update_company_notes(company_id, notes)
+                self.send_json({"success": True, "company_id": company_id})
+            except Exception as e:
+                self.send_json({"success": False, "error": str(e)}, status=400)
+
+        elif path == "/api/company/tier":
+            try:
+                content_length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(content_length).decode('utf-8')
+                data = json.loads(body)
+                company_id = int(data.get('company_id'))
+                tier = data.get('tier', 'B')
+                self.db.update_company_tier(company_id, tier)
+                self.send_json({"success": True, "company_id": company_id, "tier": tier})
+            except Exception as e:
+                self.send_json({"success": False, "error": str(e)}, status=400)
+
+        elif path == "/api/company/update":
+            try:
+                content_length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(content_length).decode('utf-8')
+                data = json.loads(body)
+                company_id = int(data.get('company_id'))
+                updates = data.get('updates', {})
+                success = self.db.update_company(company_id, updates)
+                self.send_json({"success": success, "company_id": company_id})
+            except Exception as e:
+                self.send_json({"success": False, "error": str(e)}, status=400)
+
+        elif path == "/api/lead/update":
+            try:
+                content_length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(content_length).decode('utf-8')
+                data = json.loads(body)
+                lead_id = int(data.get('lead_id'))
+                updates = data.get('updates', {})
+                success = self.db.update_lead(lead_id, updates)
+                self.send_json({"success": success, "lead_id": lead_id})
+            except Exception as e:
+                self.send_json({"success": False, "error": str(e)}, status=400)
+
+        elif path == "/api/user/role":
+            try:
+                content_length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(content_length).decode('utf-8')
+                data = json.loads(body)
+                user_id = int(data.get('user_id'))
+                new_role = data.get('role', 'sales_rep')
+                self.db.update_user_role(user_id, new_role)
+                self.send_json({"success": True, "user_id": user_id, "role": new_role})
+            except Exception as e:
+                self.send_json({"success": False, "error": str(e)}, status=400)
+
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def send_json(self, data: Any, status: int = 200):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
+
+def start_server():
+    with socketserver.TCPServer(("", PORT), CustomHandler) as httpd:
+        print(f"🚀 Aibubu 销售作战中台已在本地启动: http://localhost:{PORT}")
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            pass
+
+if __name__ == "__main__":
+    start_server()

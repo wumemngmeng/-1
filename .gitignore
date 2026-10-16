@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.pytest_cache/
+
+# Local safety snapshots are reproducible and should not bloat Git history.
+backups/
+*.before-*
+
+# Runtime output.
+*.log
+*.pid
