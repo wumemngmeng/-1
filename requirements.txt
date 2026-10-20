@@ -1,2 +1,3 @@
 # The current CRM uses only Python standard-library modules.
 # Deployment trigger for Vercel.
+libsql-client==0.3.1

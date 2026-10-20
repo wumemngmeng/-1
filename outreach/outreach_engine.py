@@ -1,8 +1,7 @@
 """Generate reviewable outreach drafts from recorded customer profiles."""
-import sqlite3
 from typing import Dict
 
-from core.database import DatabaseManager
+from core.database import DatabaseManager, get_connection
 
 
 PROFILES = {
@@ -71,8 +70,7 @@ class OutreachEngine:
         self.db = db
 
     def generate_pitch(self, lead_id: int) -> Dict[str, str]:
-        with sqlite3.connect(self.db.db_path) as conn:
-            conn.row_factory = sqlite3.Row
+        with get_connection(self.db.db_path) as conn:
             row = conn.execute("""
                 SELECT l.*, c.name AS company_name, c.country_type, c.industry,
                        c.customer_type, c.models_used, c.qualification_evidence,

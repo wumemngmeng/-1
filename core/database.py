@@ -89,10 +89,51 @@ CREATE INDEX IF NOT EXISTS idx_outreach_status ON outreach_records(status);
 """
 
 def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
+    remote_url = os.environ.get("TURSO_DATABASE_URL", "").strip()
+    remote_token = os.environ.get("TURSO_AUTH_TOKEN", "").strip()
+    if remote_url:
+        from libsql_client import dbapi2 as libsql_dbapi
+        conn = libsql_dbapi.connect(
+            remote_url,
+            uri=True,
+            auth_token=remote_token or None,
+            check_same_thread=False,
+        )
+        conn.row_factory = libsql_dbapi.Row
+        return conn
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def bootstrap_remote_from_sqlite(conn: sqlite3.Connection, source_path: str = DB_PATH):
+    """Seed a new Turso database from the tracked CRM snapshot exactly once."""
+    if not os.environ.get("TURSO_DATABASE_URL") or not os.path.exists(source_path):
+        return
+    cur = conn.cursor()
+    cur.execute("SELECT count(*) AS count FROM companies")
+    if cur.fetchone()["count"]:
+        return
+    source = sqlite3.connect(source_path)
+    source.row_factory = sqlite3.Row
+    try:
+        for table in ("companies", "leads", "outreach_records", "sys_users"):
+            columns = [r["name"] for r in source.execute(f"PRAGMA table_info({table})")]
+            rows = source.execute(
+                f"SELECT {', '.join(columns)} FROM {table} ORDER BY id"
+            ).fetchall()
+            if not rows:
+                continue
+            placeholders = ", ".join("?" for _ in columns)
+            cur.executemany(
+                f"INSERT OR IGNORE INTO {table} ({', '.join(columns)}) "
+                f"VALUES ({placeholders})",
+                [tuple(row[column] for column in columns) for row in rows],
+            )
+        conn.commit()
+    finally:
+        source.close()
 
 def init_db(db_path: str = DB_PATH):
     conn = get_connection(db_path)
@@ -120,6 +161,8 @@ def init_db(db_path: str = DB_PATH):
     for field, definition in [('estimated_monthly_spend', 'REAL'), ('spend_basis', 'TEXT'), ('discovery_url', 'TEXT'), ('customer_type', 'TEXT'), ('models_used', 'TEXT'), ('qualification_evidence', 'TEXT'), ('owner', 'TEXT'), ('company_follow_up_date', 'TEXT'), ('prospect_status', 'TEXT'), ('audience_scale', 'TEXT'), ('exclusion_reason', 'TEXT'), ('previous_prospect_status', 'TEXT')]:
         if field not in c_cols:
             cursor.execute(f"ALTER TABLE companies ADD COLUMN {field} {definition}")
+
+    bootstrap_remote_from_sqlite(conn)
 
     # Seed default users
     cursor.execute("SELECT count(*) as count FROM sys_users")
