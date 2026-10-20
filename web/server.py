@@ -809,6 +809,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .compact-filters .filter-footer {display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:18px;padding-top:14px;border-top:1px solid #293344;color:#94a3b8;font-size:12px}
         @media(max-width:900px){.compact-filters .filter-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
         @media(max-width:520px){.compact-filters .filter-grid{grid-template-columns:1fr}}
+        .report-date { margin-bottom: 16px; color: var(--text-muted); font-size: 13px; }
+        .touch-funnel { margin: 0 0 24px; padding: 20px; border: 1px solid #334155; border-radius: 12px; background: #111827; }
+        .touch-funnel h3 { margin: 0 0 8px; font-size: 16px; }
+        .touch-funnel p { color: var(--text-muted); font-size: 12px; line-height: 1.7; }
+        .touch-funnel-row { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }
+        .touch-funnel-stage { padding: 12px; background: #1f2937; border-radius: 8px; }
+        .touch-funnel-stage strong { display: block; margin: 8px 0; color: #38bdf8; font-size: 24px; }
+        .touch-funnel-stage small { display: block; color: var(--text-muted); line-height: 1.6; }
+        @media(max-width:1100px) { .touch-funnel-row { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+        @media(max-width:600px) { .touch-funnel-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
         .prospect-drawer {
             background: #111827;
             border-left: 1px solid #374151;
@@ -917,6 +927,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
     <!-- 主视窗 -->
     <main>
+        <div class="report-date">统计日期：<time id="report-date"></time>（北京时间，当前数据快照）</div>
         <!-- 视窗 1: 线索作战中台 -->
         <div id="view-pipeline" class="view-section active">
             <header>
@@ -954,6 +965,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <div class="stat-value" id="stat-leads">-</div>
                 </div>
             </div>
+
+            <section id="pipeline-touch-funnel" class="touch-funnel" aria-label="触达动作转化漏斗"></section>
 
             <div class="controls-panel compact-filters">
                 <div class="filter-toolbar"><strong>筛选企业</strong><div class="filter-toolbar-actions"><label class="filter-field" title=""><span>名单</span><select id="exclusion-filter" onchange="renderTable()"><option value="active">待开发 / 跟进中</option><option value="excluded">已剔除</option><option value="all">全部（含已剔除）</option></select></label><button onclick="resetFilters()">重置筛选</button></div></div>
@@ -1077,6 +1090,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <label>等级 <select id="funnel-tier" onchange="renderFunnelView()"><option value="all">全部等级</option><option>S</option><option>A</option><option>B</option><option>C</option></select></label>
                 <button onclick="fetchPipeline()">刷新数据</button>
             </div>
+            <section id="analysis-touch-funnel" class="touch-funnel" aria-label="触达动作转化漏斗"></section>
             <div id="funnel-container" class="perm-card">
                 正在统计漏斗节点...
             </div>
@@ -1615,6 +1629,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             });
 
             visibleData = filtered;
+            renderTouchFunnel('pipeline-touch-funnel', filtered);
             document.getElementById('filter-count').innerText = `筛选出 ${filtered.length} / ${currentData.length} 家企业`;
 
             filtered.forEach(r => {
@@ -1761,6 +1776,39 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }
 
         const FUNNEL_STAGES = ['pending', 'sample_sent', 'contacted', 'negotiation', 'team_trial', 'won'];
+        function updateReportDate(now = new Date()) {
+            const date = document.getElementById('report-date');
+            date.textContent = new Intl.DateTimeFormat('zh-CN', {
+                timeZone:'Asia/Shanghai', year:'numeric', month:'long', day:'numeric', weekday:'long'
+            }).format(now);
+            date.dateTime = new Intl.DateTimeFormat('sv-SE', {timeZone:'Asia/Shanghai'}).format(now);
+        }
+        function buildTouchFunnelData(rows) {
+            const unique = new Map(rows.map(r => [r.company_id, r]));
+            const counts = Object.fromEntries([...FUNNEL_STAGES, 'lost', 'unknown'].map(s => [s, 0]));
+            unique.forEach(r => {
+                const status = r.status || 'pending';
+                counts[Object.prototype.hasOwnProperty.call(counts, status) ? status : 'unknown']++;
+            });
+            const reached = FUNNEL_STAGES.map((s, i) =>
+                FUNNEL_STAGES.slice(i).reduce((n, stage) => n + counts[stage], 0));
+            return {total:unique.size, counts, reached};
+        }
+        function renderTouchFunnel(target, rows) {
+            updateReportDate();
+            const data = buildTouchFunnelData(rows);
+            const labels = ['待触达', '已推送未回复', '已建连', '有意向', '已注册', '已充值'];
+            const pct = (n, d) => d ? (100 * n / d).toFixed(1) + '%' : '—';
+            document.getElementById(target).innerHTML = `<h3>触达动作转化漏斗</h3>
+                <p>当前筛选范围：${data.total} 家企业 · 已充值 / 有效客户：${pct(data.counts.won, data.reached[0])}</p>
+                <div class="touch-funnel-row">${FUNNEL_STAGES.map((s, i) =>
+                    `<div class="touch-funnel-stage"><span>${labels[i]}</span><strong>${data.counts[s]} <small>家（当前停留）</small></strong>
+                    <small>本阶段及以后：${data.reached[i]} 家</small>
+                    <small>${i ? '较上阶段推进：' + pct(data.reached[i], data.reached[i - 1]) : '有效客户基数'}</small></div>`
+                ).join('')}<div class="touch-funnel-stage"><span>不触达</span><strong>${data.counts.lost} <small>家</small></strong>
+                <small>单列，不计入转化分母</small></div></div>
+                <p>企业去重，仅按“触达动作”统计，不合并客户详情阶段。推进比例由当前阶段推算，并非历史转化率。未识别动作：${data.counts.unknown} 家（不计入转化分母）。</p>`;
+        }
         function buildFunnelData(rows, country, tier, today) {
             const aliases = {researching:'pending', trial:'team_trial'};
             const unique = new Map();
@@ -1805,6 +1853,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             const data = buildFunnelData(currentData, document.getElementById('funnel-country').value,
                 document.getElementById('funnel-tier').value, today);
             funnelGroups = data.groups;
+            renderTouchFunnel('analysis-touch-funnel', currentData.filter(r =>
+                (document.getElementById('funnel-country').value === 'all' || r.country_type === document.getElementById('funnel-country').value) &&
+                (document.getElementById('funnel-tier').value === 'all' || (r.client_tier || 'B') === document.getElementById('funnel-tier').value)));
             const pct = (n, d) => d ? (100 * n / d).toFixed(1) + '%' : '—';
             const labels = ['待触达 / 背调', '已推送未回复', '已建连', '有意向 / 洽谈', '已注册 / 试用', '已充值 / 成交'];
             let html = `<h3>跟进概览</h3><p>范围内 ${data.total} 家 · 有效阶段 ${data.active} 家 · 已剔除/流失 ${data.groups.lost.length} 家 · 未识别状态 ${data.groups.unknown.length} 家</p>
@@ -2228,6 +2279,7 @@ ${escapeHtml(data.email_body_zh)}</div>`;
         }
 
         // 初始化加载
+        updateReportDate();
         updateCurrentUserUI();
         fetchStats();
         fetchSources();

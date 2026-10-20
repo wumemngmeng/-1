@@ -47,6 +47,18 @@ if (result.groups.lost.length !== 1 || result.groups.unknown.length !== 1) throw
 if (result.groups.overdue.length !== 1 || result.groups.due.length !== 1) throw Error('dates');
 if (result.reached.join(',') !== '4,3,2,2,2,1') throw Error('cumulative');
 if (buildFunnelData([], 'all', 'all', '2026-10-19').active !== 0) throw Error('empty');
+const touch = buildTouchFunnelData([...rows, rows[0], {company_id:9,status:'lost'}]);
+if (touch.total !== 9 || touch.counts.won !== 4 || touch.counts.pending !== 2) throw Error('touch counts/dedupe');
+if (touch.counts.lost !== 1 || touch.counts.unknown !== 1) throw Error('touch exclusions');
+if (touch.reached.join(',') !== '7,5,4,4,4,4') throw Error('touch cumulative');
+if (buildTouchFunnelData([{company_id:1,prospect_status:'won'}]).counts.pending !== 1) throw Error('touch must not merge detail stage');
+renderTouchFunnel('pipeline-touch-funnel', []);
+if (!document.getElementById('pipeline-touch-funnel').innerHTML.includes('当前筛选范围：0')) throw Error('empty touch row');
+if (document.getElementById('pipeline-touch-funnel').innerHTML.includes('NaN')) throw Error('empty ratio');
+renderTouchFunnel('pipeline-touch-funnel', rows.filter(r=>r.country_type==='domestic' && r.client_tier==='A'));
+if (!document.getElementById('pipeline-touch-funnel').innerHTML.includes('当前筛选范围：6')) throw Error('filtered touch row');
+updateReportDate(new Date('2026-10-20T16:30:00Z'));
+if (document.getElementById('report-date').dateTime !== '2026-10-21') throw Error('Beijing date boundary');
 currentData = rows;
 renderFunnelView();
 showFunnelCustomers('won');
