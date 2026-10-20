@@ -6,3 +6,5 @@ libsql-client==0.3.1
 # Deploy HTTPS Turso connection fix.
 
 # Deploy customer detail editing updates (2026-10-20).
+
+# Deploy touch-action funnel and report date.
