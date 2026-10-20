@@ -25,6 +25,65 @@ def html_template():
 
 
 class NotesTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "Node.js required")
+    def test_prospect_edit_and_save_states(self):
+        script = html_template().split("<script>", 1)[1].split("</script>", 1)[0]
+        script = script.split("// 初始化加载", 1)[0]
+        harness = r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const elements = {};
+const document = {
+  addEventListener() {},
+  querySelectorAll() {return [];},
+  getElementById(id) {
+    return elements[id] ||= {
+      value:'', style:{}, textContent:'', className:'', disabled:false,
+      addEventListener() {},
+      classList:{contains(name) {return elements[id].className.split(' ').includes(name);}}
+    };
+  }
+};
+const context = vm.createContext({
+  document, localStorage:{getItem(){return null;}}, Intl, Date, console,
+  fetch:async()=>({ok:true,json:async()=>({success:true})})
+});
+vm.runInContext(SCRIPT, context);
+(async()=>{
+  await vm.runInContext(`(async()=>{
+    currentData=[{company_id:1,company_name:'测试客户',company_notes:'原备注',industry:'测试'}];
+    fetchPipeline=async()=>{};
+    openProspectDetails(1);
+    if (!document.getElementById('prospect-save-btn').disabled) throw Error('clean save enabled');
+    document.getElementById('p-notes').value='已修改';
+    updateProspectEditState();
+    if (document.getElementById('prospect-save-btn').disabled) throw Error('dirty save disabled');
+    resetProspectForm();
+    if (document.getElementById('p-notes').value!=='原备注') throw Error('reset failed');
+    setProspectOwner('测试负责人');
+    if (document.getElementById('prospect-save-btn').disabled) throw Error('owner change not dirty');
+    document.getElementById('p-status').value='lost';
+    await saveProspectDetails({preventDefault(){}});
+    if (document.getElementById('p-message').className!=='error') throw Error('missing validation');
+    document.getElementById('p-status').value='pending';
+    await saveProspectDetails({preventDefault(){}});
+    if (document.getElementById('p-message').className!=='success') throw Error('missing success');
+    if (!document.getElementById('prospect-save-btn').disabled) throw Error('saved form still dirty');
+    currentUser={role:'observer'};
+    openProspectDetails(1);
+    document.getElementById('p-notes').value='不应保存';
+    updateProspectEditState();
+    if (!document.getElementById('prospect-save-btn').disabled) throw Error('observer save enabled');
+  })()`, context);
+  assert.equal(elements['prospect-save-btn'].textContent,'保存编辑');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+"""
+        result = subprocess.run(
+            ["node", "-e", harness.replace("SCRIPT", json.dumps(script))],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_notes_round_trip(self):
         with tempfile.TemporaryDirectory() as directory:
             db = DatabaseManager(str(Path(directory) / "test.db"))

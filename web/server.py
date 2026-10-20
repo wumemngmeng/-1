@@ -426,7 +426,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .pipeline-table th:nth-child(9),
         .pipeline-table td:nth-child(9) { width: 105px; padding-left: 8px; padding-right: 8px; }
         .pipeline-table th:nth-child(10),
-        .pipeline-table td:nth-child(10) { width: 290px; }
+        .pipeline-table td:nth-child(10) { width: 180px; }
+        .pipeline-table th:nth-child(11),
+        .pipeline-table td:nth-child(11) { width: 290px; }
         .pipeline-table .source-tag,
         .pipeline-table .source-lead-tag {
             white-space: normal;
@@ -807,6 +809,75 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .compact-filters .filter-footer {display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:18px;padding-top:14px;border-top:1px solid #293344;color:#94a3b8;font-size:12px}
         @media(max-width:900px){.compact-filters .filter-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
         @media(max-width:520px){.compact-filters .filter-grid{grid-template-columns:1fr}}
+        .prospect-drawer {
+            background: #111827;
+            border-left: 1px solid #374151;
+            width: 680px;
+            max-width: 95vw;
+            height: 100vh;
+            overflow-y: auto;
+            box-shadow: -12px 0 48px #0005;
+        }
+        .prospect-drawer-header {
+            position: sticky;
+            top: 0;
+            z-index: 2;
+            padding: 22px 28px 14px;
+            background: #111827;
+            border-bottom: 1px solid #293344;
+        }
+        .prospect-drawer-title {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 16px;
+        }
+        .prospect-form {
+            display: grid;
+            gap: 14px;
+            padding: 18px 28px 0;
+        }
+        .prospect-form label {
+            display: grid;
+            gap: 6px;
+            color: #cbd5e1;
+            font-size: 12.5px;
+        }
+        .prospect-edit-actions {
+            position: sticky;
+            bottom: 0;
+            z-index: 2;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin: 4px -28px 0;
+            padding: 14px 28px 18px;
+            background: linear-gradient(to top, #111827 78%, rgba(17,24,39,.92));
+            border-top: 1px solid #374151;
+        }
+        .prospect-edit-buttons {
+            display: flex;
+            gap: 8px;
+            margin-left: auto;
+        }
+        .btn-save-details {
+            min-width: 112px;
+            background: var(--primary);
+            border-color: var(--primary);
+            font-weight: 700;
+        }
+        .btn-save-details:disabled {
+            cursor: not-allowed;
+            opacity: .45;
+        }
+        #p-message {
+            min-height: 18px;
+            color: #94a3b8;
+            font-size: 12px;
+        }
+        #p-message.success { color: #34d399; }
+        #p-message.error { color: #f87171; }
     </style>
 </head>
 <body>
@@ -886,7 +957,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
             <div class="controls-panel compact-filters">
                 <div class="filter-toolbar"><strong>筛选企业</strong><div class="filter-toolbar-actions"><label class="filter-field" title=""><span>名单</span><select id="exclusion-filter" onchange="renderTable()"><option value="active">待开发 / 跟进中</option><option value="excluded">已剔除</option><option value="all">全部（含已剔除）</option></select></label><button onclick="resetFilters()">重置筛选</button></div></div>
-                <div class="filter-grid"><label class="filter-field" title=""><span>市场区域</span><select id="country-filter" onchange="activeCountry=this.value;renderTable()"><option value="all">全部地区</option><option value="domestic">国内</option><option value="overseas">国外</option></select></label><label class="filter-field" title="沿用现有综合预估等级，非核实后的企业规模"><span>企业级别（预估）</span><select id="tier-filter" onchange="activeTier=this.value;renderTable()"><option value="all">全部级别</option><option value="S">S级 · 超大规模</option><option value="A">A级 · 大型企业</option><option value="B">B级 · 成长企业</option><option value="C">C级 · 小微 / 潜力企业</option></select></label><label class="filter-field" title=""><span>公司来源</span><select id="source-filter" onchange="selectedSources.clear();if(this.value!=='all')selectedSources.add(this.value);activeSourceMode='include';renderTable()"><option value="all">全部来源</option></select></label><label class="filter-field" title=""><span>触达动作</span><select id="stage-filter" onchange="activeTouch='all';activeStage=this.value;renderTable()"><option value="all">全部动作</option><option value="pending">待触达</option><option value="sample_sent">已推送未回复</option><option value="contacted">已建连</option><option value="negotiation">有意向</option><option value="team_trial">已注册</option><option value="won">已充值</option></select></label><label class="filter-field" title=""><span>客户类型</span><select id="type-filter" onchange="renderTable()"><option value="all">全部类型</option><option value="电商商拍客户">电商商拍客户</option><option value="API / AI 应用客户">API / AI 应用客户</option><option value="广告 / 代运营机构">广告 / 代运营机构</option><option value="unknown">待分类</option></select></label><label class="filter-field" title=""><span>跟进情况</span><select id="due-filter" onchange="renderTable()"><option value="all">全部情况</option><option value="due">今天到期 / 已逾期</option><option value="unclaimed">未领取</option></select></label><label class="filter-field" title=""><span>行业</span><select id="industry-filter" onchange="renderTable()"><option value="all">全部行业</option></select></label><label class="filter-field" title=""><span>每月预计消耗</span><select id="spend-filter" onchange="renderTable()"><option value="all">全部消耗</option><option value="unknown">待评估</option><option value="small">5,000 元以下</option><option value="medium">5,000–2万元（不含）</option><option value="large">2–5万元（不含）</option><option value="enterprise">5万元及以上</option></select></label></div>
+                <div class="filter-grid"><label class="filter-field" title=""><span>市场区域</span><select id="country-filter" onchange="activeCountry=this.value;renderTable()"><option value="all">全部地区</option><option value="domestic">国内</option><option value="overseas">国外</option></select></label><label class="filter-field" title="沿用现有综合预估等级，非核实后的企业规模"><span>企业级别（预估）</span><select id="tier-filter" onchange="activeTier=this.value;renderTable()"><option value="all">全部级别</option><option value="S">S级 · 超大规模</option><option value="A">A级 · 大型企业</option><option value="B">B级 · 成长企业</option><option value="C">C级 · 小微 / 潜力企业</option></select></label><label class="filter-field" title=""><span>公司来源</span><select id="source-filter" onchange="selectedSources.clear();if(this.value!=='all')selectedSources.add(this.value);activeSourceMode='include';renderTable()"><option value="all">全部来源</option></select></label><label class="filter-field" title=""><span>触达动作</span><select id="stage-filter" onchange="activeTouch='all';activeStage=this.value;renderTable()"><option value="all">全部动作</option><option value="pending">待触达</option><option value="sample_sent">已推送未回复</option><option value="contacted">已建连</option><option value="negotiation">有意向</option><option value="team_trial">已注册</option><option value="won">已充值</option><option value="lost">不触达</option></select></label><label class="filter-field" title=""><span>客户类型</span><select id="type-filter" onchange="renderTable()"><option value="all">全部类型</option><option value="电商商拍客户">电商商拍客户</option><option value="API / AI 应用客户">API / AI 应用客户</option><option value="广告 / 代运营机构">广告 / 代运营机构</option><option value="unknown">待分类</option></select></label><label class="filter-field" title=""><span>跟进情况</span><select id="due-filter" onchange="renderTable()"><option value="all">全部情况</option><option value="due">今天到期 / 已逾期</option><option value="unclaimed">未领取</option></select></label><label class="filter-field" title=""><span>行业</span><select id="industry-filter" onchange="renderTable()"><option value="all">全部行业</option></select></label><label class="filter-field" title=""><span>每月预计消耗</span><select id="spend-filter" onchange="renderTable()"><option value="all">全部消耗</option><option value="unknown">待评估</option><option value="small">5,000 元以下</option><option value="medium">5,000–2万元（不含）</option><option value="large">2–5万元（不含）</option><option value="enterprise">5万元及以上</option></select></label></div>
                 <div class="filter-footer"><span>企业级别沿用现有综合预估；消耗单位为人民币 / 月，非已确认预算。</span><span id="filter-count" aria-live="polite">加载中…</span></div>
             </div>
 
@@ -904,6 +975,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                             <th>直连渠道 (微信/电话/邮箱)</th>
                             <th>线索来源</th>
                             <th>当前状态</th>
+                            <th>剔除原因</th>
                             <th style="min-width: 250px;">触达操作区域 (实时切换与话术)</th>
                         </tr>
                     </thead>
@@ -1193,10 +1265,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     </div>
 
     <div id="prospect-modal" style="display:none;position:fixed;inset:0;background:#0006;z-index:2000;align-items:stretch;justify-content:flex-end" onclick="if(event.target===this) closeProspectDetails()">
-        <div role="dialog" aria-modal="true" aria-labelledby="prospect-name" style="background:#111827;padding:28px;border-left:1px solid #374151;width:680px;max-width:95vw;height:100vh;overflow:auto;box-shadow:-12px 0 48px #0005">
-            <button style="float:right" onclick="closeProspectDetails()">关闭</button>
-            <h2 id="prospect-name"></h2><p id="prospect-summary" style="margin:12px 0;color:#9ca3af"></p>
-            <form id="prospect-form" onsubmit="saveProspectDetails(event)" style="display:grid;gap:12px">
+        <div role="dialog" aria-modal="true" aria-labelledby="prospect-name" class="prospect-drawer">
+            <div class="prospect-drawer-header">
+                <div class="prospect-drawer-title">
+                    <div><h2 id="prospect-name"></h2><p id="prospect-summary" style="margin-top:8px;color:#9ca3af"></p></div>
+                    <button onclick="closeProspectDetails()">关闭</button>
+                </div>
+            </div>
+            <form id="prospect-form" class="prospect-form" onsubmit="saveProspectDetails(event)">
                 <label>客户类型 <select id="p-type"><option value="">待分类</option><option>电商商拍客户</option><option>API / AI 应用客户</option><option>广告 / 代运营机构</option></select></label>
                 <label>客户情况与备注 <textarea class="form-control" id="p-notes" rows="4" placeholder="记录客户当前痛点、沟通情况、采购计划和下一步跟进安排"></textarea></label>
                 <label>涉及的模型 <input class="form-control" id="p-models" placeholder="如 Kling、GPT Image；仅填写有来源的信息"></label>
@@ -1207,12 +1283,18 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <label>预计月消费（人民币）<input type="number" min="0" step="0.01" class="form-control" id="p-spend" placeholder="未知留空"></label>
                 <label>消费估算依据 <textarea class="form-control" id="p-basis" rows="2"></textarea></label>
                 <label>负责人 <input class="form-control" id="p-owner" readonly></label>
-                <div><button type="button" onclick="document.getElementById('p-owner').value=currentUser?.display_name || ''">领取给我</button> <button type="button" onclick="document.getElementById('p-owner').value=''">释放回线索池</button></div>
+                <div><button type="button" onclick="setProspectOwner(currentUser?.display_name || '')">领取给我</button> <button type="button" onclick="setProspectOwner('')">释放回线索池</button></div>
                 <label>阶段 <select id="p-status"><option value="pending">待联系</option><option value="contacted">已联系</option><option value="researching">背调中</option><option value="trial">试用中</option><option value="negotiation">洽谈中</option><option value="won">已成交</option><option value="lost">不适合</option></select></label>
                 <label>剔除原因（阶段为“不适合”时必填）<textarea class="form-control" id="p-exclusion" rows="2" placeholder="例如：同行、无采购需求、规模不符合"></textarea></label>
                 <label>下次跟进 <input type="date" id="p-date" class="form-control"></label>
-                <div><button type="button" onclick="copyResearchPrompt()">复制背调指令</button> <button type="submit">保存客户详情</button></div>
-                <p id="p-message" role="status"></p>
+                <div class="prospect-edit-actions">
+                    <p id="p-message" role="status">修改内容后即可保存</p>
+                    <div class="prospect-edit-buttons">
+                        <button type="button" onclick="copyResearchPrompt()">复制背调指令</button>
+                        <button type="button" id="prospect-reset-btn" onclick="resetProspectForm()" disabled>取消修改</button>
+                        <button type="submit" id="prospect-save-btn" class="btn-save-details" disabled>保存编辑</button>
+                    </div>
+                </div>
             </form>
         </div>
     </div>
@@ -1242,7 +1324,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             'negotiation': '💡 有意向',
             'team_trial': '📝 已注册',
             'won': '💰 已充值',
-            'lost': '❌ 暂无预算/流失'
+            'lost': '⛔ 不触达'
         };
 
         const ROLE_NAME_MAP = {
@@ -1606,6 +1688,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     </td>
                     <td><span class="status-badge ${statusClass}">${STATUS_TEXT_MAP[currentStatus] || currentStatus}</span></td>
                     <td>
+                        ${r.exclusion_reason
+                            ? `<span title="${escapeHtml(r.exclusion_reason)}">${escapeHtml(r.exclusion_reason)}</span>`
+                            : '<span style="color:#64748b;">—</span>'}
+                    </td>
+                    <td>
                         <div class="action-cell">
                             <button onclick="openProspectDetails(${r.company_id})">客户详情</button>
                             ${r.prospect_status === 'lost' ? `<span title="${escapeHtml(r.exclusion_reason || '历史标记，未填写原因')}">已剔除</span><button onclick="restoreProspect(${r.company_id})" ${!canEdit ? 'disabled' : ''}>恢复</button>` : `<button onclick="excludeProspect(${r.company_id})" ${!canEdit ? 'disabled' : ''}>剔除</button>`}
@@ -1620,7 +1707,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                                         <option value="negotiation" ${currentStatus === 'negotiation' ? 'selected' : ''}>💡 有意向</option>
                                         <option value="team_trial" ${currentStatus === 'team_trial' ? 'selected' : ''}>📝 已注册</option>
                                         <option value="won" ${currentStatus === 'won' ? 'selected' : ''}>💰 已充值</option>
-                                        <option value="lost" ${currentStatus === 'lost' ? 'selected' : ''}>❌ 已流失</option>
+                                        <option value="lost" ${currentStatus === 'lost' ? 'selected' : ''}>⛔ 不触达</option>
                                     </optgroup>
                                 </select>
                                 <button class="btn-pitch" onclick="openPitch(${r.lead_id})">🎯 直触方案</button>
@@ -2045,7 +2132,33 @@ ${escapeHtml(data.email_body_zh)}</div>`;
         }
         document.addEventListener('keydown', event => {if(event.key === 'Escape') closeProspectDetails();});
         let activeProspect = null;
+        let prospectFormBaseline = '';
         const prospectFields = {notes:'notes',exclusion_reason:'exclusion',customer_type:'type',models_used:'models',audience_scale:'audience',qualification_evidence:'evidence',discovery_url:'source',estimated_monthly_spend:'spend',spend_basis:'basis',owner:'owner',prospect_status:'status',company_follow_up_date:'date'};
+        function getProspectFormState() {
+            return JSON.stringify(Object.fromEntries(
+                Object.values(prospectFields).map(field => [field, document.getElementById('p-'+field).value])
+            ));
+        }
+        function updateProspectEditState() {
+            const editable = currentUser && ['admin','sales_lead','sales_rep'].includes(currentUser.role);
+            const dirty = editable && getProspectFormState() !== prospectFormBaseline;
+            document.getElementById('prospect-save-btn').disabled = !dirty;
+            document.getElementById('prospect-reset-btn').disabled = !dirty;
+            const msg = document.getElementById('p-message');
+            if (dirty) {
+                msg.textContent = '有尚未保存的修改';
+                msg.className = '';
+            } else if (!msg.classList.contains('success') && !msg.classList.contains('error')) {
+                msg.textContent = editable ? '修改内容后即可保存' : '当前账号仅可查看';
+            }
+        }
+        function setProspectOwner(owner) {
+            document.getElementById('p-owner').value = owner;
+            updateProspectEditState();
+        }
+        function resetProspectForm() {
+            if (activeProspect) openProspectDetails(activeProspect.company_id);
+        }
         function openProspectDetails(id) {
             activeProspect = currentData.find(r => r.company_id === id);
             const r = activeProspect;
@@ -2062,29 +2175,56 @@ ${escapeHtml(data.email_body_zh)}</div>`;
             if(r.estimated_monthly_spend != null && r.spend_basis) reasons.push([20,'消费估算有文字依据']);
             if(r.email || r.phone || r.wechat) reasons.push([10,'已记录联系渠道（未验证可达性）']);
             document.getElementById('p-score').textContent = `资料完整度 ${reasons.reduce((n,x)=>n+x[0],0)}/90（不是成交概率）\n` + (reasons.map(x=>`+${x[0]} ${x[1]}`).join('；') || '暂无足够资料，建议先背调');
-            document.getElementById('p-message').textContent='';
+            const msg = document.getElementById('p-message');
+            msg.textContent = '修改内容后即可保存';
+            msg.className = '';
             document.getElementById('prospect-modal').style.display='flex';
             const editable = currentUser && ['admin','sales_lead','sales_rep'].includes(currentUser.role);
-            document.querySelectorAll('#prospect-form input,#prospect-form textarea,#prospect-form select,#prospect-form button').forEach(el=>el.disabled=!editable);
+            document.querySelectorAll('#prospect-form input,#prospect-form textarea,#prospect-form select').forEach(el=>el.disabled=!editable);
+            document.querySelectorAll('#prospect-form button').forEach(el=>el.disabled=!editable);
+            prospectFormBaseline = getProspectFormState();
+            updateProspectEditState();
         }
         async function saveProspectDetails(e) {
             e.preventDefault();
+            const saveButton = document.getElementById('prospect-save-btn');
+            if (saveButton.disabled) return;
             const updates = {};
             for (const [key,field] of Object.entries(prospectFields)) updates[key]=document.getElementById('p-'+field).value.trim();
             updates.estimated_monthly_spend=updates.estimated_monthly_spend === '' ? null : Number(updates.estimated_monthly_spend);
             const msg=document.getElementById('p-message');
-            if(updates.prospect_status === 'lost' && !updates.exclusion_reason) {msg.textContent='请填写剔除原因';return;}
-            if(updates.estimated_monthly_spend != null && !updates.spend_basis) {msg.textContent='请填写消费估算依据';return;}
+            if(updates.prospect_status === 'lost' && !updates.exclusion_reason) {msg.textContent='请填写剔除原因';msg.className='error';return;}
+            if(updates.estimated_monthly_spend != null && !updates.spend_basis) {msg.textContent='请填写消费估算依据';msg.className='error';return;}
+            saveButton.disabled = true;
+            saveButton.textContent = '保存中…';
+            msg.textContent = '正在保存客户详情';
+            msg.className = '';
             try {
                 const res=await fetch('/api/company/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({company_id:activeProspect.company_id,updates})});
                 const result=await res.json();if(!res.ok || !result.success) throw Error(result.error || '保存失败');
-                await fetchPipeline(); openProspectDetails(activeProspect.company_id); msg.textContent='已保存';
-            } catch(err) {msg.textContent=err.message;}
+                await fetchPipeline();
+                activeProspect = currentData.find(r => r.company_id === activeProspect.company_id);
+                prospectFormBaseline = getProspectFormState();
+                msg.textContent='已保存，修改已生效';
+                msg.className='success';
+                updateProspectEditState();
+            } catch(err) {
+                msg.textContent=err.message;
+                msg.className='error';
+                saveButton.disabled = false;
+            } finally {
+                saveButton.textContent = '保存编辑';
+            }
         }
         async function copyResearchPrompt() {
             const r=activeProspect;
             const prompt=`请对 ${r.company_name} 进行客户背调。官网：${r.website || '待查找'}；来源：${r.discovery_url || '待查找'}。核查运营主体、官方联系方式、是否提供AI图片/视频服务、实际接入模型、收费方案及可验证用户/调用规模。每项给出来源链接和日期，区分事实与推测，不编造月活或联系人。估算采购API或商拍服务的需求，金额仅在有需求量和价格依据时计算。最后提出适合的合作切入点。`;
             try {await navigator.clipboard.writeText(prompt);document.getElementById('p-message').textContent='背调指令已复制';} catch(e){document.getElementById('p-message').textContent=prompt;}
+        }
+        const prospectForm = document.getElementById('prospect-form');
+        if (prospectForm && prospectForm.addEventListener) {
+            prospectForm.addEventListener('input', updateProspectEditState);
+            prospectForm.addEventListener('change', updateProspectEditState);
         }
 
         // 初始化加载
