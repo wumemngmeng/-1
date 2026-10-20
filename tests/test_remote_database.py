@@ -1,14 +1,27 @@
 import os
 from pathlib import Path
 import sqlite3
+import sys
 import tempfile
+import types
 import unittest
 from unittest.mock import patch
 
-from core.database import SCHEMA_SQL, bootstrap_remote_from_sqlite
+from core.database import RemoteConnection, SCHEMA_SQL, bootstrap_remote_from_sqlite
 
 
 class RemoteDatabaseTests(unittest.TestCase):
+    def test_remote_connection_uses_https(self):
+        module = types.ModuleType("libsql_client")
+        create_client = unittest.mock.Mock()
+        module.create_client_sync = create_client
+        with patch.dict(sys.modules, {"libsql_client": module}):
+            connection = RemoteConnection("libsql://example.turso.io", "secret")
+            create_client.assert_called_once_with(
+                "https://example.turso.io", auth_token="secret"
+            )
+            connection.close()
+
     def test_bootstrap_remote_database_once(self):
         with tempfile.TemporaryDirectory() as directory:
             source_path = Path(directory) / "source.db"

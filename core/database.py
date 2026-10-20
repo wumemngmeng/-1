@@ -10,6 +10,84 @@ from typing import List, Dict, Any, Optional
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "aibubu_crm.db")
 
+class RemoteCursor:
+    def __init__(self, client):
+        self.client = client
+        self.rows = []
+        self.index = 0
+        self.lastrowid = None
+
+    def execute(self, sql, params=()):
+        result = self.client.execute(sql, tuple(params) if params else None)
+        self.rows = result.rows
+        self.index = 0
+        self.lastrowid = result.last_insert_rowid
+        return self
+
+    def executemany(self, sql, params):
+        statements = [(sql, tuple(values)) for values in params]
+        results = self.client.batch(statements) if statements else []
+        self.rows = []
+        self.index = 0
+        self.lastrowid = results[-1].last_insert_rowid if results else None
+        return self
+
+    def executescript(self, script):
+        statements, buffer = [], ""
+        for line in script.splitlines(keepends=True):
+            buffer += line
+            if sqlite3.complete_statement(buffer):
+                statement = buffer.strip()
+                if statement:
+                    statements.append(statement)
+                buffer = ""
+        if buffer.strip():
+            statements.append(buffer.strip())
+        if statements:
+            self.client.batch(statements)
+        self.rows = []
+        self.index = 0
+        return self
+
+    def fetchone(self):
+        if self.index >= len(self.rows):
+            return None
+        row = self.rows[self.index]
+        self.index += 1
+        return row
+
+    def fetchall(self):
+        rows = self.rows[self.index:]
+        self.index = len(self.rows)
+        return rows
+
+
+class RemoteConnection:
+    def __init__(self, url, auth_token):
+        from libsql_client import create_client_sync
+        http_url = url.replace("libsql://", "https://", 1)
+        self.client = create_client_sync(http_url, auth_token=auth_token or None)
+        self.row_factory = None
+
+    def cursor(self):
+        return RemoteCursor(self.client)
+
+    def execute(self, sql, params=()):
+        return self.cursor().execute(sql, params)
+
+    def commit(self):
+        return None
+
+    def close(self):
+        self.client.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
+
 def hash_password(password: str) -> str:
     """Hash password with SHA256 and salt for secure local auth."""
     salt = "aibubu_salt_2026"
@@ -92,15 +170,7 @@ def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
     remote_url = os.environ.get("TURSO_DATABASE_URL", "").strip()
     remote_token = os.environ.get("TURSO_AUTH_TOKEN", "").strip()
     if remote_url:
-        from libsql_client import dbapi2 as libsql_dbapi
-        conn = libsql_dbapi.connect(
-            remote_url,
-            uri=True,
-            auth_token=remote_token or None,
-            check_same_thread=False,
-        )
-        conn.row_factory = libsql_dbapi.Row
-        return conn
+        return RemoteConnection(remote_url, remote_token)
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
