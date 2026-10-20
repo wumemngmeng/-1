@@ -4,3 +4,5 @@ libsql-client==0.3.1
 # Persistent Turso database deployment.
 
 # Deploy HTTPS Turso connection fix.
+
+# Deploy customer detail editing updates (2026-10-20).
