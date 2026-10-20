@@ -19,7 +19,7 @@ class RemoteCursor:
 
     def execute(self, sql, params=()):
         result = self.client.execute(sql, tuple(params) if params else None)
-        self.rows = result.rows
+        self.rows = [dict(zip(result.columns, row)) for row in result.rows]
         self.index = 0
         self.lastrowid = result.last_insert_rowid
         return self
@@ -76,6 +76,7 @@ class RemoteConnection:
         return self.cursor().execute(sql, params)
 
     def commit(self):
+        # HTTPS execute autocommits; batch commits its statements atomically.
         return None
 
     def close(self):
@@ -188,6 +189,7 @@ def bootstrap_remote_from_sqlite(conn: sqlite3.Connection, source_path: str = DB
     source = sqlite3.connect(source_path)
     source.row_factory = sqlite3.Row
     try:
+        statements = []
         for table in ("companies", "leads", "outreach_records", "sys_users"):
             columns = [r["name"] for r in source.execute(f"PRAGMA table_info({table})")]
             rows = source.execute(
@@ -196,11 +198,19 @@ def bootstrap_remote_from_sqlite(conn: sqlite3.Connection, source_path: str = DB
             if not rows:
                 continue
             placeholders = ", ".join("?" for _ in columns)
-            cur.executemany(
+            sql = (
                 f"INSERT OR IGNORE INTO {table} ({', '.join(columns)}) "
-                f"VALUES ({placeholders})",
-                [tuple(row[column] for column in columns) for row in rows],
+                f"VALUES ({placeholders})"
             )
+            statements.extend(
+                (sql, tuple(row[column] for column in columns)) for row in rows
+            )
+        if isinstance(conn, RemoteConnection):
+            if statements:
+                conn.client.batch(statements)
+        else:
+            for sql, params in statements:
+                cur.execute(sql, params)
         conn.commit()
     finally:
         source.close()
