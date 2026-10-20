@@ -2,3 +2,5 @@
 # Deployment trigger for Vercel.
 libsql-client==0.3.1
 # Persistent Turso database deployment.
+
+# Deploy HTTPS Turso connection fix.
