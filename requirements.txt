@@ -16,3 +16,5 @@ libsql-client==0.3.1
 # Deploy daily outreach dashboard and prospect import.
 
 # Deploy thirty-day dated funnel table.
+
+# Deploy persistent rolling login session.
