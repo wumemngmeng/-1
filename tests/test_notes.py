@@ -51,6 +51,7 @@ const context = vm.createContext({
 vm.runInContext(SCRIPT, context);
 (async()=>{
   await vm.runInContext(`(async()=>{
+    currentUser={role:'admin',display_name:'管理员'};
     currentData=[{company_id:1,company_name:'测试客户',company_notes:'原备注',industry:'测试'}];
     fetchPipeline=async()=>{};
     openProspectDetails(1);
@@ -104,6 +105,10 @@ vm.runInContext(SCRIPT, context);
         self.assertIn("客户情况与备注", details)
         self.assertIn("const prospectFields = {notes:'notes'", html)
         self.assertIn("const value = key === 'notes' ? r.company_notes : r[key]", html)
+        self.assertIn('<body class="auth-pending">', html)
+        self.assertIn("initializeApp();", html)
+        self.assertNotIn("localStorage.getItem('aibubu_current_user')", html)
+        self.assertNotIn("默认: admin / 密码: admin123", html)
 
 
 if __name__ == "__main__":

@@ -15,16 +15,28 @@ Features:
 """
 import http.server
 import socketserver
+import base64
+import hashlib
+import hmac
 import json
 import os
 import sys
+import time
 import urllib.parse
+from http.cookies import SimpleCookie
 from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.database import DatabaseManager
 
 PORT = 8899
+SESSION_COOKIE = "aibubu_session"
+SESSION_TTL = 8 * 60 * 60
+SESSION_SECRET = (
+    os.environ.get("SESSION_SECRET")
+    or os.environ.get("TURSO_AUTH_TOKEN")
+    or "aibubu-local-development-session-key"
+).encode()
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="zh-CN">
@@ -52,6 +64,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; }
         body { background-color: var(--bg); color: var(--text-main); display: flex; height: 100vh; overflow: hidden; }
+        body.auth-pending > aside, body.auth-pending > main { visibility: hidden; }
+        body.auth-pending #auth-modal { display: flex; }
         
         /* 左侧菜单栏 Sidebar */
         aside {
@@ -890,7 +904,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         #p-message.error { color: #f87171; }
     </style>
 </head>
-<body>
+<body class="auth-pending">
     <!-- 左侧菜单栏 -->
     <aside>
         <div>
@@ -905,7 +919,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <li class="nav-item active" onclick="switchNav('pipeline', this)">
                     <span>⚡</span> <span>线索作战中台</span>
                 </li>
-                <li class="nav-item" onclick="switchNav('permissions', this)">
+                <li class="nav-item" id="permissions-nav" onclick="switchNav('permissions', this)">
                     <span>🛡️</span> <span>组织与权限管理</span>
                 </li>
                 <li class="nav-item" onclick="switchNav('funnel', this)">
@@ -915,13 +929,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         </div>
         <div class="sidebar-footer">
             <div class="user-block">
-                <div class="user-avatar" id="current-user-avatar">管</div>
+                <div class="user-avatar" id="current-user-avatar">访</div>
                 <div class="user-info">
-                    <div class="user-name" id="current-user-name">超级管理员</div>
-                    <div class="user-role-badge" id="current-user-role">● 超级管理员权限</div>
+                    <div class="user-name" id="current-user-name">未登录</div>
+                    <div class="user-role-badge" id="current-user-role">● 请先登录</div>
                 </div>
             </div>
-            <button class="btn-auth-switch" onclick="openAuthModal()" title="登录、注册或切换账号">切换/登录</button>
+            <div style="display:flex;gap:8px">
+                <button class="btn-auth-switch" onclick="openAuthModal('password')">修改密码</button>
+                <button class="btn-auth-switch" id="auth-switch-btn" onclick="handleAuthSwitch()">退出登录</button>
+            </div>
         </div>
     </aside>
 
@@ -1009,7 +1026,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     </div>
                 </div>
                 <div>
-                    <button class="btn-save" onclick="openAuthModal('register')">+ 注册新团队成员</button>
+                    <button class="btn-save" onclick="openAuthModal('register')">+ 创建团队账号</button>
                 </div>
             </header>
 
@@ -1219,18 +1236,18 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <div class="modal-content" style="max-width: 440px;">
             <div class="modal-header">
                 <h3 id="auth-modal-title">团队用户身份验证</h3>
-                <button onclick="closeAuthModal()">✕ 关闭</button>
+                <button id="auth-close-btn" onclick="closeAuthModal()">✕ 关闭</button>
             </div>
             
             <div class="auth-tab-row">
                 <button class="auth-tab active" id="tab-login-btn" onclick="switchAuthTab('login')">账号登录</button>
-                <button class="auth-tab" id="tab-register-btn" onclick="switchAuthTab('register')">新成员注册</button>
+                <button class="auth-tab" id="tab-register-btn" onclick="switchAuthTab('register')">管理员创建账号</button>
             </div>
 
             <!-- 登录表单 -->
             <form id="login-form" onsubmit="handleLogin(event)">
                 <div class="form-group">
-                    <label>用户名 / 账号 (默认: admin / 密码: admin123)</label>
+                    <label>用户名 / 账号</label>
                     <input type="text" id="login-username" class="form-control" required placeholder="请输入用户名">
                 </div>
                 <div class="form-group">
@@ -1248,8 +1265,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <input type="text" id="reg-username" class="form-control" required placeholder="例如: sales_hangzhou">
                 </div>
                 <div class="form-group">
-                    <label>登录密码</label>
-                    <input type="password" id="reg-password" class="form-control" required placeholder="至少6位密码">
+                    <label>初始登录密码</label>
+                    <input type="password" id="reg-password" class="form-control" required minlength="8" placeholder="至少 8 位密码">
                 </div>
                 <div class="form-group">
                     <label>真实姓名 / 显示昵称</label>
@@ -1274,6 +1291,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 </div>
                 <button type="submit" class="btn-primary" style="background:#10b981;">完成注册并入库</button>
                 <div id="reg-msg" class="auth-msg"></div>
+            </form>
+
+            <form id="password-form" style="display:none;" onsubmit="handleChangePassword(event)">
+                <div class="form-group"><label>当前密码</label><input type="password" id="current-password" class="form-control" required></div>
+                <div class="form-group"><label>新密码</label><input type="password" id="new-password" class="form-control" minlength="10" required placeholder="至少 10 位"></div>
+                <div class="form-group"><label>确认新密码</label><input type="password" id="confirm-password" class="form-control" minlength="10" required></div>
+                <button type="submit" class="btn-primary">更新登录密码</button>
+                <div id="password-msg" class="auth-msg"></div>
             </form>
         </div>
     </div>
@@ -1328,8 +1353,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         let activeTouch = 'all';
         let activeStage = 'all';
 
-        // 当前登录用户 (保存在 localStorage)
-        let currentUser = JSON.parse(localStorage.getItem('aibubu_current_user') || '{"username":"admin","display_name":"中台超级管理员","role":"admin"}');
+        // 当前登录用户由服务端签名会话决定，浏览器不能自行伪造角色。
+        let currentUser = null;
 
         const STATUS_TEXT_MAP = {
             'pending': '⏳ 待触达',
@@ -1375,10 +1400,17 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }
 
         function updateCurrentUserUI() {
-            if (!currentUser) return;
+            if (!currentUser) {
+                document.getElementById('current-user-name').innerText = '未登录';
+                document.getElementById('current-user-avatar').innerText = '访';
+                document.getElementById('current-user-role').innerText = '● 请先登录';
+                return;
+            }
             document.getElementById('current-user-name').innerText = currentUser.display_name || currentUser.username;
             document.getElementById('current-user-avatar').innerText = (currentUser.display_name || currentUser.username)[0].toUpperCase();
             document.getElementById('current-user-role').innerText = `● ${ROLE_NAME_MAP[currentUser.role] || currentUser.role}`;
+            document.getElementById('permissions-nav').style.display = currentUser.role === 'admin' ? '' : 'none';
+            document.getElementById('tab-register-btn').style.display = currentUser.role === 'admin' ? '' : 'none';
         }
 
         // 导航切换
@@ -2010,30 +2042,84 @@ ${escapeHtml(data.email_body_zh)}</div>`;
 
         // 注册登录系统 Modal 与 API 处理
         function openAuthModal(defaultTab = 'login') {
+            if (defaultTab === 'register' && currentUser?.role !== 'admin') return;
             document.getElementById('auth-modal').style.display = 'flex';
+            document.getElementById('auth-close-btn').style.display =
+                currentUser && !currentUser.must_change_password ? '' : 'none';
             switchAuthTab(defaultTab);
         }
 
         function closeAuthModal() {
+            if (!currentUser) return;
             document.getElementById('auth-modal').style.display = 'none';
             document.getElementById('login-msg').innerText = '';
             document.getElementById('reg-msg').innerText = '';
+            document.getElementById('password-msg').innerText = '';
         }
 
         function switchAuthTab(tab) {
+            if (tab === 'register' && currentUser?.role !== 'admin') tab = 'login';
             if (tab === 'login') {
                 document.getElementById('tab-login-btn').classList.add('active');
                 document.getElementById('tab-register-btn').classList.remove('active');
                 document.getElementById('login-form').style.display = 'block';
                 document.getElementById('register-form').style.display = 'none';
+                document.getElementById('password-form').style.display = 'none';
                 document.getElementById('auth-modal-title').innerText = '团队账号登录';
-            } else {
+            } else if (tab === 'register') {
                 document.getElementById('tab-register-btn').classList.add('active');
                 document.getElementById('tab-login-btn').classList.remove('active');
                 document.getElementById('login-form').style.display = 'none';
                 document.getElementById('register-form').style.display = 'block';
-                document.getElementById('auth-modal-title').innerText = '注册新成员账号';
+                document.getElementById('password-form').style.display = 'none';
+                document.getElementById('auth-modal-title').innerText = '管理员创建团队账号';
+            } else {
+                document.getElementById('tab-register-btn').classList.remove('active');
+                document.getElementById('tab-login-btn').classList.remove('active');
+                document.getElementById('login-form').style.display = 'none';
+                document.getElementById('register-form').style.display = 'none';
+                document.getElementById('password-form').style.display = 'block';
+                document.getElementById('auth-modal-title').innerText = '修改登录密码';
             }
+        }
+
+        async function initializeAuthenticatedApp(user) {
+            currentUser = user;
+            updateCurrentUserUI();
+            if (user.must_change_password) {
+                document.body.classList.add('auth-pending');
+                openAuthModal('password');
+                const msg = document.getElementById('password-msg');
+                msg.style.color = '#fbbf24';
+                msg.innerText = '首次登录必须修改初始密码后才能进入系统。';
+                return;
+            }
+            document.body.classList.remove('auth-pending');
+            document.getElementById('auth-modal').style.display = 'none';
+            await Promise.all([fetchStats(), fetchSources(), fetchPipeline()]);
+        }
+
+        async function initializeApp() {
+            try {
+                const res = await fetch('/api/session', {cache:'no-store'});
+                if (!res.ok) throw Error('not authenticated');
+                const result = await res.json();
+                await initializeAuthenticatedApp(result.user);
+            } catch (_) {
+                currentUser = null;
+                updateCurrentUserUI();
+                openAuthModal('login');
+            }
+        }
+
+        async function handleAuthSwitch() {
+            if (!currentUser) return openAuthModal('login');
+            await fetch('/api/logout', {method:'POST'});
+            currentUser = null;
+            currentData = [];
+            document.body.classList.add('auth-pending');
+            updateCurrentUserUI();
+            openAuthModal('login');
         }
 
         async function handleLogin(e) {
@@ -2052,18 +2138,9 @@ ${escapeHtml(data.email_body_zh)}</div>`;
                 });
                 const result = await res.json();
                 if (result.success) {
-                    currentUser = result.user;
-                    localStorage.setItem('aibubu_current_user', JSON.stringify(currentUser));
-                    updateCurrentUserUI();
                     msgEl.style.color = '#10b981';
                     msgEl.innerText = '✅ 登录成功！正在进入作战台...';
-                    setTimeout(() => {
-                        closeAuthModal();
-                        renderTable();
-                        if (document.getElementById('view-permissions').classList.contains('active')) {
-                            renderUsersTable();
-                        }
-                    }, 500);
+                    await initializeAuthenticatedApp(result.user);
                 } else {
                     msgEl.style.color = '#ef4444';
                     msgEl.innerText = '❌ 登录失败: ' + (result.error || '用户名或密码错误');
@@ -2095,12 +2172,9 @@ ${escapeHtml(data.email_body_zh)}</div>`;
                 const result = await res.json();
                 if (result.success) {
                     msgEl.style.color = '#10b981';
-                    msgEl.innerText = '✅ 成员注册成功！已自动入库。';
-                    setTimeout(() => {
-                        switchAuthTab('login');
-                        document.getElementById('login-username').value = username;
-                        document.getElementById('login-password').value = password;
-                    }, 800);
+                    msgEl.innerText = '✅ 团队账号创建成功。';
+                    document.getElementById('register-form').reset();
+                    await fetchUsers();
                 } else {
                     msgEl.style.color = '#ef4444';
                     msgEl.innerText = '❌ 注册失败: ' + (result.error || '未知错误');
@@ -2108,6 +2182,28 @@ ${escapeHtml(data.email_body_zh)}</div>`;
             } catch (err) {
                 msgEl.style.color = '#ef4444';
                 msgEl.innerText = '网络异常: ' + err.message;
+            }
+        }
+
+        async function handleChangePassword(e) {
+            e.preventDefault();
+            const current_password = document.getElementById('current-password').value;
+            const new_password = document.getElementById('new-password').value;
+            const confirm = document.getElementById('confirm-password').value;
+            const msg = document.getElementById('password-msg');
+            if (new_password !== confirm) {
+                msg.style.color = '#ef4444'; msg.innerText = '两次输入的新密码不一致'; return;
+            }
+            const res = await fetch('/api/password', {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({current_password, new_password})
+            });
+            const result = await res.json();
+            msg.style.color = result.success ? '#10b981' : '#ef4444';
+            msg.innerText = result.success ? '密码修改成功' : result.error;
+            if (result.success) {
+                document.getElementById('password-form').reset();
+                await initializeApp();
             }
         }
 
@@ -2281,9 +2377,7 @@ ${escapeHtml(data.email_body_zh)}</div>`;
         // 初始化加载
         updateReportDate();
         updateCurrentUserUI();
-        fetchStats();
-        fetchSources();
-        fetchPipeline();
+        initializeApp();
     </script>
 </body>
 </html>
@@ -2293,6 +2387,61 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         self.db = DatabaseManager()
         super().__init__(*args, **kwargs)
+
+    def _encode_session(self, user):
+        payload = base64.urlsafe_b64encode(json.dumps({
+            "uid": user["id"], "exp": int(time.time()) + SESSION_TTL
+        }, separators=(",", ":")).encode()).rstrip(b"=")
+        signature = hmac.new(SESSION_SECRET, payload, hashlib.sha256).hexdigest().encode()
+        return (payload + b"." + signature).decode()
+
+    def _session_user(self):
+        try:
+            cookie = SimpleCookie(self.headers.get("Cookie", ""))
+            token = cookie[SESSION_COOKIE].value
+            payload, signature = token.rsplit(".", 1)
+            expected = hmac.new(SESSION_SECRET, payload.encode(), hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(signature, expected):
+                return None
+            raw = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
+            session = json.loads(raw)
+            if int(session["exp"]) < int(time.time()):
+                return None
+            return self.db.get_user(int(session["uid"]))
+        except (KeyError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+
+    def _require_user(self, roles=None):
+        user = self._session_user()
+        if not user:
+            self.send_json({"success": False, "error": "请先登录"}, status=401)
+            return None
+        if user.get("must_change_password"):
+            self.send_json({"success": False, "error": "请先修改初始密码", "code": "PASSWORD_CHANGE_REQUIRED"}, status=403)
+            return None
+        if roles and user["role"] not in roles:
+            self.send_json({"success": False, "error": "无权执行此操作"}, status=403)
+            return None
+        return user
+
+    @staticmethod
+    def _owner_filter(user):
+        return user["display_name"] if user["role"] == "sales_rep" else None
+
+    def _can_access_owner(self, user, owner):
+        return user["role"] in ("admin", "sales_lead") or (
+            user["role"] == "sales_rep" and owner == user["display_name"]
+        )
+
+    def _set_session_cookie(self, user):
+        secure = self.headers.get("X-Forwarded-Proto") == "https"
+        cookie = (
+            f"{SESSION_COOKIE}={self._encode_session(user)}; Path=/; Max-Age={SESSION_TTL}; "
+            "HttpOnly; SameSite=Lax"
+        )
+        if secure:
+            cookie += "; Secure"
+        return cookie
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -2304,35 +2453,91 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(HTML_TEMPLATE.encode("utf-8"))
 
+        elif path == "/api/session":
+            user = self._session_user()
+            if user:
+                self.send_json({"success": True, "user": user})
+            else:
+                self.send_json({"success": False, "error": "请先登录"}, status=401)
+
         elif path == "/api/stats":
-            stats = self.db.get_stats()
+            user = self._require_user()
+            if not user:
+                return
+            owner = self._owner_filter(user)
+            if owner is None:
+                stats = self.db.get_stats()
+            else:
+                rows = self.db.query_pipeline(owner=owner)
+                stats = {
+                    "total_companies": len(rows),
+                    "total_leads": sum(1 for row in rows if row.get("lead_id")),
+                    "companies_by_tier": {},
+                    "outreach_funnel": {},
+                }
+                for row in rows:
+                    tier = row.get("client_tier") or "B"
+                    status = row.get("status") or "pending"
+                    stats["companies_by_tier"][tier] = stats["companies_by_tier"].get(tier, 0) + 1
+                    stats["outreach_funnel"][status] = stats["outreach_funnel"].get(status, 0) + 1
             self.send_json(stats)
 
         elif path == "/api/sources":
-            sources = self.db.get_source_channels()
+            user = self._require_user()
+            if not user:
+                return
+            owner = self._owner_filter(user)
+            sources = self.db.get_source_channels() if owner is None else sorted({
+                row["source_channel"] for row in self.db.query_pipeline(owner=owner)
+                if row.get("source_channel")
+            })
             self.send_json(sources)
 
         elif path == "/api/lead_sources":
-            lead_sources = self.db.get_lead_sources()
+            user = self._require_user()
+            if not user:
+                return
+            owner = self._owner_filter(user)
+            lead_sources = self.db.get_lead_sources() if owner is None else sorted({
+                row["lead_source"] for row in self.db.query_pipeline(owner=owner)
+                if row.get("lead_source")
+            })
             self.send_json(lead_sources)
 
         elif path == "/api/pipeline":
+            user = self._require_user()
+            if not user:
+                return
             params = urllib.parse.parse_qs(parsed.query)
             country = params.get("country", [None])[0]
             status = params.get("status", [None])[0]
             source = params.get("source", [None])[0]
             tier = params.get("tier", [None])[0]
-            rows = self.db.query_pipeline(country_type=country, status=status, source_channel=source, client_tier=tier)
+            rows = self.db.query_pipeline(
+                country_type=country, status=status, source_channel=source,
+                client_tier=tier, owner=self._owner_filter(user)
+            )
             self.send_json(rows)
 
         elif path == "/api/users":
+            user = self._require_user(("admin",))
+            if not user:
+                return
             users = self.db.get_users()
             self.send_json(users)
 
         elif path == "/api/pitch":
+            user = self._require_user()
+            if not user:
+                return
             from outreach.outreach_engine import OutreachEngine
             params = urllib.parse.parse_qs(parsed.query)
             lead_id = int(params.get("lead_id", [0])[0])
+            if user["role"] == "sales_rep" and not self._can_access_owner(
+                user, self.db.lead_company_owner(lead_id)
+            ):
+                self.send_json({"error": "无权查看该客户"}, status=403)
+                return
             engine = OutreachEngine(self.db)
             try:
                 pitch = engine.generate_pitch(lead_id)
@@ -2341,6 +2546,9 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({"error": str(e)}, status=400)
 
         elif path == "/api/export":
+            user = self._require_user(("admin", "sales_lead"))
+            if not user:
+                return
             import csv
             out_path = os.path.expanduser("~/Desktop/Aibubu_销售作战跟进表.csv")
             rows = self.db.query_pipeline()
@@ -2376,13 +2584,25 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                 password = data.get('password', '')
                 user = self.db.authenticate_user(username, password)
                 if user:
-                    self.send_json({"success": True, "user": user})
+                    self.send_json(
+                        {"success": True, "user": user},
+                        headers={"Set-Cookie": self._set_session_cookie(user)},
+                    )
                 else:
                     self.send_json({"success": False, "error": "用户名或密码不正确"}, status=401)
             except Exception as e:
                 self.send_json({"success": False, "error": str(e)}, status=400)
 
+        elif path == "/api/logout":
+            self.send_json(
+                {"success": True},
+                headers={"Set-Cookie": f"{SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"},
+            )
+
         elif path == "/api/register":
+            user = self._require_user(("admin",))
+            if not user:
+                return
             try:
                 content_length = int(self.headers.get('Content-Length', 0))
                 body = self.rfile.read(content_length).decode('utf-8')
@@ -2399,12 +2619,32 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
             except Exception as e:
                 self.send_json({"success": False, "error": str(e)}, status=400)
 
+        elif path == "/api/password":
+            user = self._session_user()
+            if not user:
+                self.send_json({"success": False, "error": "请先登录"}, status=401)
+                return
+            try:
+                content_length = int(self.headers.get('Content-Length', 0))
+                data = json.loads(self.rfile.read(content_length).decode('utf-8'))
+                self.send_json(self.db.change_password(
+                    user["id"], data.get("current_password", ""), data.get("new_password", "")
+                ))
+            except Exception as e:
+                self.send_json({"success": False, "error": str(e)}, status=400)
+
         elif path == "/api/touch":
+            user = self._require_user(("admin", "sales_lead", "sales_rep"))
+            if not user:
+                return
             try:
                 content_length = int(self.headers.get('Content-Length', 0))
                 body = self.rfile.read(content_length).decode('utf-8')
                 data = json.loads(body)
                 lead_id = int(data.get('lead_id'))
+                if not self._can_access_owner(user, self.db.lead_company_owner(lead_id)):
+                    self.send_json({"success": False, "error": "只能修改自己领取的客户"}, status=403)
+                    return
                 new_status = data.get('status', 'pending')
                 notes = data.get('notes', 'Web端状态快速切换')
 
@@ -2422,11 +2662,17 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({"success": False, "error": str(e)}, status=400)
 
         elif path == "/api/company/notes":
+            user = self._require_user(("admin", "sales_lead", "sales_rep"))
+            if not user:
+                return
             try:
                 content_length = int(self.headers.get('Content-Length', 0))
                 body = self.rfile.read(content_length).decode('utf-8')
                 data = json.loads(body)
                 company_id = int(data.get('company_id'))
+                if not self._can_access_owner(user, self.db.company_owner(company_id)):
+                    self.send_json({"success": False, "error": "只能修改自己领取的客户"}, status=403)
+                    return
                 notes = data.get('notes', '')
                 self.db.update_company_notes(company_id, notes)
                 self.send_json({"success": True, "company_id": company_id})
@@ -2434,11 +2680,17 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({"success": False, "error": str(e)}, status=400)
 
         elif path == "/api/company/tier":
+            user = self._require_user(("admin", "sales_lead", "sales_rep"))
+            if not user:
+                return
             try:
                 content_length = int(self.headers.get('Content-Length', 0))
                 body = self.rfile.read(content_length).decode('utf-8')
                 data = json.loads(body)
                 company_id = int(data.get('company_id'))
+                if not self._can_access_owner(user, self.db.company_owner(company_id)):
+                    self.send_json({"success": False, "error": "只能修改自己领取的客户"}, status=403)
+                    return
                 tier = data.get('tier', 'B')
                 self.db.update_company_tier(company_id, tier)
                 self.send_json({"success": True, "company_id": company_id, "tier": tier})
@@ -2446,23 +2698,37 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({"success": False, "error": str(e)}, status=400)
 
         elif path == "/api/company/update":
+            user = self._require_user(("admin", "sales_lead", "sales_rep"))
+            if not user:
+                return
             try:
                 content_length = int(self.headers.get('Content-Length', 0))
                 body = self.rfile.read(content_length).decode('utf-8')
                 data = json.loads(body)
                 company_id = int(data.get('company_id'))
                 updates = data.get('updates', {})
+                if not self._can_access_owner(user, self.db.company_owner(company_id)):
+                    self.send_json({"success": False, "error": "只能修改自己领取的客户"}, status=403)
+                    return
+                if user["role"] == "sales_rep":
+                    updates.pop("owner", None)
                 success = self.db.update_company(company_id, updates)
                 self.send_json({"success": success, "company_id": company_id})
             except Exception as e:
                 self.send_json({"success": False, "error": str(e)}, status=400)
 
         elif path == "/api/lead/update":
+            user = self._require_user(("admin", "sales_lead", "sales_rep"))
+            if not user:
+                return
             try:
                 content_length = int(self.headers.get('Content-Length', 0))
                 body = self.rfile.read(content_length).decode('utf-8')
                 data = json.loads(body)
                 lead_id = int(data.get('lead_id'))
+                if not self._can_access_owner(user, self.db.lead_company_owner(lead_id)):
+                    self.send_json({"success": False, "error": "只能修改自己领取的客户"}, status=403)
+                    return
                 updates = data.get('updates', {})
                 success = self.db.update_lead(lead_id, updates)
                 self.send_json({"success": success, "lead_id": lead_id})
@@ -2470,6 +2736,9 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({"success": False, "error": str(e)}, status=400)
 
         elif path == "/api/user/role":
+            user = self._require_user(("admin",))
+            if not user:
+                return
             try:
                 content_length = int(self.headers.get('Content-Length', 0))
                 body = self.rfile.read(content_length).decode('utf-8')
@@ -2485,9 +2754,12 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
 
-    def send_json(self, data: Any, status: int = 200):
+    def send_json(self, data: Any, status: int = 200, headers=None):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
 

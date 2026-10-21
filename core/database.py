@@ -5,6 +5,8 @@ Pure SQLite, zero external cloud dependencies, ACID compliant.
 import sqlite3
 import os
 import hashlib
+import hmac
+import secrets
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
@@ -90,9 +92,21 @@ class RemoteConnection:
 
 
 def hash_password(password: str) -> str:
-    """Hash password with SHA256 and salt for secure local auth."""
-    salt = "aibubu_salt_2026"
-    return hashlib.sha256((salt + password).encode('utf-8')).hexdigest()
+    """Hash a password with a random salt and PBKDF2."""
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), 310_000).hex()
+    return f"pbkdf2_sha256$310000${salt}${digest}"
+
+
+def verify_password(password: str, encoded: str) -> bool:
+    if encoded.startswith("pbkdf2_sha256$"):
+        _, iterations, salt, digest = encoded.split("$", 3)
+        actual = hashlib.pbkdf2_hmac(
+            "sha256", password.encode(), bytes.fromhex(salt), int(iterations)
+        ).hex()
+        return hmac.compare_digest(actual, digest)
+    legacy = hashlib.sha256(("aibubu_salt_2026" + password).encode("utf-8")).hexdigest()
+    return hmac.compare_digest(legacy, encoded)
 
 SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
@@ -158,6 +172,7 @@ CREATE TABLE IF NOT EXISTS sys_users (
     email TEXT,
     phone TEXT,
     status TEXT DEFAULT 'active',
+    must_change_password INTEGER DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -225,6 +240,8 @@ def init_db(db_path: str = DB_PATH):
     cols = [r['name'] for r in cursor.fetchall()]
     if 'password_hash' not in cols:
         cursor.execute("ALTER TABLE sys_users ADD COLUMN password_hash TEXT NOT NULL DEFAULT ''")
+    if 'must_change_password' not in cols:
+        cursor.execute("ALTER TABLE sys_users ADD COLUMN must_change_password INTEGER DEFAULT 1")
     
     # Auto migrate companies table if client_tier column is missing
     cursor.execute("PRAGMA table_info(companies)")
@@ -373,7 +390,7 @@ class DatabaseManager:
         conn.close()
         return True
 
-    def query_pipeline(self, country_type: Optional[str] = None, status: Optional[str] = None, source_channel: Optional[str] = None, client_tier: Optional[str] = None) -> List[Dict[str, Any]]:
+    def query_pipeline(self, country_type: Optional[str] = None, status: Optional[str] = None, source_channel: Optional[str] = None, client_tier: Optional[str] = None, owner: Optional[str] = None) -> List[Dict[str, Any]]:
         conn = get_connection(self.db_path)
         cur = conn.cursor()
         query = """
@@ -437,6 +454,9 @@ class DatabaseManager:
         if client_tier:
             query += " AND coalesce(c.client_tier, 'B') = ?"
             params.append(client_tier)
+        if owner is not None:
+            query += " AND coalesce(c.owner, '') = ?"
+            params.append(owner)
         query += " ORDER BY CASE coalesce(c.client_tier, 'B') WHEN 'S' THEN 1 WHEN 'A' THEN 2 WHEN 'B' THEN 3 ELSE 4 END, c.id DESC, l.id DESC"
         
         cur.execute(query, params)
@@ -452,21 +472,42 @@ class DatabaseManager:
         conn.close()
         return rows
 
+    def get_user(self, user_id: int) -> Optional[Dict[str, Any]]:
+        conn = get_connection(self.db_path)
+        row = conn.execute(
+            "SELECT id, username, display_name, role, email, phone, status, must_change_password, created_at "
+            "FROM sys_users WHERE id = ? AND status = 'active'",
+            (user_id,),
+        ).fetchone()
+        conn.close()
+        return dict(row) if row else None
+
     def authenticate_user(self, username: str, password: str) -> Optional[Dict[str, Any]]:
         conn = get_connection(self.db_path)
         cur = conn.cursor()
-        pwd_hash = hash_password(password)
-        cur.execute("SELECT id, username, display_name, role, email, phone, status, created_at FROM sys_users WHERE username = ? AND password_hash = ?", (username.strip(), pwd_hash))
+        cur.execute("SELECT * FROM sys_users WHERE username = ? AND status = 'active'", (username.strip(),))
         row = cur.fetchone()
+        if row and verify_password(password, row["password_hash"]):
+            if not row["password_hash"].startswith("pbkdf2_sha256$"):
+                cur.execute("UPDATE sys_users SET password_hash = ? WHERE id = ?", (hash_password(password), row["id"]))
+                conn.commit()
+            user = {key: row[key] for key in (
+                "id", "username", "display_name", "role", "email", "phone",
+                "status", "must_change_password", "created_at"
+            )}
+        else:
+            user = None
         conn.close()
-        if row:
-            return dict(row)
-        return None
+        return user
 
     def register_user(self, username: str, password: str, display_name: str, role: str = 'sales_rep', email: str = '', phone: str = '') -> Dict[str, Any]:
         username = username.strip()
         if not username or not password:
             return {"success": False, "error": "用户名和密码不能为空"}
+        if len(password) < 8:
+            return {"success": False, "error": "密码至少需要 8 位"}
+        if role not in ("admin", "sales_lead", "sales_rep", "observer"):
+            return {"success": False, "error": "无效的账号角色"}
         conn = get_connection(self.db_path)
         cur = conn.cursor()
         cur.execute("SELECT id FROM sys_users WHERE username = ?", (username,))
@@ -487,12 +528,48 @@ class DatabaseManager:
         return {"success": True, "user": user}
 
     def update_user_role(self, user_id: int, role: str) -> bool:
+        if role not in ("admin", "sales_lead", "sales_rep", "observer"):
+            return False
         conn = get_connection(self.db_path)
         cur = conn.cursor()
         cur.execute("UPDATE sys_users SET role = ? WHERE id = ?", (role, user_id))
         conn.commit()
         conn.close()
         return True
+
+    def change_password(self, user_id: int, current_password: str, new_password: str) -> Dict[str, Any]:
+        if len(new_password) < 10:
+            return {"success": False, "error": "新密码至少需要 10 位"}
+        conn = get_connection(self.db_path)
+        row = conn.execute(
+            "SELECT password_hash FROM sys_users WHERE id = ? AND status = 'active'",
+            (user_id,),
+        ).fetchone()
+        if not row or not verify_password(current_password, row["password_hash"]):
+            conn.close()
+            return {"success": False, "error": "当前密码不正确"}
+        conn.execute(
+            "UPDATE sys_users SET password_hash = ?, must_change_password = 0 WHERE id = ?",
+            (hash_password(new_password), user_id),
+        )
+        conn.commit()
+        conn.close()
+        return {"success": True}
+
+    def company_owner(self, company_id: int) -> Optional[str]:
+        conn = get_connection(self.db_path)
+        row = conn.execute("SELECT owner FROM companies WHERE id = ?", (company_id,)).fetchone()
+        conn.close()
+        return None if row is None else (row["owner"] or "")
+
+    def lead_company_owner(self, lead_id: int) -> Optional[str]:
+        conn = get_connection(self.db_path)
+        row = conn.execute(
+            "SELECT c.owner FROM leads l JOIN companies c ON c.id = l.company_id WHERE l.id = ?",
+            (lead_id,),
+        ).fetchone()
+        conn.close()
+        return None if row is None else (row["owner"] or "")
 
     def get_source_channels(self) -> List[str]:
         conn = get_connection(self.db_path)
