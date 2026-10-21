@@ -735,3 +735,34 @@ class DatabaseManager:
         result = {row["status"]: row["count"] for row in cur.fetchall()}
         conn.close()
         return result
+
+    def get_daily_outreach_stats(
+        self, start_utc: str, end_utc: str, owner: Optional[str] = None,
+        country_type: Optional[str] = None, client_tier: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return Beijing-calendar-day outreach action counts for a UTC interval."""
+        conn = get_connection(self.db_path)
+        cur = conn.cursor()
+        query = """
+            SELECT date(datetime(r.created_at, '+8 hours')) AS activity_date,
+                   r.status, COUNT(*) AS count
+            FROM outreach_records r
+            JOIN leads l ON l.id = r.lead_id
+            JOIN companies c ON c.id = l.company_id
+            WHERE r.created_at >= ? AND r.created_at < ?
+        """
+        params = [start_utc, end_utc]
+        if owner is not None:
+            query += " AND coalesce(c.owner, '') = ?"
+            params.append(owner)
+        if country_type:
+            query += " AND c.country_type = ?"
+            params.append(country_type)
+        if client_tier:
+            query += " AND coalesce(c.client_tier, 'B') = ?"
+            params.append(client_tier)
+        query += " GROUP BY activity_date, r.status ORDER BY activity_date DESC"
+        cur.execute(query, params)
+        rows = [dict(row) for row in cur.fetchall()]
+        conn.close()
+        return rows

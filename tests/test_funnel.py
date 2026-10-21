@@ -23,7 +23,8 @@ const document = {
 };
 let blob;
 const context = vm.createContext({
-  document, localStorage:{getItem(){return null;}}, Intl, Date,
+  document, localStorage:{getItem(){return null;}}, Intl, Date, URLSearchParams,
+  fetch:async()=>({json:async()=>({rows:[]})}),
   Blob: class {constructor(parts) {blob = parts.join('');}},
   URL:{createObjectURL(){return 'blob:test';}, revokeObjectURL(){}},
   alert() {}
@@ -76,6 +77,10 @@ assert(blob.includes('\r\n'));
             capture_output=True, text=True, timeout=30,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        html = html_template()
+        self.assertIn("最近30天触达动作", html)
+        self.assertIn("推送→建连", html)
+        self.assertIn("建连→意向", html)
 
 
 if __name__ == "__main__":

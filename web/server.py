@@ -849,6 +849,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .touch-funnel-stage small { display: block; color: var(--text-muted); line-height: 1.6; }
         @media(max-width:1100px) { .touch-funnel-row { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
         @media(max-width:600px) { .touch-funnel-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+        .daily-funnel { margin: 0 0 24px; padding: 20px; border: 1px solid #334155; border-radius: 12px; background: #111827; overflow-x: auto; }
+        .daily-funnel h3 { margin: 0 0 8px; font-size: 16px; }
+        .daily-funnel p { color: var(--text-muted); font-size: 12px; }
+        .daily-funnel table { width: 100%; min-width: 1050px; border-collapse: collapse; margin-top: 14px; }
+        .daily-funnel th, .daily-funnel td { padding: 10px 12px; border-bottom: 1px solid #334155; text-align: right; white-space: nowrap; }
+        .daily-funnel th:first-child, .daily-funnel td:first-child { text-align: left; position: sticky; left: 0; background: #111827; }
+        .daily-funnel th { color: var(--text-muted); font-size: 12px; }
+        .daily-funnel .rate { color: #38bdf8; font-weight: 600; }
         .prospect-drawer {
             background: #111827;
             border-left: 1px solid #374151;
@@ -1120,7 +1128,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <label>等级 <select id="funnel-tier" onchange="renderFunnelView()"><option value="all">全部等级</option><option>S</option><option>A</option><option>B</option><option>C</option></select></label>
                 <button onclick="fetchPipeline()">刷新数据</button>
             </div>
-            <section id="analysis-touch-funnel" class="touch-funnel" aria-label="触达动作转化漏斗"></section>
+            <section id="daily-funnel-table" class="daily-funnel" aria-label="最近30天触达动作数据表"></section>
             <div id="funnel-container" class="perm-card">
                 正在统计漏斗节点...
             </div>
@@ -1901,14 +1909,37 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <span>${escapeHtml(r.owner || '未分配')} · 企业跟进：${escapeHtml(r.company_follow_up_date || '未设置')} · 触达跟进：${escapeHtml(r.next_follow_up_date || '未设置')}</span>
                 </div>`).join('') : '<p>暂无客户</p>');
         }
+        async function renderDailyFunnelTable() {
+            const country = document.getElementById('funnel-country').value;
+            const tier = document.getElementById('funnel-tier').value;
+            const params = new URLSearchParams({days:'30'});
+            if (country !== 'all') params.set('country', country);
+            if (tier !== 'all') params.set('tier', tier);
+            const res = await fetch('/api/funnel/daily?' + params.toString());
+            const data = await res.json();
+            const pct = (n, d) => d ? (100 * n / d).toFixed(1) + '%' : '—';
+            const rows = data.rows || [];
+            const body = rows.map(row => `<tr>
+                <td>${escapeHtml(row.date)}</td>
+                <td>${row.sample_sent}</td><td>${row.contacted}</td><td>${row.negotiation}</td>
+                <td>${row.team_trial}</td><td>${row.won}</td><td>${row.lost}</td>
+                <td class="rate">${pct(row.contacted, row.sample_sent)}</td>
+                <td class="rate">${pct(row.negotiation, row.contacted)}</td>
+                <td class="rate">${pct(row.team_trial, row.negotiation)}</td>
+                <td class="rate">${pct(row.won, row.team_trial)}</td>
+            </tr>`).join('');
+            document.getElementById('daily-funnel-table').innerHTML = `<h3>最近30天触达动作</h3>
+                <p>日期为北京时间；数字按当日新建触达记录统计。转化率为当日相邻动作数量比，不代表同一批客户的历史 cohort 转化。</p>
+                <table><thead><tr><th>日期</th><th>已推送</th><th>已建连</th><th>有意向</th><th>已注册</th><th>已充值</th><th>不触达</th>
+                <th>推送→建连</th><th>建连→意向</th><th>意向→注册</th><th>注册→充值</th></tr></thead>
+                <tbody>${body}</tbody></table>`;
+        }
         function renderFunnelView() {
             const today = new Intl.DateTimeFormat('sv-SE', {timeZone:'Asia/Shanghai'}).format(new Date());
             const data = buildFunnelData(currentData, document.getElementById('funnel-country').value,
                 document.getElementById('funnel-tier').value, today);
             funnelGroups = data.groups;
-            renderTouchFunnel('analysis-touch-funnel', currentData.filter(r =>
-                (document.getElementById('funnel-country').value === 'all' || r.country_type === document.getElementById('funnel-country').value) &&
-                (document.getElementById('funnel-tier').value === 'all' || (r.client_tier || 'B') === document.getElementById('funnel-tier').value)));
+            renderDailyFunnelTable();
             const pct = (n, d) => d ? (100 * n / d).toFixed(1) + '%' : '—';
             const labels = ['待触达 / 背调', '已推送未回复', '已建连', '有意向 / 洽谈', '已注册 / 试用', '已充值 / 成交'];
             let html = `<h3>跟进概览</h3><p>范围内 ${data.total} 家 · 有效阶段 ${data.active} 家 · 已剔除/流失 ${data.groups.lost.length} 家 · 未识别状态 ${data.groups.unknown.length} 家</p>
@@ -2550,6 +2581,41 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                 client_tier=tier, owner=self._owner_filter(user)
             )
             self.send_json(rows)
+
+        elif path == "/api/funnel/daily":
+            user = self._require_user()
+            if not user:
+                return
+            params = urllib.parse.parse_qs(parsed.query)
+            days = min(max(int(params.get("days", ["30"])[0]), 1), 90)
+            country = params.get("country", [None])[0]
+            tier = params.get("tier", [None])[0]
+            beijing = ZoneInfo("Asia/Shanghai")
+            today = datetime.now(beijing).date()
+            first_day = today - timedelta(days=days - 1)
+            day_after_last = today + timedelta(days=1)
+            start_utc = datetime.combine(first_day, datetime.min.time(), tzinfo=beijing).astimezone(timezone.utc)
+            end_utc = datetime.combine(day_after_last, datetime.min.time(), tzinfo=beijing).astimezone(timezone.utc)
+            activity = self.db.get_daily_outreach_stats(
+                start_utc.strftime("%Y-%m-%d %H:%M:%S"),
+                end_utc.strftime("%Y-%m-%d %H:%M:%S"),
+                owner=self._owner_filter(user),
+                country_type=country,
+                client_tier=tier,
+            )
+            statuses = ("pending", "sample_sent", "contacted", "negotiation", "team_trial", "won", "lost")
+            by_day = {
+                (first_day + timedelta(days=offset)).isoformat(): {status: 0 for status in statuses}
+                for offset in range(days)
+            }
+            for item in activity:
+                if item["activity_date"] in by_day and item["status"] in statuses:
+                    by_day[item["activity_date"]][item["status"]] = item["count"]
+            rows = [
+                {"date": day, **counts}
+                for day, counts in sorted(by_day.items(), reverse=True)
+            ]
+            self.send_json({"days": days, "timezone": "Asia/Shanghai", "rows": rows})
 
         elif path == "/api/users":
             user = self._require_user(("admin",))

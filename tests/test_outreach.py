@@ -29,6 +29,14 @@ class OutreachTests(unittest.TestCase):
             self.assertEqual(db.get_yesterday_outreach_stats(start, end), {"sample_sent": 1, "contacted": 1})
             self.assertEqual(db.get_yesterday_outreach_stats(start, end, owner="Alice"), {"sample_sent": 1})
             self.assertEqual(db.get_yesterday_outreach_stats(start, end, owner="Nobody"), {})
+            daily = db.get_daily_outreach_stats(start, end)
+            self.assertEqual(
+                daily,
+                [
+                    {"activity_date": "2026-10-21", "status": "contacted", "count": 1},
+                    {"activity_date": "2026-10-21", "status": "sample_sent", "count": 1},
+                ],
+            )
 
     def test_type_priority_and_fallback(self):
         self.assertEqual(select_profile("API / AI 应用客户", "电商")[0], "api")
