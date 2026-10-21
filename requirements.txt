@@ -8,3 +8,5 @@ libsql-client==0.3.1
 # Deploy customer detail editing updates (2026-10-20).
 
 # Deploy touch-action funnel and report date.
+
+# Deploy secure application login and permissions.
