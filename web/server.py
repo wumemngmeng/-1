@@ -33,7 +33,7 @@ from core.database import DatabaseManager
 
 PORT = 8899
 SESSION_COOKIE = "aibubu_session"
-SESSION_TTL = 8 * 60 * 60
+SESSION_TTL = 30 * 24 * 60 * 60
 SESSION_SECRET = (
     os.environ.get("SESSION_SECRET")
     or os.environ.get("TURSO_AUTH_TOKEN")
@@ -66,7 +66,19 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; }
         body { background-color: var(--bg); color: var(--text-main); display: flex; height: 100vh; overflow: hidden; }
+        body.auth-checking > aside, body.auth-checking > main,
         body.auth-pending > aside, body.auth-pending > main { visibility: hidden; }
+        body.auth-checking #auth-modal { display: none; }
+        body.auth-checking::before {
+            content: "正在恢复登录状态…";
+            position: fixed;
+            inset: 0;
+            display: grid;
+            place-items: center;
+            color: var(--text-muted);
+            background: var(--bg);
+            z-index: 9999;
+        }
         body.auth-pending #auth-modal { display: flex; }
         
         /* 左侧菜单栏 Sidebar */
@@ -928,7 +940,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         #p-message.error { color: #f87171; }
     </style>
 </head>
-<body class="auth-pending">
+<body class="auth-checking">
     <!-- 左侧菜单栏 -->
     <aside>
         <div>
@@ -2139,6 +2151,7 @@ ${escapeHtml(data.email_body_zh)}</div>`;
             currentUser = user;
             updateCurrentUserUI();
             if (user.must_change_password) {
+                document.body.classList.remove('auth-checking');
                 document.body.classList.add('auth-pending');
                 openAuthModal('password');
                 const msg = document.getElementById('password-msg');
@@ -2146,7 +2159,7 @@ ${escapeHtml(data.email_body_zh)}</div>`;
                 msg.innerText = '首次登录必须修改初始密码后才能进入系统。';
                 return;
             }
-            document.body.classList.remove('auth-pending');
+            document.body.classList.remove('auth-checking', 'auth-pending');
             document.getElementById('auth-modal').style.display = 'none';
             await Promise.all([fetchStats(), fetchSources(), fetchPipeline()]);
         }
@@ -2160,6 +2173,8 @@ ${escapeHtml(data.email_body_zh)}</div>`;
             } catch (_) {
                 currentUser = null;
                 updateCurrentUserUI();
+                document.body.classList.remove('auth-checking');
+                document.body.classList.add('auth-pending');
                 openAuthModal('login');
             }
         }
@@ -2508,7 +2523,10 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
         elif path == "/api/session":
             user = self._session_user()
             if user:
-                self.send_json({"success": True, "user": user})
+                self.send_json(
+                    {"success": True, "user": user},
+                    headers={"Set-Cookie": self._set_session_cookie(user)},
+                )
             else:
                 self.send_json({"success": False, "error": "请先登录"}, status=401)
 

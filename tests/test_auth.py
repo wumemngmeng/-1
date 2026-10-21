@@ -118,6 +118,14 @@ class AuthTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("Max-Age=0", cookie)
 
+    def test_session_is_persistent_and_refreshed(self):
+        admin = self.login("admin", "admin123")
+        status, payload, cookie = self.request("GET", "/api/session", cookie=admin)
+        self.assertEqual((status, payload["success"]), (200, True))
+        self.assertIn("Max-Age=2592000", cookie)
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=Lax", cookie)
+
     def test_admin_can_upsert_prospect_without_duplicate_lead(self):
         admin = self.login("admin", "admin123")
         self.request("POST", "/api/password", {
