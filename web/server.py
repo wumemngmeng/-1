@@ -1404,6 +1404,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 document.getElementById('current-user-name').innerText = '未登录';
                 document.getElementById('current-user-avatar').innerText = '访';
                 document.getElementById('current-user-role').innerText = '● 请先登录';
+                document.getElementById('permissions-nav').style.display = 'none';
+                document.getElementById('tab-register-btn').style.display = 'none';
                 return;
             }
             document.getElementById('current-user-name').innerText = currentUser.display_name || currentUser.username;
