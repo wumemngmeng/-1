@@ -10,3 +10,5 @@ libsql-client==0.3.1
 # Deploy touch-action funnel and report date.
 
 # Deploy secure application login and permissions.
+
+# Deploy pre-login admin control visibility fix.
