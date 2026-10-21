@@ -12,3 +12,5 @@ libsql-client==0.3.1
 # Deploy secure application login and permissions.
 
 # Deploy pre-login admin control visibility fix.
+
+# Deploy daily outreach dashboard and prospect import.
