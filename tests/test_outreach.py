@@ -3,11 +3,33 @@ import tempfile
 import unittest
 
 from test_notes import ROOT
-from core.database import DatabaseManager
+from core.database import DatabaseManager, get_connection
 from outreach.outreach_engine import OutreachEngine, select_profile
 
 
 class OutreachTests(unittest.TestCase):
+    def test_yesterday_outreach_stats_use_created_at_and_owner_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = DatabaseManager(str(Path(directory) / "crm.db"))
+            company_a = db.insert_company({"name": "Yesterday A", "country_type": "overseas"})
+            company_b = db.insert_company({"name": "Yesterday B", "country_type": "overseas"})
+            db.update_company(company_a, {"owner": "Alice"})
+            db.update_company(company_b, {"owner": "Bob"})
+            lead_a = db.insert_lead({"company_id": company_a, "contact_name": "A"})
+            lead_b = db.insert_lead({"company_id": company_b, "contact_name": "B"})
+            record_a = db.record_outreach({"lead_id": lead_a, "status": "sample_sent"})
+            record_b = db.record_outreach({"lead_id": lead_b, "status": "contacted"})
+            conn = get_connection(str(Path(directory) / "crm.db"))
+            conn.execute("UPDATE outreach_records SET created_at = ? WHERE id = ?", ("2026-10-20 17:00:00", record_a))
+            conn.execute("UPDATE outreach_records SET created_at = ? WHERE id = ?", ("2026-10-20 17:00:00", record_b))
+            conn.commit()
+            conn.close()
+            start = "2026-10-20 16:00:00"
+            end = "2026-10-21 16:00:00"
+            self.assertEqual(db.get_yesterday_outreach_stats(start, end), {"sample_sent": 1, "contacted": 1})
+            self.assertEqual(db.get_yesterday_outreach_stats(start, end, owner="Alice"), {"sample_sent": 1})
+            self.assertEqual(db.get_yesterday_outreach_stats(start, end, owner="Nobody"), {})
+
     def test_type_priority_and_fallback(self):
         self.assertEqual(select_profile("API / AI 应用客户", "电商")[0], "api")
         self.assertEqual(select_profile("广告 / 代运营机构", "AI")[0], "agency")

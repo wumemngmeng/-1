@@ -118,6 +118,25 @@ class AuthTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("Max-Age=0", cookie)
 
+    def test_admin_can_upsert_prospect_without_duplicate_lead(self):
+        admin = self.login("admin", "admin123")
+        self.request("POST", "/api/password", {
+            "current_password": "admin123", "new_password": "admin-secure-password"
+        }, admin)
+        prospect = {
+            "company": {"name": "Prospect Co", "country_type": "overseas", "industry": "Apparel"},
+            "lead": {"contact_name": "Founder", "x_url": "https://x.com/founder"},
+            "touch": {"status": "sample_sent", "interaction_notes": "Sent on X"},
+        }
+        status, payload, _ = self.request("POST", "/api/prospect/upsert", prospect, admin)
+        self.assertEqual((status, payload["success"]), (200, True))
+        first_lead = payload["lead_id"]
+        status, payload, _ = self.request("POST", "/api/prospect/upsert", prospect, admin)
+        self.assertEqual((status, payload["lead_id"]), (200, first_lead))
+        rows = self.db.query_pipeline()
+        row = next(row for row in rows if row["company_name"] == "Prospect Co")
+        self.assertEqual(row["status"], "sample_sent")
+
 
 if __name__ == "__main__":
     unittest.main()

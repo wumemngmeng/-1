@@ -23,6 +23,8 @@ import os
 import sys
 import time
 import urllib.parse
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from http.cookies import SimpleCookie
 from typing import Any
 
@@ -218,10 +220,24 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         /* 卡片统计 */
         .stats-grid {
             display: grid;
-            grid-template-columns: repeat(5, 1fr);
+            grid-template-columns: repeat(4, 1fr);
             gap: 12px;
             margin-bottom: 20px;
         }
+        .yesterday-stats {
+            margin: -8px 0 20px;
+            padding: 14px 16px;
+            background: var(--sidebar-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        .yesterday-stats h3 { margin: 0 0 10px; font-size: 14px; }
+        .yesterday-stats-grid { display: grid; grid-template-columns: repeat(7, minmax(90px, 1fr)); gap: 10px; }
+        .yesterday-stat { padding: 10px 12px; border-radius: 7px; background: var(--card-bg); }
+        .yesterday-stat-label { color: var(--text-muted); font-size: 12px; }
+        .yesterday-stat-value { color: #38bdf8; font-size: 20px; font-weight: 700; margin-top: 4px; }
+        @media (max-width: 900px) { .yesterday-stats-grid { grid-template-columns: repeat(4, 1fr); } }
+        @media (max-width: 600px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } .yesterday-stats-grid { grid-template-columns: repeat(2, 1fr); } }
         .stat-card {
             background: var(--card-bg);
             border: 1px solid var(--border);
@@ -977,13 +993,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <div class="stat-label">🚀 B级高意向</div>
                     <div class="stat-value" id="stat-tier-b" style="color:#60a5fa;">-</div>
                 </div>
-                <div class="stat-card">
-                    <div class="stat-label">👤 真实决策人线索</div>
-                    <div class="stat-value" id="stat-leads">-</div>
-                </div>
             </div>
 
             <section id="pipeline-touch-funnel" class="touch-funnel" aria-label="触达动作转化漏斗"></section>
+            <section id="yesterday-outreach-stats" class="yesterday-stats" aria-label="昨日触达数据"></section>
 
             <div class="controls-panel compact-filters">
                 <div class="filter-toolbar"><strong>筛选企业</strong><div class="filter-toolbar-actions"><label class="filter-field" title=""><span>名单</span><select id="exclusion-filter" onchange="renderTable()"><option value="active">待开发 / 跟进中</option><option value="excluded">已剔除</option><option value="all">全部（含已剔除）</option></select></label><button onclick="resetFilters()">重置筛选</button></div></div>
@@ -1453,7 +1466,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('stat-tier-s').innerText = byTier['S'] || 0;
             document.getElementById('stat-tier-a').innerText = byTier['A'] || 0;
             document.getElementById('stat-tier-b').innerText = byTier['B'] || 0;
-            document.getElementById('stat-leads').innerText = data.total_leads;
+            const yesterday = data.yesterday_outreach || {};
+            const labels = [['sample_sent', '已推送'], ['contacted', '已建连'], ['negotiation', '有意向'], ['team_trial', '已注册'], ['won', '已充值'], ['lost', '不触达'], ['total', '触达记录']];
+            const total = labels.slice(0, 6).reduce((sum, [key]) => sum + (yesterday[key] || 0), 0);
+            document.getElementById('yesterday-outreach-stats').innerHTML =
+                `<h3>昨日数据（北京时间 ${data.yesterday_date || ''}，按昨日新增触达记录统计）</h3><div class="yesterday-stats-grid">` +
+                labels.map(([key, label]) => `<div class="yesterday-stat"><div class="yesterday-stat-label">${label}</div><div class="yesterday-stat-value">${key === 'total' ? total : (yesterday[key] || 0)}</div></div>`).join('') +
+                `</div>`;
         }
 
         async function fetchSources() {
@@ -2482,6 +2501,17 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                     status = row.get("status") or "pending"
                     stats["companies_by_tier"][tier] = stats["companies_by_tier"].get(tier, 0) + 1
                     stats["outreach_funnel"][status] = stats["outreach_funnel"].get(status, 0) + 1
+            beijing = ZoneInfo("Asia/Shanghai")
+            today_beijing = datetime.now(beijing).date()
+            yesterday = today_beijing - timedelta(days=1)
+            start_utc = datetime.combine(yesterday, datetime.min.time(), tzinfo=beijing).astimezone(timezone.utc)
+            end_utc = datetime.combine(today_beijing, datetime.min.time(), tzinfo=beijing).astimezone(timezone.utc)
+            stats["yesterday_date"] = yesterday.isoformat()
+            stats["yesterday_outreach"] = self.db.get_yesterday_outreach_stats(
+                start_utc.strftime("%Y-%m-%d %H:%M:%S"),
+                end_utc.strftime("%Y-%m-%d %H:%M:%S"),
+                owner=owner,
+            )
             self.send_json(stats)
 
         elif path == "/api/sources":
@@ -2660,6 +2690,44 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                     notes=notes
                 )
                 self.send_json({"success": True, "lead_id": lead_id, "status": new_status})
+            except Exception as e:
+                self.send_json({"success": False, "error": str(e)}, status=400)
+
+        elif path == "/api/prospect/upsert":
+            user = self._require_user(("admin", "sales_lead"))
+            if not user:
+                return
+            try:
+                content_length = int(self.headers.get('Content-Length', 0))
+                data = json.loads(self.rfile.read(content_length).decode('utf-8'))
+                company = data.get("company") or {}
+                lead = data.get("lead") or {}
+                touch = data.get("touch")
+                if not company.get("name") or not lead.get("contact_name"):
+                    self.send_json({"success": False, "error": "企业名称和联系人不能为空"}, status=400)
+                    return
+                company_id = self.db.insert_company(company)
+                existing = self.db.find_lead(
+                    company_id, lead.get("contact_name", ""), lead.get("x_url", "")
+                )
+                if existing:
+                    lead_id = existing["id"]
+                    self.db.update_lead(lead_id, {
+                        key: value for key, value in lead.items()
+                        if key in {"contact_name", "job_title", "contact_role_category", "phone", "wechat",
+                                   "email", "linkedin_url", "x_url", "source_method"}
+                    })
+                else:
+                    lead["company_id"] = company_id
+                    lead_id = self.db.insert_lead(lead)
+                outreach_id = None
+                if touch:
+                    touch["lead_id"] = lead_id
+                    outreach_id = self.db.record_outreach(touch)
+                self.send_json({
+                    "success": True, "company_id": company_id,
+                    "lead_id": lead_id, "outreach_id": outreach_id,
+                })
             except Exception as e:
                 self.send_json({"success": False, "error": str(e)}, status=400)
 

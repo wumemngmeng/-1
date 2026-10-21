@@ -353,6 +353,23 @@ class DatabaseManager:
         conn.close()
         return lead_id
 
+    def find_lead(self, company_id: int, contact_name: str = "", x_url: str = "") -> Optional[Dict[str, Any]]:
+        conn = get_connection(self.db_path)
+        cur = conn.cursor()
+        if x_url:
+            cur.execute(
+                "SELECT * FROM leads WHERE company_id = ? AND lower(x_url) = lower(?) ORDER BY id LIMIT 1",
+                (company_id, x_url),
+            )
+        else:
+            cur.execute(
+                "SELECT * FROM leads WHERE company_id = ? AND lower(contact_name) = lower(?) ORDER BY id LIMIT 1",
+                (company_id, contact_name),
+            )
+        row = cur.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
     def record_outreach(self, data: Dict[str, Any]) -> int:
         conn = get_connection(self.db_path)
         cur = conn.cursor()
@@ -697,3 +714,24 @@ class DatabaseManager:
         stats['outreach_funnel'] = {r['status']: r['count'] for r in cur.fetchall()}
         conn.close()
         return stats
+
+    def get_yesterday_outreach_stats(self, start_utc: str, end_utc: str, owner: Optional[str] = None) -> Dict[str, int]:
+        """Count outreach actions created during yesterday in the requested timezone."""
+        conn = get_connection(self.db_path)
+        cur = conn.cursor()
+        query = """
+            SELECT r.status, COUNT(*) AS count
+            FROM outreach_records r
+            JOIN leads l ON l.id = r.lead_id
+            JOIN companies c ON c.id = l.company_id
+            WHERE r.created_at >= ? AND r.created_at < ?
+        """
+        params = [start_utc, end_utc]
+        if owner is not None:
+            query += " AND coalesce(c.owner, '') = ?"
+            params.append(owner)
+        query += " GROUP BY r.status"
+        cur.execute(query, params)
+        result = {row["status"]: row["count"] for row in cur.fetchall()}
+        conn.close()
+        return result
