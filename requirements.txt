@@ -18,3 +18,5 @@ libsql-client==0.3.1
 # Deploy thirty-day dated funnel table.
 
 # Deploy persistent rolling login session.
+
+# Deploy versioned filter strategy archive.
