@@ -111,6 +111,13 @@ vm.runInContext(SCRIPT, context);
         self.assertNotIn("localStorage.getItem('aibubu_current_user')", html)
         self.assertNotIn("默认: admin / 密码: admin123", html)
 
+    def test_strategy_archive_uses_compact_rows_and_detail_modal(self):
+        html = html_template()
+        self.assertIn('id="strategy-detail-modal"', html)
+        self.assertIn("openStrategyDetail(", html)
+        self.assertIn("查看文本", html)
+        self.assertNotIn('style="min-width:420px;white-space:pre-wrap;line-height:1.6">${escapeHtml(row.content)}', html)
+
 
 if __name__ == "__main__":
     unittest.main()

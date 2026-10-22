@@ -648,7 +648,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }
         
         /* Modal 通用弹窗 */
-        #modal, #auth-modal, #edit-company-modal, #edit-lead-modal {
+        #modal, #auth-modal, #edit-company-modal, #edit-lead-modal, #strategy-detail-modal {
             display: none;
             position: fixed;
             inset: 0;
@@ -1201,6 +1201,19 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         </div>
     </div>
 
+    <div id="strategy-detail-modal" onclick="if(event.target===this) closeStrategyDetail()">
+        <div class="modal-content" style="max-width:760px">
+            <div class="modal-header">
+                <h3 id="strategy-detail-title">策略文本</h3>
+                <button onclick="closeStrategyDetail()">✕ 关闭</button>
+            </div>
+            <div class="modal-body">
+                <div id="strategy-detail-meta" style="color:var(--text-muted);font-size:12px;margin-bottom:14px"></div>
+                <pre id="strategy-detail-content" style="white-space:pre-wrap;word-break:break-word;line-height:1.7;font-family:inherit"></pre>
+            </div>
+        </div>
+    </div>
+
     <!-- 弹窗 2.1: 编辑企业主体信息 (Company) -->
     <div id="edit-company-modal">
         <div class="modal-content" style="max-width: 600px;">
@@ -1508,6 +1521,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             }
         }
 
+        let currentStrategies = [];
         async function fetchStrategies() {
             const params = new URLSearchParams();
             const version = document.getElementById('strategy-version-filter').value;
@@ -1518,6 +1532,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             if (end) params.set('end', end);
             const res = await fetch('/api/strategies?' + params.toString());
             const rows = await res.json();
+            currentStrategies = rows;
             const versions = [...new Set(rows.map(row => row.version))].sort((a, b) => b - a);
             const select = document.getElementById('strategy-version-filter');
             const selected = select.value;
@@ -1531,8 +1546,22 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <td><span class="status-badge">v${row.version}</span></td>
                 <td>${escapeHtml(row.updated_at)}</td>
                 <td>${escapeHtml(row.created_by)}</td>
-                <td style="min-width:420px;white-space:pre-wrap;line-height:1.6">${escapeHtml(row.content)}</td>
+                <td><button class="btn-pitch" onclick="openStrategyDetail(${Number(row.id)})">查看文本</button></td>
             </tr>`).join('') : '<tr><td colspan="5">当前筛选范围内暂无策略存档</td></tr>';
+        }
+
+        function openStrategyDetail(strategyId) {
+            const row = currentStrategies.find(item => Number(item.id) === Number(strategyId));
+            if (!row) return;
+            document.getElementById('strategy-detail-title').textContent = `${row.title} · v${row.version}`;
+            document.getElementById('strategy-detail-meta').textContent =
+                `更新时间：${row.updated_at} · 保存人：${row.created_by}`;
+            document.getElementById('strategy-detail-content').textContent = row.content;
+            document.getElementById('strategy-detail-modal').style.display = 'flex';
+        }
+
+        function closeStrategyDetail() {
+            document.getElementById('strategy-detail-modal').style.display = 'none';
         }
 
         async function saveStrategy(event) {
