@@ -22,3 +22,5 @@ libsql-client==0.3.1
 # Deploy versioned filter strategy archive.
 
 # Deploy compact strategy text viewer.
+
+# Deploy Discord community dashboard.
