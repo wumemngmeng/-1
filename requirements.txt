@@ -20,3 +20,5 @@ libsql-client==0.3.1
 # Deploy persistent rolling login session.
 
 # Deploy versioned filter strategy archive.
+
+# Deploy compact strategy text viewer.
