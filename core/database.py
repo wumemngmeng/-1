@@ -188,6 +188,26 @@ CREATE TABLE IF NOT EXISTS filter_strategies (
 CREATE INDEX IF NOT EXISTS idx_filter_strategies_updated
     ON filter_strategies(created_at DESC);
 
+CREATE TABLE IF NOT EXISTS discord_communities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    invite_url TEXT NOT NULL,
+    focus TEXT NOT NULL,
+    language TEXT CHECK(language IN ('中文', '英文', '中英双语')) NOT NULL DEFAULT '英文',
+    audience TEXT,
+    fit_level TEXT CHECK(fit_level IN ('高', '中', '低')) NOT NULL DEFAULT '中',
+    priority INTEGER NOT NULL DEFAULT 99,
+    join_status TEXT CHECK(join_status IN ('已加入', '待加入', '观察中', '暂停')) NOT NULL DEFAULT '已加入',
+    account_type TEXT CHECK(account_type IN ('个人号', '官方号')) NOT NULL DEFAULT '个人号',
+    recommended_channels TEXT,
+    notes TEXT,
+    added_by TEXT NOT NULL DEFAULT '系统导入',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_discord_communities_priority
+    ON discord_communities(priority, name);
+
 CREATE INDEX IF NOT EXISTS idx_companies_country ON companies(country_type);
 CREATE INDEX IF NOT EXISTS idx_companies_industry ON companies(industry);
 CREATE INDEX IF NOT EXISTS idx_leads_company ON leads(company_id);
@@ -298,6 +318,36 @@ def init_db(db_path: str = DB_PATH):
             if not u['password_hash']:
                 pwd = "admin123" if u['username'] == 'admin' else "123456"
                 cursor.execute("UPDATE sys_users SET password_hash = ? WHERE id = ?", (hash_password(pwd), u['id']))
+
+    cursor.execute("SELECT count(*) AS count FROM discord_communities")
+    if cursor.fetchone()["count"] == 0:
+        communities = [
+            ("Leonardo.Ai", "https://discord.gg/leonardo-ai", "AI 图像 / 视频", "英文", "营销、设计与 AI 创作者", "高", 1, "#showcase / #feedback / #tools", "与 Aibubu 产品和用户画像最接近"),
+            ("Higgsfield AI", "https://discord.gg/higgsfield", "AI 图像 / 视频 / 广告", "英文", "广告营销与多模型创作者", "高", 2, "#showcase / Marketing Studio", "重点观察广告生产工作流"),
+            ("Runway", "https://discord.gg/runwayml", "AI 视频", "英文", "专业视频创作者", "高", 3, "#showcase / #feedback", "适合收集视频工作流和痛点"),
+            ("Pika", "https://discord.com/invite/pika", "AI 短视频", "英文", "短视频与社媒创作者", "高", 4, "#showcase / #feedback", "偏短视频和社媒内容"),
+            ("invideo AI", "https://discord.com/invite/invideo-ai", "营销视频", "英文", "营销视频生产者", "高", 5, "#showcase / #tools", "接近 Aibubu 付费用户画像"),
+            ("Kling AI", "https://discord.com/invite/8tj8YjSzKr", "AI 视频", "中英双语", "视频生成用户", "中", 6, "#showcase / #feedback", "观察视频生成需求"),
+            ("Vidu AI", "https://discord.com/invite/vidu-ai-1257891059510280232", "AI 视频", "中英双语", "视频生成用户", "中", 7, "#showcase / #feedback", "官方视频生成社区"),
+            ("Stable Diffusion", "https://discord.gg/stablediffusion", "AI 图像 / 模型", "英文", "硬核出图与模型用户", "中", 8, "#showcase / #help", "适合听需求，不适合直接推销"),
+            ("Midjourney", "https://discord.gg/midjourney", "AI 图像", "英文", "大规模 AI 图像创作者", "中", 9, "#showcase", "以观察为主，避免产品推广"),
+            ("Midjourney Creators Hub", "https://discord.gg/YaYbhVZjCN", "AI 图像", "英文", "AI 创作者互助群", "中", 10, "#showcase / #feedback", "社区较小，互动门槛较低"),
+            ("Civitai", "https://discord.gg/civitai", "AI 图像 / 模型", "英文", "模型与出图用户", "中", 11, "#showcase / #tools", "适合了解真实工作流"),
+            ("OpenArt AI", "https://discord.gg/yTMNvk5z97", "综合 AI 创作", "英文", "综合 AI 创作者", "中", 12, "#showcase / #feedback", "大型综合创作平台社区"),
+            ("Luma AI", "https://discord.gg/ASbS3EykXm", "AI 视频", "英文", "视频创作者", "中", 13, "#showcase / #feedback", "AI 视频方向"),
+            ("PixAI", "https://discord.gg/jJtE3gNnxm", "AI 图像 / 二次元", "中英双语", "二次元出图用户", "中", 14, "#showcase", "偏二次元创作"),
+            ("AIGC", "https://discord.gg/AIGC", "综合 AI 创作", "中文", "中文 AIGC 创作者", "高", 15, "#作品展示 / #工具", "中文社区优先观察"),
+            ("Ai 绘画中文组", "https://discord.gg/vhsArSSA6K", "AI 图像", "中文", "中文 AI 绘画用户", "高", 16, "#作品展示 / #交流", "中文绘画向社区"),
+            ("鳥巢 AI 藝術學園", "https://discord.gg/YKddUZnwan", "AI 艺术", "中文", "中文 AI 艺术创作者", "高", 17, "#作品展示 / #交流", "中文 AI 艺术社区"),
+            ("Indie Hackers", "https://discord.gg/d3R5ynFMgr", "独立开发 / 增长", "英文", "独立开发者与创业者", "低", 18, "#growth / #marketing", "不直接是客户，适合学习获客"),
+        ]
+        cursor.executemany(
+            """INSERT OR IGNORE INTO discord_communities
+               (name, invite_url, focus, language, audience, fit_level, priority,
+                recommended_channels, notes)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            communities,
+        )
 
     conn.commit()
     conn.close()
@@ -817,6 +867,59 @@ class DatabaseManager:
             "SELECT id, title, version, content, created_by, created_at FROM filter_strategies WHERE id = ?",
             (strategy_id,),
         ).fetchone()
+        conn.commit()
+        result = dict(row)
+        conn.close()
+        return result
+
+    def list_discord_communities(
+        self, language: Optional[str] = None, fit_level: Optional[str] = None,
+        join_status: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        conn = get_connection(self.db_path)
+        query = "SELECT * FROM discord_communities WHERE 1=1"
+        params = []
+        for field, value in (
+            ("language", language), ("fit_level", fit_level), ("join_status", join_status)
+        ):
+            if value:
+                query += f" AND {field} = ?"
+                params.append(value)
+        query += " ORDER BY priority, name COLLATE NOCASE"
+        rows = [dict(row) for row in conn.execute(query, params).fetchall()]
+        conn.close()
+        return rows
+
+    def save_discord_community(self, data: Dict[str, Any], updated_by: str) -> Dict[str, Any]:
+        name = (data.get("name") or "").strip()
+        invite_url = (data.get("invite_url") or "").strip()
+        if not name or not invite_url:
+            raise ValueError("社群名称和邀请链接不能为空")
+        conn = get_connection(self.db_path)
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO discord_communities
+               (name, invite_url, focus, language, audience, fit_level, priority,
+                join_status, account_type, recommended_channels, notes, added_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(name) DO UPDATE SET
+                 invite_url=excluded.invite_url, focus=excluded.focus,
+                 language=excluded.language, audience=excluded.audience,
+                 fit_level=excluded.fit_level, priority=excluded.priority,
+                 join_status=excluded.join_status, account_type=excluded.account_type,
+                 recommended_channels=excluded.recommended_channels,
+                 notes=excluded.notes, added_by=excluded.added_by,
+                 updated_at=CURRENT_TIMESTAMP""",
+            (
+                name, invite_url, (data.get("focus") or "综合 AI 创作").strip(),
+                data.get("language") or "英文", (data.get("audience") or "").strip(),
+                data.get("fit_level") or "中", int(data.get("priority") or 99),
+                data.get("join_status") or "已加入", data.get("account_type") or "个人号",
+                (data.get("recommended_channels") or "").strip(),
+                (data.get("notes") or "").strip(), updated_by,
+            ),
+        )
+        row = cur.execute("SELECT * FROM discord_communities WHERE name = ?", (name,)).fetchone()
         conn.commit()
         result = dict(row)
         conn.close()

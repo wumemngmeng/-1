@@ -938,6 +938,30 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }
         #p-message.success { color: #34d399; }
         #p-message.error { color: #f87171; }
+        .community-stats {
+            display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; margin-bottom:18px;
+        }
+        .community-grid {
+            display:grid; grid-template-columns:repeat(auto-fill,minmax(310px,1fr)); gap:14px;
+        }
+        .community-card {
+            background:var(--card-bg); border:1px solid var(--border-color); border-radius:10px;
+            padding:16px; display:flex; flex-direction:column; gap:11px;
+        }
+        .community-card-head { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
+        .community-card h3 { margin:0; font-size:16px; }
+        .community-card a { color:#60a5fa; text-decoration:none; }
+        .community-meta { display:flex; flex-wrap:wrap; gap:7px; }
+        .community-tag {
+            border:1px solid #334155; border-radius:999px; padding:3px 8px;
+            color:#cbd5e1; font-size:11px;
+        }
+        .community-fit-high { color:#34d399; border-color:#166534; }
+        .community-card p { margin:0; color:var(--text-muted); font-size:12px; line-height:1.55; }
+        .community-priority { color:#fbbf24; font-weight:700; white-space:nowrap; }
+        @media (max-width: 900px) {
+            .community-stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
+        }
     </style>
 </head>
 <body class="auth-checking">
@@ -963,6 +987,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 </li>
                 <li class="nav-item" onclick="switchNav('strategy', this)">
                     <span>📝</span> <span>筛选策略存档</span>
+                </li>
+                <li class="nav-item" onclick="switchNav('discord', this)">
+                    <span>💬</span> <span>Discord 社群看板</span>
                 </li>
             </ul>
         </div>
@@ -1187,6 +1214,56 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <tbody id="strategy-table-body"><tr><td colspan="5">正在加载…</td></tr></tbody>
                 </table>
             </div>
+        </div>
+
+        <div id="view-discord" class="view-section">
+            <header>
+                <div>
+                    <h2 class="page-title">Discord 社群观察看板</h2>
+                    <div style="font-size:13px;color:var(--text-muted);margin-top:4px">
+                        用个人号先观察、参与和学习；记录加入状态、社群属性、推荐频道与匹配度。
+                    </div>
+                </div>
+                <button class="btn-save" onclick="document.getElementById('discord-form-card').style.display='block'">+ 添加 / 更新社群</button>
+            </header>
+            <div class="community-stats">
+                <div class="stat-card"><div class="stat-label">社群总数</div><div class="stat-value" id="discord-total">-</div></div>
+                <div class="stat-card"><div class="stat-label">已加入</div><div class="stat-value" id="discord-joined" style="color:#34d399">-</div></div>
+                <div class="stat-card"><div class="stat-label">高匹配</div><div class="stat-value" id="discord-high-fit" style="color:#60a5fa">-</div></div>
+                <div class="stat-card"><div class="stat-label">中文优先</div><div class="stat-value" id="discord-chinese" style="color:#fbbf24">-</div></div>
+            </div>
+            <div id="discord-form-card" class="perm-card" style="display:none">
+                <h3>添加或同步社群</h3>
+                <form id="discord-form" onsubmit="saveDiscordCommunity(event)">
+                    <div class="filter-grid">
+                        <label class="filter-field"><span>社群名称</span><input id="discord-name" required></label>
+                        <label class="filter-field"><span>邀请链接</span><input id="discord-url" type="url" required></label>
+                        <label class="filter-field"><span>方向</span><input id="discord-focus" placeholder="AI 图像 / 视频"></label>
+                        <label class="filter-field"><span>语言</span><select id="discord-language"><option>英文</option><option>中文</option><option>中英双语</option></select></label>
+                        <label class="filter-field"><span>匹配度</span><select id="discord-fit"><option>高</option><option selected>中</option><option>低</option></select></label>
+                        <label class="filter-field"><span>加入状态</span><select id="discord-status"><option>已加入</option><option>待加入</option><option>观察中</option><option>暂停</option></select></label>
+                        <label class="filter-field"><span>使用账号</span><select id="discord-account"><option>个人号</option><option>官方号</option></select></label>
+                        <label class="filter-field"><span>优先级</span><input id="discord-priority" type="number" min="1" value="99"></label>
+                        <label class="filter-field"><span>用户画像</span><input id="discord-audience"></label>
+                        <label class="filter-field"><span>推荐频道</span><input id="discord-channels" placeholder="#showcase / #feedback / #tools"></label>
+                    </div>
+                    <label style="display:block;margin-top:12px">观察备注<textarea class="form-control" id="discord-notes" rows="3"></textarea></label>
+                    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:12px">
+                        <span id="discord-message" aria-live="polite"></span>
+                        <button type="button" onclick="document.getElementById('discord-form-card').style.display='none'">取消</button>
+                        <button class="btn-primary" type="submit">保存社群</button>
+                    </div>
+                </form>
+            </div>
+            <div class="controls-panel">
+                <div class="filter-toolbar"><strong>社群筛选</strong><button onclick="resetDiscordFilters()">重置筛选</button></div>
+                <div class="filter-grid">
+                    <label class="filter-field"><span>语言</span><select id="discord-language-filter" onchange="fetchDiscordCommunities()"><option value="">全部语言</option><option>中文</option><option>英文</option><option>中英双语</option></select></label>
+                    <label class="filter-field"><span>匹配度</span><select id="discord-fit-filter" onchange="fetchDiscordCommunities()"><option value="">全部匹配度</option><option>高</option><option>中</option><option>低</option></select></label>
+                    <label class="filter-field"><span>加入状态</span><select id="discord-status-filter" onchange="fetchDiscordCommunities()"><option value="">全部状态</option><option>已加入</option><option>待加入</option><option>观察中</option><option>暂停</option></select></label>
+                </div>
+            </div>
+            <div id="discord-community-grid" class="community-grid"><div class="perm-card">正在加载…</div></div>
         </div>
     </main>
 
@@ -1518,7 +1595,106 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 renderFunnelView();
             } else if (navId === 'strategy') {
                 fetchStrategies();
+            } else if (navId === 'discord') {
+                fetchDiscordCommunities();
             }
+        }
+
+        let currentDiscordCommunities = [];
+        async function fetchDiscordCommunities() {
+            const params = new URLSearchParams();
+            const language = document.getElementById('discord-language-filter').value;
+            const fit = document.getElementById('discord-fit-filter').value;
+            const status = document.getElementById('discord-status-filter').value;
+            if (language) params.set('language', language);
+            if (fit) params.set('fit', fit);
+            if (status) params.set('status', status);
+            const res = await fetch('/api/discord-communities?' + params.toString());
+            const rows = await res.json();
+            currentDiscordCommunities = Array.isArray(rows) ? rows : [];
+            document.getElementById('discord-total').textContent = currentDiscordCommunities.length;
+            document.getElementById('discord-joined').textContent =
+                currentDiscordCommunities.filter(row => row.join_status === '已加入').length;
+            document.getElementById('discord-high-fit').textContent =
+                currentDiscordCommunities.filter(row => row.fit_level === '高').length;
+            document.getElementById('discord-chinese').textContent =
+                currentDiscordCommunities.filter(row => row.language !== '英文').length;
+            document.getElementById('discord-community-grid').innerHTML = currentDiscordCommunities.length
+                ? currentDiscordCommunities.map(row => `<article class="community-card">
+                    <div class="community-card-head">
+                        <div><h3><a href="${escapeHtml(row.invite_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.name)}</a></h3>
+                        <p>${escapeHtml(row.focus)}</p></div>
+                        <span class="community-priority">#${row.priority}</span>
+                    </div>
+                    <div class="community-meta">
+                        <span class="community-tag ${row.fit_level === '高' ? 'community-fit-high' : ''}">${escapeHtml(row.fit_level)}匹配</span>
+                        <span class="community-tag">${escapeHtml(row.language)}</span>
+                        <span class="community-tag">${escapeHtml(row.join_status)}</span>
+                        <span class="community-tag">${escapeHtml(row.account_type)}</span>
+                    </div>
+                    <p><strong>用户画像：</strong>${escapeHtml(row.audience || '待补充')}</p>
+                    <p><strong>推荐频道：</strong>${escapeHtml(row.recommended_channels || '进群后查看规则与频道')}</p>
+                    <p><strong>观察重点：</strong>${escapeHtml(row.notes || '待补充')}</p>
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:auto">
+                        <small style="color:var(--text-muted)">同步：${escapeHtml(row.updated_at)}</small>
+                        <button class="btn-pitch" onclick="editDiscordCommunity(${Number(row.id)})">更新属性</button>
+                    </div>
+                </article>`).join('')
+                : '<div class="perm-card">当前筛选范围内暂无社群</div>';
+        }
+
+        function editDiscordCommunity(id) {
+            const row = currentDiscordCommunities.find(item => Number(item.id) === Number(id));
+            if (!row) return;
+            const fields = {
+                'discord-name':row.name, 'discord-url':row.invite_url, 'discord-focus':row.focus,
+                'discord-language':row.language, 'discord-fit':row.fit_level,
+                'discord-status':row.join_status, 'discord-account':row.account_type,
+                'discord-priority':row.priority, 'discord-audience':row.audience,
+                'discord-channels':row.recommended_channels, 'discord-notes':row.notes
+            };
+            Object.entries(fields).forEach(([id, value]) => document.getElementById(id).value = value || '');
+            document.getElementById('discord-name').readOnly = true;
+            document.getElementById('discord-form-card').style.display = 'block';
+            document.getElementById('discord-form-card').scrollIntoView({behavior:'smooth'});
+        }
+
+        async function saveDiscordCommunity(event) {
+            event.preventDefault();
+            const message = document.getElementById('discord-message');
+            message.textContent = '正在保存…';
+            const payload = {
+                name:document.getElementById('discord-name').value,
+                invite_url:document.getElementById('discord-url').value,
+                focus:document.getElementById('discord-focus').value,
+                language:document.getElementById('discord-language').value,
+                fit_level:document.getElementById('discord-fit').value,
+                join_status:document.getElementById('discord-status').value,
+                account_type:document.getElementById('discord-account').value,
+                priority:Number(document.getElementById('discord-priority').value || 99),
+                audience:document.getElementById('discord-audience').value,
+                recommended_channels:document.getElementById('discord-channels').value,
+                notes:document.getElementById('discord-notes').value
+            };
+            const res = await fetch('/api/discord-communities', {
+                method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)
+            });
+            const result = await res.json();
+            if (!res.ok || !result.success) {
+                message.textContent = result.error || '保存失败';
+                return;
+            }
+            message.textContent = `已同步 ${result.community.name}`;
+            document.getElementById('discord-form').reset();
+            document.getElementById('discord-name').readOnly = false;
+            await fetchDiscordCommunities();
+        }
+
+        function resetDiscordFilters() {
+            document.getElementById('discord-language-filter').value = '';
+            document.getElementById('discord-fit-filter').value = '';
+            document.getElementById('discord-status-filter').value = '';
+            fetchDiscordCommunities();
         }
 
         let currentStrategies = [];
@@ -2778,6 +2954,18 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
             except (ValueError, TypeError) as error:
                 self.send_json({"success": False, "error": str(error)}, status=400)
 
+        elif path == "/api/discord-communities":
+            user = self._require_user()
+            if not user:
+                return
+            params = urllib.parse.parse_qs(parsed.query)
+            rows = self.db.list_discord_communities(
+                language=params.get("language", [None])[0],
+                fit_level=params.get("fit", [None])[0],
+                join_status=params.get("status", [None])[0],
+            )
+            self.send_json(rows)
+
         elif path == "/api/users":
             user = self._require_user(("admin",))
             if not user:
@@ -2932,6 +3120,20 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                     user.get("display_name") or user.get("username"),
                 )
                 self.send_json({"success": True, "strategy": strategy})
+            except (ValueError, TypeError) as error:
+                self.send_json({"success": False, "error": str(error)}, status=400)
+
+        elif path == "/api/discord-communities":
+            user = self._require_user()
+            if not user:
+                return
+            try:
+                content_length = int(self.headers.get('Content-Length', 0))
+                data = json.loads(self.rfile.read(content_length).decode('utf-8'))
+                community = self.db.save_discord_community(
+                    data, user.get("display_name") or user.get("username")
+                )
+                self.send_json({"success": True, "community": community})
             except (ValueError, TypeError) as error:
                 self.send_json({"success": False, "error": str(error)}, status=400)
 

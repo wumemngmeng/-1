@@ -53,6 +53,24 @@ class OutreachTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 db.save_filter_strategy("  ", "missing title", "Alice")
 
+    def test_discord_community_seed_filters_and_sync(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = DatabaseManager(str(Path(directory) / "communities.db"))
+            rows = db.list_discord_communities()
+            self.assertEqual(len(rows), 18)
+            self.assertEqual(rows[0]["name"], "Leonardo.Ai")
+            self.assertTrue(all(row["account_type"] == "个人号" for row in rows))
+            self.assertEqual(len(db.list_discord_communities(language="中文")), 3)
+            updated = db.save_discord_community({
+                "name": "Leonardo.Ai", "invite_url": "https://discord.gg/leonardo-ai",
+                "focus": "AI 图像与视频", "language": "英文", "fit_level": "高",
+                "join_status": "观察中", "account_type": "个人号", "priority": 1,
+                "audience": "营销设计用户", "recommended_channels": "#showcase",
+                "notes": "先观察",
+            }, "Alice")
+            self.assertEqual(updated["join_status"], "观察中")
+            self.assertEqual(len(db.list_discord_communities()), 18)
+
     def test_type_priority_and_fallback(self):
         self.assertEqual(select_profile("API / AI 应用客户", "电商")[0], "api")
         self.assertEqual(select_profile("广告 / 代运营机构", "AI")[0], "agency")

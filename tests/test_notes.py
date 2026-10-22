@@ -118,6 +118,14 @@ vm.runInContext(SCRIPT, context);
         self.assertIn("查看文本", html)
         self.assertNotIn('style="min-width:420px;white-space:pre-wrap;line-height:1.6">${escapeHtml(row.content)}', html)
 
+    def test_discord_community_dashboard_ui(self):
+        html = html_template()
+        self.assertIn("Discord 社群看板", html)
+        self.assertIn('id="view-discord"', html)
+        self.assertIn('id="discord-community-grid"', html)
+        self.assertIn("fetchDiscordCommunities()", html)
+        self.assertIn("/api/discord-communities", html)
+
 
 if __name__ == "__main__":
     unittest.main()

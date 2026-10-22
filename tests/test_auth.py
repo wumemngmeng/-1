@@ -5,6 +5,7 @@ import tempfile
 import threading
 import unittest
 from http.server import ThreadingHTTPServer
+from urllib.parse import urlencode
 
 from core.database import DatabaseManager
 from web.server import CustomHandler
@@ -161,6 +162,21 @@ class AuthTests(unittest.TestCase):
             "title": "Filter strategy", "content": "Add evidence criteria"
         }, observer)
         self.assertEqual((status, payload["strategy"]["version"]), (200, 2))
+
+    def test_team_members_can_read_and_sync_discord_communities(self):
+        self.assertEqual(self.request("GET", "/api/discord-communities")[0], 401)
+        observer = self.login("viewer_test", "viewer-secure-password")
+        status, rows, _ = self.request(
+            "GET", "/api/discord-communities?" + urlencode({"language": "中文"}),
+            cookie=observer,
+        )
+        self.assertEqual((status, len(rows)), (200, 3))
+        status, payload, _ = self.request("POST", "/api/discord-communities", {
+            "name": "Test Community", "invite_url": "https://discord.gg/test",
+            "focus": "AI 视频", "language": "中文", "fit_level": "高",
+            "join_status": "已加入", "account_type": "个人号", "priority": 19,
+        }, observer)
+        self.assertEqual((status, payload["community"]["name"]), (200, "Test Community"))
 
 
 if __name__ == "__main__":
