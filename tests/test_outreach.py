@@ -38,6 +38,21 @@ class OutreachTests(unittest.TestCase):
                 ],
             )
 
+    def test_filter_strategy_versions_are_immutable_and_date_filterable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = DatabaseManager(str(Path(directory) / "strategies.db"))
+            first = db.save_filter_strategy("Overseas DTC", "Version one text", "Alice")
+            second = db.save_filter_strategy("Overseas DTC", "Version two text", "Bob")
+            other = db.save_filter_strategy("Local AI", "Another strategy", "Alice")
+            self.assertEqual((first["version"], second["version"], other["version"]), (1, 2, 1))
+            self.assertEqual(db.list_filter_strategies(version=2)[0]["content"], "Version two text")
+            self.assertEqual(
+                [row["version"] for row in db.list_filter_strategies(start_date=first["created_at"][:10])],
+                [1, 2, 1],
+            )
+            with self.assertRaises(ValueError):
+                db.save_filter_strategy("  ", "missing title", "Alice")
+
     def test_type_priority_and_fallback(self):
         self.assertEqual(select_profile("API / AI 应用客户", "电商")[0], "api")
         self.assertEqual(select_profile("广告 / 代运营机构", "AI")[0], "agency")

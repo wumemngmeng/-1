@@ -145,6 +145,23 @@ class AuthTests(unittest.TestCase):
         row = next(row for row in rows if row["company_name"] == "Prospect Co")
         self.assertEqual(row["status"], "sample_sent")
 
+    def test_team_members_can_read_and_create_strategy_versions(self):
+        self.assertEqual(self.request("GET", "/api/strategies")[0], 401)
+        admin = self.login("admin", "admin123")
+        self.request("POST", "/api/password", {
+            "current_password": "admin123", "new_password": "admin-secure-password"
+        }, admin)
+        status, payload, _ = self.request("POST", "/api/strategies", {
+            "title": "Filter strategy", "content": "Target S/A accounts"
+        }, admin)
+        self.assertEqual((status, payload["strategy"]["version"]), (200, 1))
+        observer = self.login("viewer_test", "viewer-secure-password")
+        self.assertTrue(self.request("GET", "/api/strategies", cookie=observer)[1][0]["content"])
+        status, payload, _ = self.request("POST", "/api/strategies", {
+            "title": "Filter strategy", "content": "Add evidence criteria"
+        }, observer)
+        self.assertEqual((status, payload["strategy"]["version"]), (200, 2))
+
 
 if __name__ == "__main__":
     unittest.main()

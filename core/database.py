@@ -176,6 +176,18 @@ CREATE TABLE IF NOT EXISTS sys_users (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS filter_strategies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(title, version)
+);
+CREATE INDEX IF NOT EXISTS idx_filter_strategies_updated
+    ON filter_strategies(created_at DESC);
+
 CREATE INDEX IF NOT EXISTS idx_companies_country ON companies(country_type);
 CREATE INDEX IF NOT EXISTS idx_companies_industry ON companies(industry);
 CREATE INDEX IF NOT EXISTS idx_leads_company ON leads(company_id);
@@ -766,3 +778,46 @@ class DatabaseManager:
         rows = [dict(row) for row in cur.fetchall()]
         conn.close()
         return rows
+
+    def list_filter_strategies(
+        self, start_date: Optional[str] = None, end_date: Optional[str] = None,
+        version: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        conn = get_connection(self.db_path)
+        query = "SELECT id, title, version, content, created_by, created_at FROM filter_strategies WHERE 1=1"
+        params = []
+        if start_date:
+            query += " AND date(created_at) >= date(?)"
+            params.append(start_date)
+        if end_date:
+            query += " AND date(created_at) <= date(?)"
+            params.append(end_date)
+        if version is not None:
+            query += " AND version = ?"
+            params.append(version)
+        query += " ORDER BY created_at DESC, title COLLATE NOCASE, version DESC"
+        rows = [dict(row) for row in conn.execute(query, params).fetchall()]
+        conn.close()
+        return rows
+
+    def save_filter_strategy(self, title: str, content: str, created_by: str) -> Dict[str, Any]:
+        title = title.strip()
+        if not title or not content.strip():
+            raise ValueError("策略名称和文本内容不能为空")
+        conn = get_connection(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT coalesce(MAX(version), 0) + 1 AS next_version FROM filter_strategies WHERE title = ?", (title,))
+        version = cur.fetchone()["next_version"]
+        cur.execute(
+            "INSERT INTO filter_strategies (title, version, content, created_by) VALUES (?, ?, ?, ?)",
+            (title, version, content, created_by),
+        )
+        strategy_id = cur.lastrowid
+        row = cur.execute(
+            "SELECT id, title, version, content, created_by, created_at FROM filter_strategies WHERE id = ?",
+            (strategy_id,),
+        ).fetchone()
+        conn.commit()
+        result = dict(row)
+        conn.close()
+        return result

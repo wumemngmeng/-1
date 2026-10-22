@@ -961,6 +961,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <li class="nav-item" onclick="switchNav('funnel', this)">
                     <span>📊</span> <span>跟进漏斗与数据</span>
                 </li>
+                <li class="nav-item" onclick="switchNav('strategy', this)">
+                    <span>📝</span> <span>筛选策略存档</span>
+                </li>
             </ul>
         </div>
         <div class="sidebar-footer">
@@ -1143,6 +1146,46 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <section id="daily-funnel-table" class="daily-funnel" aria-label="最近30天触达动作数据表"></section>
             <div id="funnel-container" class="perm-card">
                 正在统计漏斗节点...
+            </div>
+        </div>
+
+        <div id="view-strategy" class="view-section">
+            <header>
+                <div>
+                    <h2 class="page-title">筛选策略存档</h2>
+                    <div style="font-size:13px;color:var(--text-muted);margin-top:4px">
+                        保存策略文本快照；同名策略每次保存自动生成下一版本，历史版本不会被覆盖。
+                    </div>
+                </div>
+            </header>
+            <div class="perm-card">
+                <h3>新建策略版本</h3>
+                <form id="strategy-form" onsubmit="saveStrategy(event)">
+                    <label>策略名称
+                        <input class="form-control" id="strategy-title" maxlength="120" required placeholder="例如：海外 DTC 创始人筛选策略">
+                    </label>
+                    <label>策略文本
+                        <textarea class="form-control" id="strategy-content" rows="12" required placeholder="记录筛选条件、目标画像、排除规则、来源和执行说明"></textarea>
+                    </label>
+                    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:12px">
+                        <span id="strategy-message" aria-live="polite"></span>
+                        <button class="btn-primary" type="submit">保存为新版本</button>
+                    </div>
+                </form>
+            </div>
+            <div class="controls-panel">
+                <div class="filter-toolbar"><strong>历史存档</strong><button onclick="resetStrategyFilters()">重置筛选</button></div>
+                <div class="filter-grid">
+                    <label class="filter-field"><span>版本</span><select id="strategy-version-filter" onchange="fetchStrategies()"><option value="">全部版本</option></select></label>
+                    <label class="filter-field"><span>更新时间从</span><input id="strategy-start-date" type="date" onchange="fetchStrategies()"></label>
+                    <label class="filter-field"><span>更新时间至</span><input id="strategy-end-date" type="date" onchange="fetchStrategies()"></label>
+                </div>
+            </div>
+            <div class="table-container">
+                <table class="pipeline-table">
+                    <thead><tr><th>策略名称</th><th>版本</th><th>更新时间</th><th>保存人</th><th>策略文本</th></tr></thead>
+                    <tbody id="strategy-table-body"><tr><td colspan="5">正在加载…</td></tr></tbody>
+                </table>
             </div>
         </div>
     </main>
@@ -1460,7 +1503,63 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 fetchUsers();
             } else if (navId === 'funnel') {
                 renderFunnelView();
+            } else if (navId === 'strategy') {
+                fetchStrategies();
             }
+        }
+
+        async function fetchStrategies() {
+            const params = new URLSearchParams();
+            const version = document.getElementById('strategy-version-filter').value;
+            const start = document.getElementById('strategy-start-date').value;
+            const end = document.getElementById('strategy-end-date').value;
+            if (version) params.set('version', version);
+            if (start) params.set('start', start);
+            if (end) params.set('end', end);
+            const res = await fetch('/api/strategies?' + params.toString());
+            const rows = await res.json();
+            const versions = [...new Set(rows.map(row => row.version))].sort((a, b) => b - a);
+            const select = document.getElementById('strategy-version-filter');
+            const selected = select.value;
+            if (!version) {
+                select.innerHTML = '<option value="">全部版本</option>' +
+                    versions.map(value => `<option value="${value}">v${value}</option>`).join('');
+                select.value = selected;
+            }
+            document.getElementById('strategy-table-body').innerHTML = rows.length ? rows.map(row => `<tr>
+                <td>${escapeHtml(row.title)}</td>
+                <td><span class="status-badge">v${row.version}</span></td>
+                <td>${escapeHtml(row.updated_at)}</td>
+                <td>${escapeHtml(row.created_by)}</td>
+                <td style="min-width:420px;white-space:pre-wrap;line-height:1.6">${escapeHtml(row.content)}</td>
+            </tr>`).join('') : '<tr><td colspan="5">当前筛选范围内暂无策略存档</td></tr>';
+        }
+
+        async function saveStrategy(event) {
+            event.preventDefault();
+            const message = document.getElementById('strategy-message');
+            message.textContent = '正在保存…';
+            const res = await fetch('/api/strategies', {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({
+                    title:document.getElementById('strategy-title').value,
+                    content:document.getElementById('strategy-content').value
+                })
+            });
+            const result = await res.json();
+            if (!res.ok || !result.success) {
+                message.textContent = result.error || '保存失败';
+                return;
+            }
+            message.textContent = `已保存 ${result.strategy.title} v${result.strategy.version}`;
+            await fetchStrategies();
+        }
+
+        function resetStrategyFilters() {
+            document.getElementById('strategy-version-filter').value = '';
+            document.getElementById('strategy-start-date').value = '';
+            document.getElementById('strategy-end-date').value = '';
+            fetchStrategies();
         }
 
         async function fetchPipeline() {
@@ -2635,6 +2734,21 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
             ]
             self.send_json({"days": days, "timezone": "Asia/Shanghai", "rows": rows})
 
+        elif path == "/api/strategies":
+            user = self._require_user()
+            if not user:
+                return
+            params = urllib.parse.parse_qs(parsed.query)
+            start_date = params.get("start", [None])[0]
+            end_date = params.get("end", [None])[0]
+            version_value = params.get("version", [None])[0]
+            try:
+                version = int(version_value) if version_value else None
+                rows = self.db.list_filter_strategies(start_date, end_date, version)
+                self.send_json(rows)
+            except (ValueError, TypeError) as error:
+                self.send_json({"success": False, "error": str(error)}, status=400)
+
         elif path == "/api/users":
             user = self._require_user(("admin",))
             if not user:
@@ -2776,6 +2890,21 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({"success": True, "lead_id": lead_id, "status": new_status})
             except Exception as e:
                 self.send_json({"success": False, "error": str(e)}, status=400)
+
+        elif path == "/api/strategies":
+            user = self._require_user()
+            if not user:
+                return
+            try:
+                content_length = int(self.headers.get('Content-Length', 0))
+                data = json.loads(self.rfile.read(content_length).decode('utf-8'))
+                strategy = self.db.save_filter_strategy(
+                    data.get("title", ""), data.get("content", ""),
+                    user.get("display_name") or user.get("username"),
+                )
+                self.send_json({"success": True, "strategy": strategy})
+            except (ValueError, TypeError) as error:
+                self.send_json({"success": False, "error": str(error)}, status=400)
 
         elif path == "/api/prospect/upsert":
             user = self._require_user(("admin", "sales_lead"))
