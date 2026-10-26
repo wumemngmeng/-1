@@ -244,12 +244,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             border-radius: 8px;
         }
         .yesterday-stats h3 { margin: 0 0 10px; font-size: 14px; }
-        .yesterday-stats-grid { display: grid; grid-template-columns: repeat(7, minmax(90px, 1fr)); gap: 10px; }
-        .yesterday-stat { padding: 10px 12px; border-radius: 7px; background: var(--card-bg); }
-        .yesterday-stat-label { color: var(--text-muted); font-size: 12px; }
-        .yesterday-stat-value { color: #38bdf8; font-size: 20px; font-weight: 700; margin-top: 4px; }
-        @media (max-width: 900px) { .yesterday-stats-grid { grid-template-columns: repeat(4, 1fr); } }
-        @media (max-width: 600px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } .yesterday-stats-grid { grid-template-columns: repeat(2, 1fr); } }
+        .recent-outreach-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+        .recent-outreach-scroll { overflow-x: auto; }
+        .recent-outreach-table { width: 100%; min-width: 560px; border-collapse: collapse; }
+        .recent-outreach-table th, .recent-outreach-table td { padding: 8px 12px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; }
+        .recent-outreach-table th:first-child { text-align: left; }
+        .recent-outreach-table td { color: #38bdf8; }
+        .yesterday-stats p { color: var(--text-muted); font-size: 12px; }
+        @media (max-width: 600px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } }
         .stat-card {
             background: var(--card-bg);
             border: 1px solid var(--border);
@@ -985,7 +987,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <li class="nav-item" id="permissions-nav" onclick="switchNav('permissions', this)">
                     <span>🛡️</span> <span>组织与权限管理</span>
                 </li>
-                <li class="nav-item" onclick="switchNav('funnel', this)">
+                <li class="nav-item" id="funnel-nav" onclick="switchNav('funnel', this)">
                     <span>📊</span> <span>跟进漏斗与数据</span>
                 </li>
                 <li class="nav-item" onclick="switchNav('strategy', this)">
@@ -1049,7 +1051,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             </div>
 
             <section id="pipeline-touch-funnel" class="touch-funnel" aria-label="触达动作转化漏斗"></section>
-            <section id="yesterday-outreach-stats" class="yesterday-stats" aria-label="昨日触达数据"></section>
+            <section id="yesterday-outreach-stats" class="yesterday-stats" aria-label="最近5天触达数据"></section>
 
             <div class="controls-panel compact-filters">
                 <div class="filter-toolbar"><strong>筛选企业</strong><div class="filter-toolbar-actions"><label class="filter-field" title=""><span>名单</span><select id="exclusion-filter" onchange="renderTable()"><option value="active">待开发 / 跟进中</option><option value="excluded">已剔除</option><option value="all">全部（含已剔除）</option></select></label><button onclick="resetFilters()">重置筛选</button></div></div>
@@ -1842,13 +1844,29 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('stat-tier-s').innerText = byTier['S'] || 0;
             document.getElementById('stat-tier-a').innerText = byTier['A'] || 0;
             document.getElementById('stat-tier-b').innerText = byTier['B'] || 0;
-            const yesterday = data.yesterday_outreach || {};
+            const dailyRes = await fetch('/api/funnel/daily?days=5&country=' + country);
+            const daily = await dailyRes.json();
+            if (country !== activeCountry) return;
+            renderRecentOutreachTable(daily.rows || []);
+        }
+
+        function openOutreachDetails() {
+            document.getElementById('funnel-country').value = activeCountry;
+            document.getElementById('funnel-tier').value = 'all';
+            switchNav('funnel', document.getElementById('funnel-nav'));
+        }
+
+        function renderRecentOutreachTable(rows) {
             const labels = [['sample_sent', '已推送'], ['contacted', '已建连'], ['negotiation', '有意向'], ['team_trial', '已注册'], ['won', '已充值'], ['lost', '不触达'], ['total', '触达记录']];
-            const total = labels.slice(0, 6).reduce((sum, [key]) => sum + (yesterday[key] || 0), 0);
+            const days = rows.slice(0, 5).sort((a, b) => a.date.localeCompare(b.date));
             document.getElementById('yesterday-outreach-stats').innerHTML =
-                `<h3>昨日数据（北京时间 ${data.yesterday_date || ''}，按昨日新增触达记录统计）</h3><div class="yesterday-stats-grid">` +
-                labels.map(([key, label]) => `<div class="yesterday-stat"><div class="yesterday-stat-label">${label}</div><div class="yesterday-stat-value">${key === 'total' ? total : (yesterday[key] || 0)}</div></div>`).join('') +
-                `</div>`;
+                `<div class="recent-outreach-header"><h3>最近5天触达数据</h3><button onclick="openOutreachDetails()">查看更多</button></div>` +
+                `<p>含今天，日期为北京时间；按每日新增触达记录统计。</p><div class="recent-outreach-scroll"><table class="recent-outreach-table"><thead><tr><th scope="col">触达指标</th>` +
+                days.map(row => `<th scope="col">${escapeHtml(row.date)}</th>`).join('') +
+                `</tr></thead><tbody>` +
+                labels.map(([key, label]) => `<tr><th scope="row">${label}</th>` +
+                    days.map(row => `<td>${key === 'total' ? labels.slice(0, 6).reduce((sum, [status]) => sum + (row[status] || 0), 0) : (row[key] || 0)}</td>`).join('') +
+                    `</tr>`).join('') + `</tbody></table></div>`;
         }
 
         async function fetchSources() {
