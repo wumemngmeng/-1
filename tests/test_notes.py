@@ -183,6 +183,28 @@ vm.runInContext(SCRIPT,context);
     switchPipelineMarket('domestic',document.getElementById('domestic-nav'));
     check(visibleData[0].company_id===1,'overseas row leaked');
     check(activeStage==='sample_sent' && selectedSources.has('国内渠道'),'filters not restored');
+    renderRecentOutreachTable([
+      {date:'2026-10-26',sample_sent:3,contacted:2},
+      {date:'2026-10-25',won:1},
+      {date:'2026-10-24'},
+      {date:'2026-10-23'},
+      {date:'2026-10-22'},
+      {date:'2026-10-21'}
+    ]);
+    const table=document.getElementById('yesterday-outreach-stats').innerHTML;
+    check(table.includes('<table') && table.includes('查看更多'),'recent table missing');
+    check((table.match(/scope="col"/g)||[]).length===6,'expected five date columns');
+    check(table.indexOf('2026-10-22')<table.indexOf('2026-10-26'),'date order incorrect');
+    check(!table.includes('2026-10-21'),'more than five days shown');
+    check(table.includes('<td>5</td>'),'daily total incorrect');
+    let destination;
+    switchNav=(nav,elem)=>{destination=nav;};
+    activeCountry='overseas';
+    openOutreachDetails();
+    check(destination==='funnel','more link destination incorrect');
+    check(document.getElementById('funnel-country').value==='overseas','more link lost market');
+    check(document.getElementById('funnel-tier').value==='all','more link retained stale tier');
+    activeCountry='domestic';
     const waiting=realFetchStats();
     activeCountry='overseas';
     globalThis.waiting=waiting;
