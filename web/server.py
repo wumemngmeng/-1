@@ -976,8 +976,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 </div>
             </div>
             <ul class="nav-list">
-                <li class="nav-item active" onclick="switchNav('pipeline', this)">
-                    <span>⚡</span> <span>线索作战中台</span>
+                <li class="nav-item active" id="domestic-nav" onclick="switchPipelineMarket('domestic', this)">
+                    <span>⚡</span> <span>国内客户</span>
+                </li>
+                <li class="nav-item" id="overseas-nav" onclick="switchPipelineMarket('overseas', this)">
+                    <span>🌐</span> <span>海外客户</span>
                 </li>
                 <li class="nav-item" id="permissions-nav" onclick="switchNav('permissions', this)">
                     <span>🛡️</span> <span>组织与权限管理</span>
@@ -1015,7 +1018,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <div id="view-pipeline" class="view-section active">
             <header>
                 <div>
-                    <h2 class="page-title">线索作战中台</h2>
+                    <h2 class="page-title" id="pipeline-title">国内客户</h2>
                     <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">
                         三段解耦流水线: 智能评级 ➔ 真实决策人 ➔ ROI话术直达 (双层精细筛选)
                     </div>
@@ -1511,7 +1514,60 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         let currentLeadSources = [];
         
         // 筛选状态
-        let activeCountry = 'all';
+        let activeCountry = 'domestic';
+        const marketFilters = {};
+        const pipelineFilterIds = ['tier-filter', 'type-filter', 'due-filter',
+            'industry-filter', 'spend-filter', 'stage-filter', 'exclusion-filter'];
+
+        function marketRows() {
+            return currentData.filter(row => row.country_type === activeCountry);
+        }
+
+        function refreshMarketOptions() {
+            const rows = marketRows();
+            currentSourceChannels = [...new Set(rows.map(r => r.source_channel).filter(Boolean))].sort();
+            currentLeadSources = [...new Set(rows.map(r => r.lead_source).filter(Boolean))].sort();
+            const industry = document.getElementById('industry-filter');
+            const previous = industry.value;
+            industry.replaceChildren(new Option('全部行业', 'all'));
+            [...new Set(rows.map(r => r.industry).filter(Boolean))].sort()
+                .forEach(value => industry.add(new Option(value, value)));
+            industry.value = [...industry.options].some(o => o.value === previous) ? previous : 'all';
+            renderSourceCapsules();
+            renderLeadSourceCapsules();
+        }
+
+        function switchPipelineMarket(country, elem) {
+            if (!['domestic', 'overseas'].includes(country)) return;
+            marketFilters[activeCountry] = {
+                values:Object.fromEntries(pipelineFilterIds.map(id => [id, document.getElementById(id).value])),
+                sources:[...selectedSources], leadSources:[...selectedLeadSources],
+                sourceMode:activeSourceMode, touch:activeTouch
+            };
+            activeCountry = country;
+            document.getElementById('country-filter').value = country;
+            document.getElementById('pipeline-title').textContent = country === 'domestic' ? '国内客户' : '海外客户';
+            refreshMarketOptions();
+            const saved = marketFilters[country];
+            resetFilters();
+            if (saved) {
+                for (const [id, value] of Object.entries(saved.values)) {
+                    const select = document.getElementById(id);
+                    if ([...select.options].some(option => option.value === value)) select.value = value;
+                }
+                selectedSources = new Set(saved.sources);
+                selectedLeadSources = new Set(saved.leadSources);
+                activeSourceMode = saved.sourceMode;
+                activeTouch = saved.touch;
+                activeTier = document.getElementById('tier-filter').value;
+                activeStage = document.getElementById('stage-filter').value;
+                renderSourceCapsules();
+                renderLeadSourceCapsules();
+                renderTable();
+            }
+            switchNav('pipeline', elem);
+            fetchStats();
+        }
         let selectedSources = new Set(); // 多选公司来源渠道集合
         let activeSourceMode = 'include'; // 'include' (仅看所选) 或 'exclude' (排除所选/反选)
         let selectedLeadSources = new Set(); // 多选线索来源集合
@@ -1770,21 +1826,17 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         async function fetchPipeline() {
             const res = await fetch('/api/pipeline');
             currentData = await res.json();
-            const industrySelect = document.getElementById('industry-filter');
-            const previousIndustry = industrySelect.value;
-            industrySelect.innerHTML = '<option value="all">全部行业</option>';
-            [...new Set(currentData.map(r => r.industry).filter(Boolean))].sort().forEach(value => {
-                const option = document.createElement('option'); option.value = value; option.textContent = value;
-                industrySelect.appendChild(option);
-            });
-            industrySelect.value = [...industrySelect.options].some(o => o.value === previousIndustry) ? previousIndustry : 'all';
+            refreshMarketOptions();
             renderTable();
             renderFunnelView();
+            await fetchStats();
         }
 
         async function fetchStats() {
-            const res = await fetch('/api/stats');
+            const country = activeCountry;
+            const res = await fetch('/api/stats?country=' + country);
             const data = await res.json();
+            if (country !== activeCountry) return;
             document.getElementById('stat-companies').innerText = data.total_companies;
             const byTier = data.companies_by_tier || {};
             document.getElementById('stat-tier-s').innerText = byTier['S'] || 0;
@@ -1800,15 +1852,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }
 
         async function fetchSources() {
-            const res = await fetch('/api/sources');
-            currentSourceChannels = await res.json();
-            renderSourceCapsules();
+            refreshMarketOptions();
         }
 
         async function fetchLeadSources() {
-            const res = await fetch('/api/lead_sources');
-            currentLeadSources = await res.json();
-            renderLeadSourceCapsules();
+            refreshMarketOptions();
         }
 
         function renderSourceCapsules() {
@@ -1886,10 +1934,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
         // 筛选逻辑
         function filterCountry(country, btn) {
-            activeCountry = country;
-            btn.parentElement.querySelectorAll('button').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            renderTable();
+            switchPipelineMarket(country, document.getElementById(country + '-nav'));
         }
 
         function filterTier(tier, btn) {
@@ -1912,7 +1957,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }
 
         function resetFilters() {
-            activeCountry = 'all';
             selectedSources.clear();
             activeSourceMode = 'include';
             selectedLeadSources.clear();
@@ -1931,7 +1975,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 modeBtn.classList.remove('exclude-active');
                 modeBtn.innerHTML = '🔍 仅看模式';
             }
-            document.getElementById('country-filter').value = 'all';
+            document.getElementById('country-filter').value = activeCountry;
             document.getElementById('tier-filter').value = 'all';
             document.getElementById('type-filter').value = 'all';
             document.getElementById('due-filter').value = 'all';
@@ -1948,7 +1992,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             const tbody = document.getElementById('pipeline-body');
             tbody.innerHTML = '';
             
-            const filtered = currentData.filter(item => {
+            const scopedRows = marketRows();
+            const filtered = scopedRows.filter(item => {
                 const exclusion = document.getElementById('exclusion-filter').value;
                 const excluded = item.prospect_status === 'lost';
                 if (exclusion === 'active' && excluded || exclusion === 'excluded' && !excluded) return false;
@@ -2007,7 +2052,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
             visibleData = filtered;
             renderTouchFunnel('pipeline-touch-funnel', filtered);
-            document.getElementById('filter-count').innerText = `筛选出 ${filtered.length} / ${currentData.length} 家企业`;
+            document.getElementById('filter-count').innerText = `筛选出 ${filtered.length} / ${scopedRows.length} 家企业`;
 
             filtered.forEach(r => {
                 const tr = document.createElement('tr');
@@ -2463,9 +2508,14 @@ ${escapeHtml(data.email_body_zh)}</div>`;
                 msg.innerText = '首次登录必须修改初始密码后才能进入系统。';
                 return;
             }
+            const countryFilter = document.getElementById('country-filter');
+            countryFilter.replaceChildren(new Option('国内', 'domestic'), new Option('海外', 'overseas'));
+            countryFilter.value = activeCountry;
+            countryFilter.disabled = true;
+            countryFilter.title = '请通过左侧国内客户 / 海外客户菜单切换市场';
             document.body.classList.remove('auth-checking', 'auth-pending');
             document.getElementById('auth-modal').style.display = 'none';
-            await Promise.all([fetchStats(), fetchSources(), fetchPipeline()]);
+            await fetchPipeline();
         }
 
         async function initializeApp() {
@@ -2605,7 +2655,7 @@ ${escapeHtml(data.email_body_zh)}</div>`;
             const url = URL.createObjectURL(blob);
             const link = document.createElement('a');
             link.href = url;
-            link.download = `Aibubu_${activeCountry === 'domestic' ? '国内' : '筛选'}客户_${new Date().toISOString().slice(0, 10)}.csv`;
+            link.download = `Aibubu_${activeCountry === 'domestic' ? '国内' : '海外'}客户_${new Date().toISOString().slice(0, 10)}.csv`;
             document.body.appendChild(link);
             link.click();
             link.remove();
@@ -2839,10 +2889,15 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
             if not user:
                 return
             owner = self._owner_filter(user)
-            if owner is None:
+            params = urllib.parse.parse_qs(parsed.query)
+            country = params.get("country", [None])[0]
+            if country not in (None, "domestic", "overseas"):
+                self.send_json({"success": False, "error": "无效的市场区域"}, status=400)
+                return
+            if owner is None and country is None:
                 stats = self.db.get_stats()
             else:
-                rows = self.db.query_pipeline(owner=owner)
+                rows = self.db.query_pipeline(owner=owner, country_type=country)
                 stats = {
                     "total_companies": len(rows),
                     "total_leads": sum(1 for row in rows if row.get("lead_id")),
@@ -2864,6 +2919,7 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                 start_utc.strftime("%Y-%m-%d %H:%M:%S"),
                 end_utc.strftime("%Y-%m-%d %H:%M:%S"),
                 owner=owner,
+                country_type=country,
             )
             self.send_json(stats)
 

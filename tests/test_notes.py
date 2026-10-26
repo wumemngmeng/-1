@@ -126,6 +126,79 @@ vm.runInContext(SCRIPT, context);
         self.assertIn("fetchDiscordCommunities()", html)
         self.assertIn("/api/discord-communities", html)
 
+    @unittest.skipUnless(shutil.which("node"), "Node.js required")
+    def test_market_navigation_isolates_rows_filters_and_stale_stats(self):
+        html = html_template()
+        self.assertIn('id="domestic-nav"', html)
+        self.assertIn('id="overseas-nav"', html)
+        self.assertIn("countryFilter.disabled = true", html)
+        script = html.split("<script>", 1)[1].split("</script>", 1)[0]
+        script = script.split("// 初始化加载", 1)[0]
+        harness = r"""
+const vm = require('node:vm');
+const elements = {};
+const classes = () => ({add(){},remove(){},contains(){return false;}});
+const document = {
+  addEventListener(){}, querySelectorAll(){return [];},
+  getElementById(id) {
+    return elements[id] ||= {
+      value:'all', style:{}, textContent:'', innerHTML:'', innerText:'',
+      classList:classes(), options:[{value:'all'},{value:'active'},{value:'sample_sent'}],
+      addEventListener(){},
+      replaceChildren(...options){this.options=options;this.value=options[0]?.value;},
+      add(option){this.options.push(option);}
+    };
+  }
+};
+const pending = [];
+const context = vm.createContext({
+  document, Intl, Date, console,
+  Option:function(text,value){this.text=text;this.value=value;},
+  fetch:url=>new Promise(resolve=>pending.push({url,resolve}))
+});
+vm.runInContext(SCRIPT,context);
+(async()=>{
+  await vm.runInContext(`(async()=>{
+    const check=(condition,message)=>{if(!condition)throw Error(message);};
+    currentData=[
+      {company_id:1,country_type:'domestic',source_channel:'国内渠道',industry:'国内行业'},
+      {company_id:2,country_type:'overseas',source_channel:'海外渠道',industry:'海外行业'}
+    ];
+    renderTable=()=>{visibleData=marketRows();};
+    renderLeadSourceCapsules=()=>{};
+    const realFetchStats=fetchStats;
+    fetchStats=()=>{};
+    refreshMarketOptions();
+    document.getElementById('stage-filter').value='sample_sent';
+    activeStage='sample_sent';
+    selectedSources=new Set(['国内渠道']);
+    switchPipelineMarket('overseas',document.getElementById('overseas-nav'));
+    check(activeCountry==='overseas','wrong market');
+    check(visibleData.length===1 && visibleData[0].company_id===2,'domestic row leaked');
+    check(activeStage==='all' && selectedSources.size===0,'filters leaked');
+    check(currentSourceChannels.join(',')==='海外渠道','source choices leaked');
+    check(document.getElementById('industry-filter').options.length===2,'industry choices leaked');
+    resetFilters();
+    check(activeCountry==='overseas','reset unlocked market');
+    switchPipelineMarket('domestic',document.getElementById('domestic-nav'));
+    check(visibleData[0].company_id===1,'overseas row leaked');
+    check(activeStage==='sample_sent' && selectedSources.has('国内渠道'),'filters not restored');
+    const waiting=realFetchStats();
+    activeCountry='overseas';
+    globalThis.waiting=waiting;
+  })()`,context);
+  if(pending[0].url!=='/api/stats?country=domestic')throw Error('unscoped stats');
+  pending[0].resolve({json:async()=>({total_companies:999})});
+  await context.waiting;
+  if(elements['stat-companies']?.innerText===999)throw Error('stale stats leaked');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+"""
+        result = subprocess.run(
+            ["node", "-e", harness.replace("SCRIPT", json.dumps(script))],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -777,7 +777,10 @@ class DatabaseManager:
         conn.close()
         return stats
 
-    def get_yesterday_outreach_stats(self, start_utc: str, end_utc: str, owner: Optional[str] = None) -> Dict[str, int]:
+    def get_yesterday_outreach_stats(
+        self, start_utc: str, end_utc: str, owner: Optional[str] = None,
+        country_type: Optional[str] = None,
+    ) -> Dict[str, int]:
         """Count outreach actions created during yesterday in the requested timezone."""
         conn = get_connection(self.db_path)
         cur = conn.cursor()
@@ -792,6 +795,9 @@ class DatabaseManager:
         if owner is not None:
             query += " AND coalesce(c.owner, '') = ?"
             params.append(owner)
+        if country_type:
+            query += " AND c.country_type = ?"
+            params.append(country_type)
         query += " GROUP BY r.status"
         cur.execute(query, params)
         result = {row["status"]: row["count"] for row in cur.fetchall()}

@@ -108,6 +108,32 @@ class AuthTests(unittest.TestCase):
         self.assertEqual((status, payload["success"]), (200, True))
         self.assertEqual(self.db.company_owner(self.owned_id), "测试销售")
 
+    def test_market_stats_and_pipeline_preserve_owner_scope(self):
+        rep = self.login("rep_test", "rep-secure-password")
+        overseas = self.db.insert_company({"name": "海外名下客户", "country_type": "overseas"})
+        self.db.update_company(overseas, {"owner": "测试销售"})
+        hidden = self.db.insert_company({"name": "其他海外客户", "country_type": "overseas"})
+        self.db.update_company(hidden, {"owner": "其他销售"})
+        for company_id in (self.owned_id, overseas, hidden):
+            lead = self.db.insert_lead({"company_id": company_id, "contact_name": "联系人"})
+            self.db.record_outreach({"lead_id": lead, "status": "sample_sent"})
+        from core.database import get_connection
+        conn = get_connection(self.db.db_path)
+        conn.execute("UPDATE outreach_records SET created_at = datetime('now', '+8 hours', 'start of day', '-1 day', '-8 hours', '+1 hour')")
+        conn.commit()
+        conn.close()
+
+        for market, company_id in (("domestic", self.owned_id), ("overseas", overseas)):
+            status, rows, _ = self.request("GET", "/api/pipeline?country=" + market, cookie=rep)
+            self.assertEqual(status, 200)
+            self.assertEqual([row["company_id"] for row in rows], [company_id])
+            status, stats, _ = self.request("GET", "/api/stats?country=" + market, cookie=rep)
+            self.assertEqual(status, 200)
+            self.assertEqual(stats["total_companies"], 1)
+            self.assertEqual(stats["companies_by_tier"], {"B": 1})
+            self.assertEqual(stats["yesterday_outreach"], {"sample_sent": 1})
+        self.assertEqual(self.request("GET", "/api/stats?country=invalid", cookie=rep)[0], 400)
+
     def test_logout_clears_session(self):
         admin = self.login("admin", "admin123")
         status, payload, _ = self.request("POST", "/api/password", {
