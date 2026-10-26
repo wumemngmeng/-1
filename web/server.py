@@ -1861,11 +1861,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             const days = rows.slice(0, 5).sort((a, b) => a.date.localeCompare(b.date));
             document.getElementById('yesterday-outreach-stats').innerHTML =
                 `<div class="recent-outreach-header"><h3>最近5天触达数据</h3><button onclick="openOutreachDetails()">查看更多</button></div>` +
-                `<p>含今天，日期为北京时间；按每日新增触达记录统计。</p><div class="recent-outreach-scroll"><table class="recent-outreach-table"><thead><tr><th scope="col">触达指标</th>` +
-                days.map(row => `<th scope="col">${escapeHtml(row.date)}</th>`).join('') +
+                `<p>含今天，日期为北京时间；按每日新增触达记录统计。</p><div class="recent-outreach-scroll"><table class="recent-outreach-table"><thead><tr><th scope="col">日期</th>` +
+                labels.map(([, label]) => `<th scope="col">${label}</th>`).join('') +
                 `</tr></thead><tbody>` +
-                labels.map(([key, label]) => `<tr><th scope="row">${label}</th>` +
-                    days.map(row => `<td>${key === 'total' ? labels.slice(0, 6).reduce((sum, [status]) => sum + (row[status] || 0), 0) : (row[key] || 0)}</td>`).join('') +
+                days.map(row => `<tr><th scope="row">${escapeHtml(row.date)}</th>` +
+                    labels.map(([key]) => `<td>${key === 'total' ? labels.slice(0, 6).reduce((sum, [status]) => sum + (row[status] || 0), 0) : (row[key] || 0)}</td>`).join('') +
                     `</tr>`).join('') + `</tbody></table></div>`;
         }
 
