@@ -24,3 +24,5 @@ libsql-client==0.3.1
 # Deploy compact strategy text viewer.
 
 # Deploy Discord community dashboard.
+
+# Deploy domestic and overseas customer navigation.
