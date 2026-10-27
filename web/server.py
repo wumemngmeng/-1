@@ -1075,6 +1075,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                             <th>当前状态</th>
                             <th>剔除原因</th>
                             <th style="min-width: 250px;">触达操作区域 (实时切换与话术)</th>
+                            <th style="min-width: 320px;">推送话术</th>
                         </tr>
                     </thead>
                     <tbody id="pipeline-body">
@@ -2170,6 +2171,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         </div>
                     </td>
                 `;
+                const pitchCell = document.createElement('td');
+                pitchCell.style.cssText = 'min-width:320px;max-width:480px;white-space:pre-wrap;overflow-wrap:anywhere;';
+                pitchCell.textContent = r.pitch_angle || '—';
+                tr.appendChild(pitchCell);
                 tbody.appendChild(tr);
             });
         }
