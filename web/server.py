@@ -1015,7 +1015,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
     <!-- 主视窗 -->
     <main>
-        <div class="report-date">统计日期：<time id="report-date"></time>（北京时间，当前数据快照）</div>
+        <div class="report-date">统计日期：<time id="report-date"></time>（北京时间） · <span id="data-freshness" aria-live="polite">数据状态：正在同步…</span></div>
         <!-- 视窗 1: 线索作战中台 -->
         <div id="view-pipeline" class="view-section active">
             <header>
@@ -1845,6 +1845,18 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('stat-tier-s').innerText = byTier['S'] || 0;
             document.getElementById('stat-tier-a').innerText = byTier['A'] || 0;
             document.getElementById('stat-tier-b').innerText = byTier['B'] || 0;
+            const freshness = document.getElementById('data-freshness');
+            const updatedAt = data.data_last_updated;
+            if (updatedAt) {
+                const normalized = updatedAt.includes('T') ? updatedAt : updatedAt.replace(' ', 'T') + 'Z';
+                const formatted = new Intl.DateTimeFormat('zh-CN', {
+                    timeZone:'Asia/Shanghai', month:'2-digit', day:'2-digit',
+                    hour:'2-digit', minute:'2-digit', hour12:false
+                }).format(new Date(normalized));
+                freshness.textContent = `数据状态：最新 · 最近更新 ${formatted}`;
+            } else {
+                freshness.textContent = '数据状态：最新 · 暂无客户数据';
+            }
             const dailyRes = await fetch('/api/funnel/daily?days=5&country=' + country);
             const daily = await dailyRes.json();
             if (country !== activeCountry) return;
@@ -2944,6 +2956,9 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                 end_utc.strftime("%Y-%m-%d %H:%M:%S"),
                 owner=owner,
                 country_type=country,
+            )
+            stats["data_last_updated"] = self.db.get_data_last_updated(
+                country_type=country, owner=owner
             )
             self.send_json(stats)
 
