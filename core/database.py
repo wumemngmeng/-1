@@ -469,6 +469,39 @@ class DatabaseManager:
         conn.close()
         return True
 
+    def get_data_last_updated(
+        self, country_type: Optional[str] = None, owner: Optional[str] = None
+    ) -> Optional[str]:
+        """Return the latest CRM write timestamp within the visible customer scope."""
+        conn = get_connection(self.db_path)
+        cur = conn.cursor()
+        conditions = []
+        params: List[Any] = []
+        if country_type:
+            conditions.append("c.country_type = ?")
+            params.append(country_type)
+        if owner is not None:
+            conditions.append("coalesce(c.owner, '') = ?")
+            params.append(owner)
+        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+        query = f"""
+            SELECT MAX(updated_at) AS last_updated FROM (
+                SELECT c.updated_at AS updated_at FROM companies c{where}
+                UNION ALL
+                SELECT l.updated_at AS updated_at
+                FROM leads l JOIN companies c ON c.id = l.company_id{where}
+                UNION ALL
+                SELECT r.updated_at AS updated_at
+                FROM outreach_records r
+                JOIN leads l ON l.id = r.lead_id
+                JOIN companies c ON c.id = l.company_id{where}
+            )
+        """
+        cur.execute(query, params * 3)
+        row = cur.fetchone()
+        conn.close()
+        return row["last_updated"] if row else None
+
     def query_pipeline(self, country_type: Optional[str] = None, status: Optional[str] = None, source_channel: Optional[str] = None, client_tier: Optional[str] = None, owner: Optional[str] = None) -> List[Dict[str, Any]]:
         conn = get_connection(self.db_path)
         cur = conn.cursor()
