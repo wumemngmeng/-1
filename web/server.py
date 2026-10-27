@@ -1061,15 +1061,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <div class="stat-label">🎯 目标企业总数</div>
                     <div class="stat-value" id="stat-companies">-</div>
                 </div>
-                <div class="stat-card">
+                <div class="stat-card" title="悬浮或点击查看 S 级规则" onclick="openTierRule('S')" style="cursor:help">
                     <div class="stat-label">🔥 S级战略大客户</div>
                     <div class="stat-value" id="stat-tier-s" style="color:#f87171;">-</div>
                 </div>
-                <div class="stat-card">
+                <div class="stat-card" title="悬浮或点击查看 A 级规则" onclick="openTierRule('A')" style="cursor:help">
                     <div class="stat-label">⭐ A级核心腰部</div>
                     <div class="stat-value" id="stat-tier-a" style="color:#fbbf24;">-</div>
                 </div>
-                <div class="stat-card">
+                <div class="stat-card" title="悬浮或点击查看 B 级规则" onclick="openTierRule('B')" style="cursor:help">
                     <div class="stat-label">🚀 B级高意向</div>
                     <div class="stat-value" id="stat-tier-b" style="color:#60a5fa;">-</div>
                 </div>
@@ -1629,6 +1629,24 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             'B': 'B级 高意向',
             'C': 'C级 潜力探索'
         };
+        const TIER_RULES = {
+            S: '战略级 / 特大客户：年流水过亿或 200 人以上；头部品牌、头部 DTC 或巨头代理；预计月生图 50,000+，适合私有化、团队空间大包或高并发 API。',
+            A: '核心腰部大客户：约 50–200 人；月商拍约 500–2,000 张；主力品牌或 Shopify Plus 热卖品牌；年营收约 5,000 万–2 亿，适合 10–30 座席及月度算力充值。',
+            B: '成长型高意向客户：约 20–50 人；中腰部活跃卖家或创意团队；月摄影外包约 2–5 万，有稳定生图刚需，适合 5–10 座席团队版。'
+        };
+
+        function openTierRule(tier) {
+            const rule = TIER_RULES[tier];
+            if (!rule) return;
+            document.getElementById('modal-title').textContent = `${TIER_NAME_MAP[tier]} · 定义规则`;
+            const body = document.getElementById('modal-body');
+            body.replaceChildren();
+            const content = document.createElement('p');
+            content.style.cssText = 'white-space:pre-wrap;line-height:1.8;';
+            content.textContent = rule;
+            body.appendChild(content);
+            document.getElementById('modal').style.display = 'flex';
+        }
 
         const EN_ZH_DICTIONARY = {
             // 行业类目
@@ -2126,7 +2144,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
                 // 等级徽章
                 const tier = r.client_tier || 'B';
-                const tierBadge = `<span class="tier-badge tier-${tier}" title="${TIER_NAME_MAP[tier] || tier}">${tier}级</span>`;
+                const tierRule = TIER_RULES[tier] || TIER_NAME_MAP[tier] || tier;
+                const tierBadge = `<span class="tier-badge tier-${tier}" title="${escapeHtml(tierRule)}">${tier}级</span>`;
 
                 // 官网链接
                 let companyDisplay = `<strong>${escapeHtml(r.company_name)}</strong>`;
@@ -2289,6 +2308,23 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         function renderTouchFunnel(target, rows) {
             updateReportDate();
             const data = buildTouchFunnelData(rows);
+            if (activeCountry === 'overseas') {
+                const overseasCards = [
+                    ['海外企业汇总', data.total],
+                    ['待触达', data.counts.pending],
+                    ['不触达', data.counts.lost],
+                    ['已建联', data.counts.contacted],
+                    ['有意向', data.counts.negotiation],
+                    ['已注册', data.counts.team_trial],
+                    ['已充值', data.counts.won],
+                ];
+                document.getElementById(target).innerHTML = `<h3>海外客户汇总</h3>
+                    <div class="touch-funnel-row">${overseasCards.map(([label, count]) =>
+                        `<div class="touch-funnel-stage"><span>${label}</span><strong>${count}</strong></div>`
+                    ).join('')}</div>
+                    <p>企业去重，按当前触达状态统计；已推送未回复 ${data.counts.sample_sent} 家。</p>`;
+                return;
+            }
             const labels = ['待触达', '已推送未回复', '已建连', '有意向', '已注册', '已充值'];
             const pct = (n, d) => d ? (100 * n / d).toFixed(1) + '%' : '—';
             document.getElementById(target).innerHTML = `<h3>触达动作转化漏斗</h3>
