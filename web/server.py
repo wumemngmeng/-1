@@ -2123,6 +2123,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         <span class="editable-cell" onclick="openProspectDetails(${r.company_id})" title="查看企业详情">
                             ${companyDisplay}
                         </span>
+                        ${r.company_notes ? `<details style="margin-top:6px;max-width:360px;font-size:12px;"><summary>公司业务备注</summary><div style="white-space:pre-wrap;overflow-wrap:anywhere;">${escapeHtml(r.company_notes)}</div></details>` : ''}
                     </td>
                     <td>
                         <span class="editable-cell" onclick="${canEdit ? `openEditCompanyModal(${rJson})` : `alert('无权限编辑')`}" title="点击修改公司来源渠道">${companySource}</span>
