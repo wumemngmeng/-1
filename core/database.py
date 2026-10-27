@@ -534,7 +534,17 @@ class DatabaseManager:
                 o.channel,
                 o.pitch_angle,
                 o.interaction_notes,
-                o.next_follow_up_date
+                o.next_follow_up_date,
+                max(
+                    c.updated_at,
+                    coalesce((SELECT MAX(l3.updated_at) FROM leads l3 WHERE l3.company_id = c.id), c.updated_at),
+                    coalesce((
+                        SELECT MAX(r3.updated_at)
+                        FROM outreach_records r3
+                        JOIN leads l4 ON l4.id = r3.lead_id
+                        WHERE l4.company_id = c.id
+                    ), c.updated_at)
+                ) as data_updated_at
             FROM companies c
             LEFT JOIN leads l ON l.id = (
                 SELECT l2.id
@@ -569,7 +579,7 @@ class DatabaseManager:
         if owner is not None:
             query += " AND coalesce(c.owner, '') = ?"
             params.append(owner)
-        query += " ORDER BY CASE coalesce(c.client_tier, 'B') WHEN 'S' THEN 1 WHEN 'A' THEN 2 WHEN 'B' THEN 3 ELSE 4 END, c.id DESC, l.id DESC"
+        query += " ORDER BY data_updated_at DESC, c.id DESC, l.id DESC"
         
         cur.execute(query, params)
         rows = [dict(r) for r in cur.fetchall()]
