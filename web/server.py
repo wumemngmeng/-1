@@ -2294,7 +2294,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById(target).innerHTML = `<h3>触达动作转化漏斗</h3>
                 <p>当前筛选范围：${data.total} 家企业 · 已充值 / 有效客户：${pct(data.counts.won, data.reached[0])}</p>
                 <div class="touch-funnel-row">${FUNNEL_STAGES.map((s, i) =>
-                    `<div class="touch-funnel-stage"><span>${labels[i]}</span><strong>${data.counts[s]} <small>家（当前停留）</small></strong>
+                    `<div class="touch-funnel-stage"><span>${labels[i]}</span><strong>${data.counts[s]}${activeCountry === 'overseas' ? '' : ' <small>家（当前停留）</small>'}</strong>
                     <small>本阶段及以后：${data.reached[i]} 家</small>
                     <small>${i ? '较上阶段推进：' + pct(data.reached[i], data.reached[i - 1]) : '有效客户基数'}</small></div>`
                 ).join('')}<div class="touch-funnel-stage"><span>不触达</span><strong>${data.counts.lost} <small>家</small></strong>
