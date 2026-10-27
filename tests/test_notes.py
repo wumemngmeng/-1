@@ -131,6 +131,8 @@ vm.runInContext(SCRIPT, context);
         html = html_template()
         self.assertIn('id="domestic-nav"', html)
         self.assertIn('id="overseas-nav"', html)
+        self.assertIn('>推送话术</th>', html)
+        self.assertIn("pitchCell.textContent = r.pitch_angle || '—'", html)
         self.assertIn("countryFilter.disabled = true", html)
         script = html.split("<script>", 1)[1].split("</script>", 1)[0]
         script = script.split("// 初始化加载", 1)[0]
