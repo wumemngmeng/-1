@@ -443,13 +443,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             border-collapse: collapse;
         }
         .pipeline-table {
-            min-width: 1480px;
+            min-width: 1500px;
             table-layout: fixed;
         }
         .pipeline-table th,
         .pipeline-table td {
             overflow-wrap: anywhere;
             word-break: break-word;
+            padding: 8px 9px;
+            vertical-align: top;
         }
         .pipeline-table th:nth-child(1),
         .pipeline-table td:nth-child(1) { width: 68px; }
@@ -472,7 +474,30 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .pipeline-table th:nth-child(10),
         .pipeline-table td:nth-child(10) { width: 180px; }
         .pipeline-table th:nth-child(11),
-        .pipeline-table td:nth-child(11) { width: 290px; }
+        .pipeline-table td:nth-child(11) { width: 270px; }
+        .pipeline-table th:nth-child(12),
+        .pipeline-table td:nth-child(12) { width: 150px; }
+        .company-note-summary {
+            display: block;
+            max-width: 210px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .pitch-preview {
+            display: block;
+            width: 100%;
+            max-height: 48px;
+            overflow: hidden;
+            text-align: left;
+            line-height: 1.45;
+            color: #93c5fd;
+            background: transparent;
+            border: 0;
+            padding: 0;
+            cursor: pointer;
+        }
+        .pitch-preview:hover { color: #fff; text-decoration: underline; }
         .pipeline-table .source-tag,
         .pipeline-table .source-lead-tag {
             white-space: normal;
@@ -1871,7 +1896,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
         function renderRecentOutreachTable(rows) {
             const labels = [['sample_sent', '已推送'], ['contacted', '已建连'], ['negotiation', '有意向'], ['team_trial', '已注册'], ['won', '已充值'], ['lost', '不触达'], ['total', '触达记录']];
-            const days = rows.slice(0, 5).sort((a, b) => a.date.localeCompare(b.date));
+            const days = rows.slice(0, 5).sort((a, b) => b.date.localeCompare(a.date));
             document.getElementById('yesterday-outreach-stats').innerHTML =
                 `<div class="recent-outreach-header"><h3>最近5天触达数据</h3><button onclick="openOutreachDetails()">查看更多</button></div>` +
                 `<p>含今天，日期为北京时间；按每日新增触达记录统计。</p><div class="recent-outreach-scroll"><table class="recent-outreach-table"><thead><tr><th scope="col">日期</th>` +
@@ -2135,7 +2160,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         <span class="editable-cell" onclick="openProspectDetails(${r.company_id})" title="查看企业详情">
                             ${companyDisplay}
                         </span>
-                        ${r.company_notes ? `<details style="margin-top:6px;max-width:360px;font-size:12px;"><summary>公司业务备注</summary><div style="white-space:pre-wrap;overflow-wrap:anywhere;">${escapeHtml(r.company_notes)}</div></details>` : ''}
+                        ${r.company_notes ? `<details style="margin-top:6px;font-size:12px;"><summary class="company-note-summary">公司业务备注：${escapeHtml(r.company_notes)}</summary><div style="white-space:pre-wrap;overflow-wrap:anywhere;">${escapeHtml(r.company_notes)}</div></details>` : ''}
                     </td>
                     <td>
                         <span class="editable-cell" onclick="${canEdit ? `openEditCompanyModal(${rJson})` : `alert('无权限编辑')`}" title="点击修改公司来源渠道">${companySource}</span>
@@ -2185,8 +2210,17 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     </td>
                 `;
                 const pitchCell = document.createElement('td');
-                pitchCell.style.cssText = 'min-width:320px;max-width:480px;white-space:pre-wrap;overflow-wrap:anywhere;';
-                pitchCell.textContent = r.pitch_angle || '—';
+                if (r.pitch_angle) {
+                    const preview = document.createElement('button');
+                    preview.className = 'pitch-preview';
+                    preview.type = 'button';
+                    preview.textContent = r.pitch_angle;
+                    preview.title = '点击查看完整推送话术';
+                    preview.addEventListener('click', () => openSavedPitch(r.company_name, r.pitch_angle));
+                    pitchCell.appendChild(preview);
+                } else {
+                    pitchCell.textContent = '—';
+                }
                 tr.appendChild(pitchCell);
                 tbody.appendChild(tr);
             });
@@ -2487,6 +2521,16 @@ ${escapeHtml(data.email_body_zh)}</div>`;
 
         function closeModal() {
             document.getElementById('modal').style.display = 'none';
+        }
+        function openSavedPitch(companyName, pitchText) {
+            document.getElementById('modal-title').textContent = `${companyName} · 推送话术`;
+            const body = document.getElementById('modal-body');
+            body.replaceChildren();
+            const content = document.createElement('pre');
+            content.style.cssText = 'white-space:pre-wrap;word-break:break-word;line-height:1.7;font-family:inherit;';
+            content.textContent = pitchText;
+            body.appendChild(content);
+            document.getElementById('modal').style.display = 'flex';
         }
 
         // 注册登录系统 Modal 与 API 处理
