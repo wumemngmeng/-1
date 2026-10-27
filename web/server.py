@@ -1003,11 +1003,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 </div>
             </div>
             <ul class="nav-list">
-                <li class="nav-item active" id="domestic-nav" onclick="switchPipelineMarket('domestic', this)">
-                    <span>⚡</span> <span>国内客户</span>
-                </li>
                 <li class="nav-item" id="overseas-nav" onclick="switchPipelineMarket('overseas', this)">
                     <span>🌐</span> <span>海外客户</span>
+                </li>
+                <li class="nav-item active" id="domestic-nav" onclick="switchPipelineMarket('domestic', this)">
+                    <span>⚡</span> <span>国内客户</span>
                 </li>
                 <li class="nav-item" id="permissions-nav" onclick="switchNav('permissions', this)">
                     <span>🛡️</span> <span>组织与权限管理</span>
