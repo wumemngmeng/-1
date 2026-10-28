@@ -132,7 +132,30 @@ class AuthTests(unittest.TestCase):
             self.assertEqual(stats["total_companies"], 1)
             self.assertEqual(stats["companies_by_tier"], {"B": 1})
             self.assertEqual(stats["yesterday_outreach"], {"sample_sent": 1})
+            self.assertTrue(stats["data_last_updated"])
         self.assertEqual(self.request("GET", "/api/stats?country=invalid", cookie=rep)[0], 400)
+
+    def test_pipeline_orders_by_latest_company_lead_or_outreach_update(self):
+        older = self.db.insert_company({"name": "较早更新客户", "country_type": "overseas"})
+        newer = self.db.insert_company({"name": "最新更新客户", "country_type": "overseas"})
+        older_lead = self.db.insert_lead({"company_id": older, "contact_name": "较早联系人"})
+        newer_lead = self.db.insert_lead({"company_id": newer, "contact_name": "最新联系人"})
+        older_touch = self.db.record_outreach({"lead_id": older_lead, "status": "sample_sent"})
+        newer_touch = self.db.record_outreach({"lead_id": newer_lead, "status": "sample_sent"})
+        from core.database import get_connection
+        conn = get_connection(self.db.db_path)
+        for table in ("companies", "leads", "outreach_records"):
+            conn.execute(f"UPDATE {table} SET updated_at = '2026-10-20 00:00:00'")
+        conn.execute(
+            "UPDATE outreach_records SET updated_at = '2026-10-27 08:00:00' WHERE id = ?",
+            (newer_touch,),
+        )
+        conn.commit()
+        conn.close()
+
+        rows = self.db.query_pipeline(country_type="overseas")
+        self.assertEqual([row["company_id"] for row in rows[:2]], [newer, older])
+        self.assertEqual(rows[0]["data_updated_at"], "2026-10-27 08:00:00")
 
     def test_logout_clears_session(self):
         admin = self.login("admin", "admin123")
