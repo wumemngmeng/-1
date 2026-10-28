@@ -460,7 +460,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .pipeline-table th:nth-child(3),
         .pipeline-table td:nth-child(3) { width: 125px; }
         .pipeline-table th:nth-child(4),
-        .pipeline-table td:nth-child(4) { width: 135px; }
+        .pipeline-table td:nth-child(4) { width: 290px; }
+        .company-description { font-size:12px;line-height:1.6; }
+        .company-description summary { cursor:pointer; }
+        .company-description summary span {
+            display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+            overflow:hidden;
+        }
+        .company-description[open] summary span { display:block; }
+        .description-source { white-space:pre-wrap;overflow-wrap:anywhere;color:#94a3b8;margin-top:6px; }
         .pipeline-table th:nth-child(5),
         .pipeline-table td:nth-child(5) { width: 65px; }
         .pipeline-table th:nth-child(6),
@@ -1092,7 +1100,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                             <th>等级</th>
                             <th>企业名称 (官网直达)</th>
                             <th>公司来源</th>
-                            <th>赛道/类目</th>
+                            <th id="company-description-heading">赛道/类目</th>
                             <th>市场</th>
                             <th>创始人 / X 主页</th>
                             <th>直连渠道 (微信/电话/邮箱)</th>
@@ -1510,6 +1518,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             </div>
             <form id="prospect-form" class="prospect-form" onsubmit="saveProspectDetails(event)">
                 <label>客户类型 <select id="p-type"><option value="">待分类</option><option>电商商拍客户</option><option>API / AI 应用客户</option><option>广告 / 代运营机构</option></select></label>
+                <label>企业描述 <textarea class="form-control" id="p-description" rows="4" placeholder="服务对象、具体业务、公开业务规模；未核实的数据请注明"></textarea></label>
+                <label>描述来源与核验日期 <textarea class="form-control" id="p-description-source" rows="2" placeholder="官网或 X 主页链接、核验日期与未确认事项"></textarea></label>
                 <label>客户情况与备注 <textarea class="form-control" id="p-notes" rows="4" placeholder="记录客户当前痛点、沟通情况、采购计划和下一步跟进安排"></textarea></label>
                 <label>涉及的模型 <input class="form-control" id="p-models" placeholder="如 Kling、GPT Image；仅填写有来源的信息"></label>
                 <label>用户 / 调用规模 <input class="form-control" id="p-audience" placeholder="注明单位、时间和出处；未核实写待核查"></label>
@@ -2065,6 +2075,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         function renderTable() {
             const tbody = document.getElementById('pipeline-body');
             tbody.innerHTML = '';
+            const heading = document.getElementById('company-description-heading');
+            if (heading) heading.textContent = activeCountry === 'overseas' ? '企业描述' : '赛道/类目';
             
             const scopedRows = marketRows();
             const filtered = scopedRows.filter(item => {
@@ -2157,7 +2169,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     companyDisplay = `<strong>${escapeHtml(r.company_name)}</strong> <a href="${escapeHtml(url)}" onclick="event.stopPropagation()" target="_blank" rel="noopener noreferrer" class="company-link" title="打开官网">↗</a>`;
                 }
 
-                companyDisplay += `<div style="font-size:11px;color:#9ca3af" title="${escapeHtml(r.spend_basis || '暂无可靠消费估算依据')}">行业：${escapeHtml(r.industry || '待评估')} · 月预计消费：${r.estimated_monthly_spend == null ? '待评估' : '约 ¥' + Number(r.estimated_monthly_spend).toLocaleString()}</div>`;
+                companyDisplay += `<div style="font-size:11px;color:#9ca3af" title="${escapeHtml(r.spend_basis || '暂无可靠消费估算依据')}">${isCn ? '行业：' + escapeHtml(r.industry || '待评估') + ' · ' : ''}月预计消费：${r.estimated_monthly_spend == null ? '待评估' : '约 ¥' + Number(r.estimated_monthly_spend).toLocaleString()}</div>`;
 
                 // 来源标签
                 const companySource = r.source_channel ? `<span class="source-tag">${r.source_channel}</span>` : '<span style="color:#64748b;">-</span>';
@@ -2170,6 +2182,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
                 const indHint = getEnZhHint(r.industry);
                 const industryDisplay = indHint ? `${escapeHtml(r.industry)} <span style="color:#38bdf8;font-size:11px;">(${escapeHtml(indHint)})</span>` : escapeHtml(r.industry || '-');
+                const descriptionDisplay = `<details class="company-description"><summary title="点击展开企业描述与来源"><span>${escapeHtml(r.company_description || '企业描述待核实；原行业分类：' + (r.industry || '未分类'))}</span></summary><div class="description-source">${escapeHtml(r.description_source || '暂无已核实来源')}</div></details>`;
 
                 tr.innerHTML = `
                     <td style="text-align:center;">
@@ -2185,7 +2198,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         <span class="editable-cell" onclick="${canEdit ? `openEditCompanyModal(${rJson})` : `alert('无权限编辑')`}" title="点击修改公司来源渠道">${companySource}</span>
                     </td>
                     <td>
-                        <span class="editable-cell" onclick="${canEdit ? `openEditCompanyModal(${rJson})` : `alert('无权限编辑')`}" title="点击修改赛道/类目">${industryDisplay}</span>
+                        ${isCn ? `<span class="editable-cell" onclick="${canEdit ? `openEditCompanyModal(${rJson})` : `alert('无权限编辑')`}" title="点击修改赛道/类目">${industryDisplay}</span>` : descriptionDisplay}
                     </td>
                     <td>
                         <span class="editable-cell" onclick="${canEdit ? `openEditCompanyModal(${rJson})` : `alert('无权限编辑')`}" title="点击修改市场区域"><span class="tag ${tagClass}">${tagLabel}</span></span>
@@ -2752,7 +2765,8 @@ ${escapeHtml(data.email_body_zh)}</div>`;
             const columns = [
                 ['客户等级', r => r.client_tier || 'B'], ['企业ID', r => r.company_id],
                 ['企业名称', r => r.company_name], ['区域', r => r.country_type === 'domestic' ? '国内' : '海外'],
-                ['行业赛道', r => r.industry], ['客户类型', r => r.customer_type],
+                ['行业赛道', r => r.industry], ['企业描述', r => r.company_description],
+                ['描述来源与核验日期', r => r.description_source], ['客户类型', r => r.customer_type],
                 ['每月预计消耗', r => r.estimated_monthly_spend], ['消费估算依据', r => r.spend_basis],
                 ['企业官网', r => r.website], ['公司数据来源', r => r.source_channel],
                 ['客户情况备注', r => r.company_notes], ['负责人', r => r.owner],
@@ -2817,7 +2831,7 @@ ${escapeHtml(data.email_body_zh)}</div>`;
         document.addEventListener('keydown', event => {if(event.key === 'Escape') closeProspectDetails();});
         let activeProspect = null;
         let prospectFormBaseline = '';
-        const prospectFields = {notes:'notes',exclusion_reason:'exclusion',customer_type:'type',models_used:'models',audience_scale:'audience',qualification_evidence:'evidence',discovery_url:'source',estimated_monthly_spend:'spend',spend_basis:'basis',owner:'owner',prospect_status:'status',company_follow_up_date:'date'};
+        const prospectFields = {notes:'notes',company_description:'description',description_source:'description-source',exclusion_reason:'exclusion',customer_type:'type',models_used:'models',audience_scale:'audience',qualification_evidence:'evidence',discovery_url:'source',estimated_monthly_spend:'spend',spend_basis:'basis',owner:'owner',prospect_status:'status',company_follow_up_date:'date'};
         function getProspectFormState() {
             return JSON.stringify(Object.fromEntries(
                 Object.values(prospectFields).map(field => [field, document.getElementById('p-'+field).value])
@@ -3177,13 +3191,13 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
             with open(out_path, mode="w", encoding="utf-8-sig", newline="") as f:
                 writer = csv.writer(f)
                 writer.writerow([
-                    "客户等级", "企业ID", "企业名称", "区域", "行业赛道", "规模", "企业官网", "公司数据来源", "客户情况备注",
+                    "客户等级", "企业ID", "企业名称", "区域", "行业赛道", "企业描述", "描述来源与核验日期", "规模", "企业官网", "公司数据来源", "客户情况备注",
                     "线索ID", "决策人姓名", "真实职位", "手机/微信", "工作邮箱", "领英主页", "创始人X主页", "线索来源",
                     "当前跟进状态", "触达渠道", "破冰切入点", "沟通纪要"
                 ])
                 for r in rows:
                     writer.writerow([
-                        r.get('client_tier') or 'B', r['company_id'], r['company_name'], r['country_type'], r['industry'], r['scale'], r['website'], r['source_channel'], r.get('company_notes') or '',
+                        r.get('client_tier') or 'B', r['company_id'], r['company_name'], r['country_type'], r['industry'], r.get('company_description') or '', r.get('description_source') or '', r['scale'], r['website'], r['source_channel'], r.get('company_notes') or '',
                         r['lead_id'], r['contact_name'], r['job_title'], r['phone'] or r['wechat'], r['email'], r['linkedin_url'], r.get('x_url') or '', r.get('lead_source') or '',
                         r['status'], r['channel'], r['pitch_angle'], r['interaction_notes']
                     ])
