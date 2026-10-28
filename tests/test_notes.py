@@ -131,9 +131,21 @@ vm.runInContext(SCRIPT, context);
         html = html_template()
         self.assertIn('id="domestic-nav"', html)
         self.assertIn('id="overseas-nav"', html)
+        self.assertLess(html.index('id="overseas-nav"'), html.index('id="domestic-nav"'))
         self.assertIn('>推送话术</th>', html)
-        self.assertIn('<summary>公司业务备注</summary>', html)
-        self.assertIn("pitchCell.textContent = r.pitch_angle || '—'", html)
+        self.assertIn('class="company-note-summary"', html)
+        self.assertIn('id="data-freshness"', html)
+        self.assertIn('数据状态：最新 · 最近更新', html)
+        self.assertIn("preview.addEventListener('click', () => openSavedPitch", html)
+        self.assertIn("content.textContent = pitchText", html)
+        self.assertIn("activeCountry === 'overseas' ? '' : ' <small>家（当前停留）</small>'", html)
+        self.assertIn("['海外企业汇总', data.total]", html)
+        self.assertIn("['待触达', data.counts.pending]", html)
+        self.assertIn("['不触达', data.counts.lost]", html)
+        self.assertIn("['已建联', data.counts.contacted]", html)
+        self.assertIn("onclick=\"openTierRule('S')\"", html)
+        self.assertIn("const TIER_RULES = {", html)
+        self.assertIn("content.textContent = rule", html)
         self.assertIn("countryFilter.disabled = true", html)
         script = html.split("<script>", 1)[1].split("</script>", 1)[0]
         script = script.split("// 初始化加载", 1)[0]
@@ -200,7 +212,7 @@ vm.runInContext(SCRIPT,context);
     check((table.match(/scope="row"/g)||[]).length===5,'expected five date rows');
     check(table.includes('<th scope="col">已推送</th>'),'metrics must be column headers');
     check(table.includes('<th scope="row">2026-10-26</th>'),'dates must be row headers');
-    check(table.indexOf('2026-10-22')<table.indexOf('2026-10-26'),'date order incorrect');
+    check(table.indexOf('2026-10-26')<table.indexOf('2026-10-22'),'date order incorrect');
     check(!table.includes('2026-10-21'),'more than five days shown');
     check(table.includes('<td>5</td>'),'daily total incorrect');
     let destination;
