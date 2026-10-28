@@ -287,7 +287,7 @@ def init_db(db_path: str = DB_PATH):
         cursor.execute("ALTER TABLE leads ADD COLUMN x_url TEXT")
     
     # Estimated monthly Aibubu spend, CNY; unknown unless supported by evidence.
-    for field, definition in [('estimated_monthly_spend', 'REAL'), ('spend_basis', 'TEXT'), ('discovery_url', 'TEXT'), ('customer_type', 'TEXT'), ('models_used', 'TEXT'), ('qualification_evidence', 'TEXT'), ('owner', 'TEXT'), ('company_follow_up_date', 'TEXT'), ('prospect_status', 'TEXT'), ('audience_scale', 'TEXT'), ('exclusion_reason', 'TEXT'), ('previous_prospect_status', 'TEXT')]:
+    for field, definition in [('company_description', 'TEXT'), ('description_source', 'TEXT'), ('estimated_monthly_spend', 'REAL'), ('spend_basis', 'TEXT'), ('discovery_url', 'TEXT'), ('customer_type', 'TEXT'), ('models_used', 'TEXT'), ('qualification_evidence', 'TEXT'), ('owner', 'TEXT'), ('company_follow_up_date', 'TEXT'), ('prospect_status', 'TEXT'), ('audience_scale', 'TEXT'), ('exclusion_reason', 'TEXT'), ('previous_prospect_status', 'TEXT')]:
         if field not in c_cols:
             cursor.execute(f"ALTER TABLE companies ADD COLUMN {field} {definition}")
 
@@ -520,6 +520,8 @@ class DatabaseManager:
                 c.annual_revenue_range,
                 coalesce(c.client_tier, 'B') as client_tier,
                 c.notes as company_notes,
+                c.company_description,
+                c.description_source,
                 l.id as lead_id,
                 l.contact_name,
                 l.job_title,
@@ -714,6 +716,7 @@ class DatabaseManager:
             'name', 'country_type', 'industry', 'scale', 'website',
             'city_or_region', 'source_channel', 'annual_revenue_range',
             'client_tier', 'has_image_heavy_demand', 'notes',
+            'company_description', 'description_source',
             'estimated_monthly_spend', 'spend_basis', 'discovery_url',
             'customer_type', 'models_used', 'qualification_evidence', 'owner', 'company_follow_up_date', 'prospect_status', 'audience_scale', 'exclusion_reason', 'previous_prospect_status'
         }
