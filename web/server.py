@@ -1508,7 +1508,7 @@ Aibubu Team</textarea>
 
     <!-- 弹窗 2.2: 编辑决策人线索信息 (Lead) -->
     <div id="edit-lead-modal">
-        <div class="modal-content" style="max-width: 600px;">
+        <div class="modal-content" style="max-width: 820px;">
             <div class="modal-header">
                 <h3 id="edit-lead-title">编辑决策人与触达联系方式</h3>
                 <button onclick="closeEditLeadModal()">✕ 关闭</button>
@@ -1518,15 +1518,62 @@ Aibubu Team</textarea>
                 <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
                     <div class="form-group">
                         <label>决策人姓名</label>
-                        <input type="text" id="edit-lead-name" class="form-control" required placeholder="如: 张总, 李总监">
+                        <input type="text" id="edit-lead-name" class="form-control" required placeholder="必须是公开资料中的真实姓名">
                     </div>
                     <div class="form-group">
-                        <label>手机号码 (加企微/直呼)</label>
+                        <label>真实职位</label>
+                        <input type="text" id="edit-lead-title" class="form-control" required placeholder="创始人 / 联合创始人 / CEO">
+                    </div>
+                    <div class="form-group" style="grid-column: 1 / -1;">
+                        <label>创始人身份来源 URL</label>
+                        <input type="url" id="edit-lead-identity-url" class="form-control" placeholder="企业官网或创始人本人公开页面">
+                    </div>
+                    <div class="form-group" style="grid-column: 1 / -1;">
+                        <label>创始人身份证据原文</label>
+                        <textarea id="edit-lead-identity-evidence" class="form-control" rows="2" placeholder="粘贴能证明姓名和职位的公开原文，不要推测"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>公开商务手机号</label>
                         <input type="text" id="edit-lead-phone" class="form-control" placeholder="138xxxxxxxx">
+                    </div>
+                    <div class="form-group">
+                        <label>手机号可信等级</label>
+                        <select id="edit-lead-phone-confidence" class="form-control"><option value="">未核验</option><option>A</option><option>B</option><option>C</option><option>D</option></select>
+                    </div>
+                    <div class="form-group" style="grid-column: 1 / -1;">
+                        <label>手机号来源 URL</label>
+                        <input type="url" id="edit-lead-phone-url" class="form-control" placeholder="公开页面 URL">
+                    </div>
+                    <div class="form-group" style="grid-column: 1 / -1;">
+                        <label>手机号证据原文</label>
+                        <textarea id="edit-lead-phone-evidence" class="form-control" rows="2"></textarea>
                     </div>
                     <div class="form-group">
                         <label>微信号码</label>
                         <input type="text" id="edit-lead-wechat" class="form-control" placeholder="微信ID">
+                    </div>
+                    <div class="form-group">
+                        <label>微信可信等级</label>
+                        <select id="edit-lead-wechat-confidence" class="form-control"><option value="">未核验</option><option>A</option><option>B</option><option>C</option><option>D</option></select>
+                    </div>
+                    <div class="form-group" style="grid-column: 1 / -1;">
+                        <label>微信来源 URL</label>
+                        <input type="url" id="edit-lead-wechat-url" class="form-control" placeholder="公开页面 URL">
+                    </div>
+                    <div class="form-group" style="grid-column: 1 / -1;">
+                        <label>微信证据原文</label>
+                        <textarea id="edit-lead-wechat-evidence" class="form-control" rows="2"></textarea>
+                    </div>
+                    <div class="form-group" style="grid-column: 1 / -1;">
+                        <label><input type="checkbox" id="edit-lead-same-contact"> 公开原文明确写明“手机号同微信”</label>
+                    </div>
+                    <div class="form-group">
+                        <label>Aibubu 适配评分（0–100）</label>
+                        <input type="number" min="0" max="100" id="edit-lead-fit-score" class="form-control" value="0">
+                    </div>
+                    <div class="form-group">
+                        <label>最近核验日期</label>
+                        <input type="date" id="edit-lead-verified-at" class="form-control">
                     </div>
                     <div class="form-group">
                         <label>工作邮箱</label>
@@ -1543,6 +1590,10 @@ Aibubu Team</textarea>
                     <div class="form-group" style="grid-column: 1 / -1;">
                         <label>创始人 X 主页链接</label>
                         <input type="text" id="edit-lead-x" class="form-control" placeholder="https://x.com/...">
+                    </div>
+                    <div class="form-group" style="grid-column: 1 / -1;">
+                        <strong id="edit-lead-verification-status">核验状态：待审核</strong>
+                        <p style="font-size:12px;color:var(--text-muted)">手机号和微信分别保存来源。只有身份、手机号、微信均为 A/B 级且适配评分不低于 70，才会自动进入“可销售触达”。</p>
                     </div>
                 </div>
                 <div class="modal-actions" style="margin-top:16px;">
@@ -2378,7 +2429,17 @@ Aibubu Team</textarea>
                 const contact = contactName
                     ? `${escapeHtml(contactName)}${xUrl ? ` <a href="${escapeHtml(xUrl)}" onclick="event.stopPropagation()" target="_blank" rel="noopener noreferrer" class="company-link" title="打开创始人 X 主页">X ↗</a>` : ''}`
                     : '<span style="color:#64748b;">创始人待核验</span>';
-                const direct = r.phone || r.email || r.wechat || '-';
+                const direct = [
+                    r.phone ? `手机：${r.phone}` : '',
+                    r.wechat ? `微信：${r.wechat}` : '',
+                    r.email ? `邮箱：${r.email}` : ''
+                ].filter(Boolean).join(' · ') || '-';
+                const verificationLabels = {
+                    sales_ready:'可销售触达', contact_verified:'联系方式已核验',
+                    contact_partial:'部分联系方式已核验', identity_verified:'身份已核验',
+                    pending_review:'待核验', rejected:'已拒绝'
+                };
+                const verification = verificationLabels[r.verification_status] || '待核验';
                 const currentStatus = r.status || 'pending';
                 const statusClass = 'status-' + currentStatus;
 
@@ -2435,7 +2496,7 @@ Aibubu Team</textarea>
                         <span class="editable-cell" onclick="${canEdit && r.lead_id ? `openEditLeadModal(${rJson})` : canEdit ? `alert('暂未录入决策人，请在数据库添加')` : `alert('无权限编辑')`}" title="点击修改决策人姓名">${contact}</span>
                     </td>
                     <td>
-                        <span class="editable-cell" onclick="${canEdit && r.lead_id ? `openEditLeadModal(${rJson})` : `alert('无权限编辑')`}" title="点击修改电话/微信/邮箱"><code>${escapeHtml(direct)}</code></span>
+                        <span class="editable-cell" onclick="${canEdit && r.lead_id ? `openEditLeadModal(${rJson})` : `alert('无权限编辑')`}" title="点击查看字段级证据"><code>${escapeHtml(direct)}</code><small style="display:block;color:${r.verification_status === 'sales_ready' ? '#34d399' : '#fbbf24'}">${escapeHtml(verification)} · ${Number(r.fit_score || 0)}分</small></span>
                     </td>
                     <td>
                         <span class="editable-cell" onclick="${canEdit && r.lead_id ? `openEditLeadModal(${rJson})` : `alert('无权限编辑')`}" title="点击修改线索来源渠道">${leadSource}</span>
@@ -2798,6 +2859,76 @@ ${escapeHtml(data.email_body_zh)}</div>`;
 
         function closeModal() {
             document.getElementById('modal').style.display = 'none';
+        }
+
+        const LEAD_VERIFICATION_TEXT = {
+            pending_review:'待核验', identity_verified:'身份已核验',
+            contact_partial:'部分联系方式已核验', contact_verified:'联系方式已核验',
+            sales_ready:'可销售触达', rejected:'已拒绝'
+        };
+        function openEditLeadModal(row) {
+            document.getElementById('edit-lead-id').value = row.lead_id || '';
+            document.getElementById('edit-lead-name').value = row.contact_name || '';
+            document.getElementById('edit-lead-title').value = row.job_title || '';
+            document.getElementById('edit-lead-identity-url').value = row.identity_source_url || '';
+            document.getElementById('edit-lead-identity-evidence').value = row.identity_evidence || '';
+            document.getElementById('edit-lead-phone').value = row.phone || '';
+            document.getElementById('edit-lead-phone-url').value = row.phone_source_url || '';
+            document.getElementById('edit-lead-phone-evidence').value = row.phone_evidence || '';
+            document.getElementById('edit-lead-phone-confidence').value = row.phone_confidence || '';
+            document.getElementById('edit-lead-wechat').value = row.wechat || '';
+            document.getElementById('edit-lead-wechat-url').value = row.wechat_source_url || '';
+            document.getElementById('edit-lead-wechat-evidence').value = row.wechat_evidence || '';
+            document.getElementById('edit-lead-wechat-confidence').value = row.wechat_confidence || '';
+            document.getElementById('edit-lead-same-contact').checked = Boolean(row.wechat_same_as_phone_confirmed);
+            document.getElementById('edit-lead-fit-score').value = Number(row.fit_score || 0);
+            document.getElementById('edit-lead-verified-at').value = row.verified_at || '';
+            document.getElementById('edit-lead-email').value = row.email || '';
+            document.getElementById('edit-lead-source').value = row.lead_source || '';
+            document.getElementById('edit-lead-linkedin').value = row.linkedin_url || '';
+            document.getElementById('edit-lead-x').value = row.x_url || '';
+            document.getElementById('edit-lead-verification-status').textContent =
+                `核验状态：${LEAD_VERIFICATION_TEXT[row.verification_status] || '待核验'}`;
+            document.getElementById('edit-lead-modal').style.display = 'flex';
+        }
+        function closeEditLeadModal() {
+            document.getElementById('edit-lead-modal').style.display = 'none';
+        }
+        async function handleSaveLead(event) {
+            event.preventDefault();
+            const leadId = Number(document.getElementById('edit-lead-id').value);
+            const updates = {
+                contact_name:document.getElementById('edit-lead-name').value.trim(),
+                job_title:document.getElementById('edit-lead-title').value.trim(),
+                identity_source_url:document.getElementById('edit-lead-identity-url').value.trim(),
+                identity_evidence:document.getElementById('edit-lead-identity-evidence').value.trim(),
+                phone:document.getElementById('edit-lead-phone').value.trim(),
+                phone_source_url:document.getElementById('edit-lead-phone-url').value.trim(),
+                phone_evidence:document.getElementById('edit-lead-phone-evidence').value.trim(),
+                phone_confidence:document.getElementById('edit-lead-phone-confidence').value,
+                wechat:document.getElementById('edit-lead-wechat').value.trim(),
+                wechat_source_url:document.getElementById('edit-lead-wechat-url').value.trim(),
+                wechat_evidence:document.getElementById('edit-lead-wechat-evidence').value.trim(),
+                wechat_confidence:document.getElementById('edit-lead-wechat-confidence').value,
+                wechat_same_as_phone_confirmed:document.getElementById('edit-lead-same-contact').checked,
+                fit_score:Number(document.getElementById('edit-lead-fit-score').value || 0),
+                verified_at:document.getElementById('edit-lead-verified-at').value,
+                email:document.getElementById('edit-lead-email').value.trim(),
+                source_method:document.getElementById('edit-lead-source').value.trim(),
+                linkedin_url:document.getElementById('edit-lead-linkedin').value.trim(),
+                x_url:document.getElementById('edit-lead-x').value.trim()
+            };
+            const response = await fetch('/api/lead/update', {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({lead_id:leadId, updates})
+            });
+            const result = await response.json();
+            if (!response.ok || !result.success) {
+                alert('保存失败：' + (result.error || '请检查证据字段'));
+                return;
+            }
+            closeEditLeadModal();
+            await fetchPipeline();
         }
         function openSavedPitch(companyName, pitchText) {
             document.getElementById('modal-title').textContent = `${companyName} · 推送话术`;
@@ -3729,7 +3860,11 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                     self.db.update_lead(lead_id, {
                         key: value for key, value in lead.items()
                         if key in {"contact_name", "job_title", "contact_role_category", "phone", "wechat",
-                                   "email", "linkedin_url", "x_url", "source_method"}
+                                   "email", "linkedin_url", "x_url", "source_method",
+                                   "identity_source_url", "identity_evidence",
+                                   "phone_source_url", "phone_evidence", "phone_confidence",
+                                   "wechat_source_url", "wechat_evidence", "wechat_confidence",
+                                   "verified_at", "fit_score", "wechat_same_as_phone_confirmed"}
                     })
                 else:
                     lead["company_id"] = company_id
