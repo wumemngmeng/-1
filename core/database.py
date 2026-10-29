@@ -208,6 +208,36 @@ CREATE TABLE IF NOT EXISTS discord_communities (
 CREATE INDEX IF NOT EXISTS idx_discord_communities_priority
     ON discord_communities(priority, name);
 
+CREATE TABLE IF NOT EXISTS email_prospects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    contact_name TEXT,
+    company_name TEXT,
+    notes TEXT,
+    status TEXT CHECK(status IN ('pending', 'sent', 'failed', 'unsubscribed')) NOT NULL DEFAULT 'pending',
+    created_by TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_email_prospects_status
+    ON email_prospects(status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS email_sends (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    prospect_id INTEGER NOT NULL,
+    subject TEXT NOT NULL,
+    body TEXT NOT NULL,
+    sender TEXT NOT NULL,
+    provider_message_id TEXT,
+    status TEXT CHECK(status IN ('sent', 'failed')) NOT NULL,
+    error_message TEXT,
+    sent_by TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (prospect_id) REFERENCES email_prospects(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_email_sends_prospect
+    ON email_sends(prospect_id, created_at DESC);
+
 CREATE INDEX IF NOT EXISTS idx_companies_country ON companies(country_type);
 CREATE INDEX IF NOT EXISTS idx_companies_industry ON companies(industry);
 CREATE INDEX IF NOT EXISTS idx_leads_company ON leads(company_id);
@@ -356,6 +386,113 @@ class DatabaseManager:
     def __init__(self, db_path: str = DB_PATH):
         self.db_path = db_path
         init_db(self.db_path)
+
+    def import_email_prospects(self, records: List[Dict[str, Any]], created_by: str) -> Dict[str, int]:
+        conn = get_connection(self.db_path)
+        cur = conn.cursor()
+        inserted = updated = 0
+        for item in records:
+            email = str(item.get("email") or "").strip().lower()
+            if not email:
+                continue
+            cur.execute("SELECT id FROM email_prospects WHERE email = ?", (email,))
+            existing = cur.fetchone()
+            values = (
+                str(item.get("contact_name") or "").strip(),
+                str(item.get("company_name") or "").strip(),
+                str(item.get("notes") or "").strip(),
+            )
+            if existing:
+                cur.execute(
+                    """UPDATE email_prospects
+                       SET contact_name = CASE WHEN ? = '' THEN contact_name ELSE ? END,
+                           company_name = CASE WHEN ? = '' THEN company_name ELSE ? END,
+                           notes = CASE WHEN ? = '' THEN notes ELSE ? END,
+                           updated_at = CURRENT_TIMESTAMP
+                       WHERE id = ?""",
+                    (values[0], values[0], values[1], values[1], values[2], values[2], existing["id"]),
+                )
+                updated += 1
+            else:
+                cur.execute(
+                    """INSERT INTO email_prospects
+                       (email, contact_name, company_name, notes, created_by)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (email, *values, created_by),
+                )
+                inserted += 1
+        conn.commit()
+        conn.close()
+        return {"inserted": inserted, "updated": updated}
+
+    def list_email_prospects(self) -> List[Dict[str, Any]]:
+        conn = get_connection(self.db_path)
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT p.*,
+                      (SELECT max(s.created_at) FROM email_sends s
+                       WHERE s.prospect_id = p.id AND s.status = 'sent') AS last_sent_at
+               FROM email_prospects p
+               ORDER BY p.updated_at DESC, p.id DESC"""
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+        conn.close()
+        return rows
+
+    def get_email_prospects(self, ids: List[int]) -> List[Dict[str, Any]]:
+        if not ids:
+            return []
+        conn = get_connection(self.db_path)
+        cur = conn.cursor()
+        placeholders = ", ".join("?" for _ in ids)
+        cur.execute(
+            f"SELECT * FROM email_prospects WHERE id IN ({placeholders}) ORDER BY id",
+            ids,
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+        conn.close()
+        return rows
+
+    def update_email_prospect_status(self, prospect_id: int, status: str) -> bool:
+        if status not in ("pending", "unsubscribed"):
+            return False
+        conn = get_connection(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM email_prospects WHERE id = ?", (prospect_id,))
+        if not cur.fetchone():
+            conn.close()
+            return False
+        cur.execute(
+            "UPDATE email_prospects SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (status, prospect_id),
+        )
+        conn.commit()
+        conn.close()
+        return True
+
+    def record_email_send(
+        self, prospect_id: int, subject: str, body: str, sender: str,
+        status: str, sent_by: str, provider_message_id: str = "",
+        error_message: str = "",
+    ) -> int:
+        conn = get_connection(self.db_path)
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO email_sends
+               (prospect_id, subject, body, sender, provider_message_id,
+                status, error_message, sent_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (prospect_id, subject, body, sender, provider_message_id,
+             status, error_message, sent_by),
+        )
+        cur.execute(
+            "UPDATE email_prospects SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            ("sent" if status == "sent" else "failed", prospect_id),
+        )
+        send_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+        return send_id
 
     def insert_company(self, data: Dict[str, Any]) -> int:
         conn = get_connection(self.db_path)
