@@ -23,6 +23,9 @@ import os
 import sys
 import time
 import urllib.parse
+import urllib.request
+import urllib.error
+import re
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from http.cookies import SimpleCookie
@@ -39,6 +42,47 @@ SESSION_SECRET = (
     or os.environ.get("TURSO_AUTH_TOKEN")
     or "aibubu-local-development-session-key"
 ).encode()
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def render_email_template(template, prospect):
+    values = {
+        "name": prospect.get("contact_name") or "there",
+        "company": prospect.get("company_name") or "your team",
+        "email": prospect.get("email") or "",
+    }
+    rendered = str(template or "")
+    for key, value in values.items():
+        rendered = rendered.replace("{{" + key + "}}", str(value))
+    return rendered
+
+
+def send_resend_batch(messages):
+    api_key = os.environ.get("RESEND_API_KEY", "").strip()
+    sender = os.environ.get("RESEND_FROM_EMAIL", "").strip()
+    if not api_key or not sender:
+        raise RuntimeError("邮件服务尚未配置 RESEND_API_KEY 和 RESEND_FROM_EMAIL")
+    payload = json.dumps([{
+        "from": sender, "to": [message["email"]],
+        "subject": message["subject"], "text": message["body"],
+    } for message in messages]).encode("utf-8")
+    request = urllib.request.Request(
+        "https://api.resend.com/emails/batch",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": "Aibubu-CRM/1.0",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            result = json.loads(response.read().decode("utf-8"))
+            return [item.get("id", "") for item in result.get("data", [])]
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", "replace")
+        raise RuntimeError(f"Resend 返回 {error.code}: {detail[:300]}") from error
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="zh-CN">
@@ -994,8 +1038,23 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .community-fit-high { color:#34d399; border-color:#166534; }
         .community-card p { margin:0; color:var(--text-muted); font-size:12px; line-height:1.55; }
         .community-priority { color:#fbbf24; font-weight:700; white-space:nowrap; }
+        .email-layout { display:grid; grid-template-columns:minmax(300px,.8fr) minmax(420px,1.2fr); gap:16px; }
+        .email-panel { background:var(--card-bg); border:1px solid var(--border); border-radius:10px; padding:16px; }
+        .email-panel h3 { margin:0 0 12px; font-size:15px; }
+        .email-panel label { display:block; color:var(--text-muted); font-size:12px; margin:10px 0 5px; }
+        .email-panel textarea, .email-panel input {
+            width:100%; background:#111827; color:var(--text-main); border:1px solid var(--border);
+            border-radius:6px; padding:9px;
+        }
+        .email-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; align-items:center; }
+        .email-status { color:var(--text-muted); font-size:12px; }
+        .email-preview { white-space:pre-wrap; background:#0f172a; border:1px solid #334155; border-radius:7px; padding:10px; margin-top:8px; font-size:12px; }
+        .email-table input[type=checkbox] { width:auto; }
+        .email-configured { color:#34d399; }
+        .email-unconfigured { color:#fbbf24; }
         @media (max-width: 900px) {
             .community-stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
+            .email-layout { grid-template-columns:1fr; }
         }
     </style>
 </head>
@@ -1016,6 +1075,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 </li>
                 <li class="nav-item active" id="domestic-nav" onclick="switchPipelineMarket('domestic', this)">
                     <span>⚡</span> <span>国内客户</span>
+                </li>
+                <li class="nav-item" id="email-pool-nav" onclick="switchNav('email-pool', this)">
+                    <span>✉️</span> <span>邮件线索池</span>
                 </li>
                 <li class="nav-item" id="permissions-nav" onclick="switchNav('permissions', this)">
                     <span>🛡️</span> <span>组织与权限管理</span>
@@ -1114,6 +1176,61 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <tbody id="pipeline-body">
                         <!-- 动态渲染 -->
                     </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div id="view-email-pool" class="view-section">
+            <header>
+                <div>
+                    <h2 class="page-title">邮件线索池</h2>
+                    <div class="email-status">粘贴或 CSV 导入邮箱，使用姓名和公司变量预览后批量发送。</div>
+                </div>
+                <div id="email-provider-status" class="email-status">正在检查 Resend 配置…</div>
+            </header>
+            <div class="email-layout">
+                <section class="email-panel">
+                    <h3>1. 导入邮件线索</h3>
+                    <label for="email-import-text">每行：邮箱, 姓名, 公司, 备注（仅邮箱也可以）</label>
+                    <textarea id="email-import-text" rows="9" placeholder="alex@example.com, Alex, Example Inc, 海外客户"></textarea>
+                    <label for="email-csv-file">或选择 CSV（列名支持 email/name/company/notes）</label>
+                    <input id="email-csv-file" type="file" accept=".csv,text/csv">
+                    <div class="email-actions">
+                        <button onclick="importPastedEmails()">导入粘贴内容</button>
+                        <button onclick="importEmailCsv()">导入 CSV</button>
+                    </div>
+                    <div id="email-import-result" class="email-status"></div>
+                </section>
+                <section class="email-panel">
+                    <h3>2. 编写、预览并发送</h3>
+                    <div class="email-status">变量：<code>{{name}}</code>、<code>{{company}}</code>、<code>{{email}}</code></div>
+                    <label for="email-subject">邮件标题</label>
+                    <input id="email-subject" value="{{company}} × Aibubu：更高效的 AI 图片与视频工作流">
+                    <label for="email-body">邮件正文</label>
+                    <textarea id="email-body" rows="10">Hi {{name}},
+
+I’m reaching out from Aibubu. We provide an AI workspace and API for creating product images and short videos at scale.
+
+I’d love to learn how {{company}} currently produces visual content and see whether a small test would be useful.
+
+Best,
+Aibubu Team</textarea>
+                    <div class="email-actions">
+                        <button onclick="previewSelectedEmails()">预览所选邮件</button>
+                        <button class="btn-save" id="email-send-btn" onclick="sendSelectedEmails()">一键发送所选</button>
+                        <span id="email-selection-count" class="email-status">已选择 0 人</span>
+                    </div>
+                    <div id="email-preview-list"></div>
+                    <div id="email-send-result" class="email-status"></div>
+                </section>
+            </div>
+            <div class="table-container" style="margin-top:16px">
+                <table class="email-table">
+                    <thead><tr>
+                        <th><input type="checkbox" id="email-select-all" onchange="toggleAllEmailProspects(this.checked)"></th>
+                        <th>邮箱</th><th>姓名</th><th>公司</th><th>状态</th><th>最近发送</th><th>备注</th><th>操作</th>
+                    </tr></thead>
+                    <tbody id="email-prospect-body"></tbody>
                 </table>
             </div>
         </div>
@@ -1703,6 +1820,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
             if (navId === 'permissions') {
                 fetchUsers();
+            } else if (navId === 'email-pool') {
+                fetchEmailProspects();
             } else if (navId === 'funnel') {
                 renderFunnelView();
             } else if (navId === 'strategy') {
@@ -1710,6 +1829,115 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             } else if (navId === 'discord') {
                 fetchDiscordCommunities();
             }
+        }
+
+        let currentEmailProspects = [];
+        let emailProviderConfigured = false;
+        function parseCsvLine(line) {
+            const values=[]; let value='', quoted=false;
+            for(let i=0;i<line.length;i++) {
+                const char=line[i];
+                if(char==='"' && quoted && line[i+1]==='"') {value+='"';i++;}
+                else if(char==='"') quoted=!quoted;
+                else if(char===',' && !quoted) {values.push(value.trim());value='';}
+                else value+=char;
+            }
+            values.push(value.trim());
+            return values;
+        }
+        function recordsFromCsv(text) {
+            const lines=String(text||'').split(/\\r?\\n/).filter(line=>line.trim());
+            if(!lines.length) return [];
+            const first=parseCsvLine(lines[0]).map(value=>value.toLowerCase());
+            const hasHeader=first.some(value=>['email','邮箱','name','姓名','company','公司','notes','备注'].includes(value));
+            const indexes={
+                email:hasHeader ? first.findIndex(value=>['email','邮箱'].includes(value)) : 0,
+                contact_name:hasHeader ? first.findIndex(value=>['name','姓名','contact_name'].includes(value)) : 1,
+                company_name:hasHeader ? first.findIndex(value=>['company','公司','company_name'].includes(value)) : 2,
+                notes:hasHeader ? first.findIndex(value=>['notes','备注'].includes(value)) : 3
+            };
+            return lines.slice(hasHeader?1:0).map(line=>{
+                const cells=parseCsvLine(line);
+                const get=key=>indexes[key] >= 0 ? (cells[indexes[key]]||'') : '';
+                return {email:get('email'),contact_name:get('contact_name'),company_name:get('company_name'),notes:get('notes')};
+            });
+        }
+        async function importEmailRecords(records) {
+            const resultEl=document.getElementById('email-import-result');
+            resultEl.textContent='正在导入…';
+            const res=await fetch('/api/email-prospects/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({records})});
+            const result=await res.json();
+            if(!res.ok || !result.success) {resultEl.textContent=result.error||'导入失败';return;}
+            resultEl.textContent=`有效 ${result.valid} 条；新增 ${result.inserted} 条；更新 ${result.updated} 条；无效 ${result.invalid_count} 条`;
+            await fetchEmailProspects();
+        }
+        function importPastedEmails() {
+            return importEmailRecords(recordsFromCsv(document.getElementById('email-import-text').value));
+        }
+        async function importEmailCsv() {
+            const file=document.getElementById('email-csv-file').files[0];
+            if(!file) {document.getElementById('email-import-result').textContent='请先选择 CSV 文件';return;}
+            await importEmailRecords(recordsFromCsv(await file.text()));
+        }
+        async function fetchEmailProspects() {
+            const res=await fetch('/api/email-prospects');
+            const result=await res.json();
+            if(!res.ok) return;
+            currentEmailProspects=result.rows||[];
+            emailProviderConfigured=!!result.configured;
+            const provider=document.getElementById('email-provider-status');
+            provider.textContent=result.configured ? `Resend 已配置 · 发件人：${result.sender}` : 'Resend 未配置，只能导入和预览';
+            provider.className=result.configured ? 'email-status email-configured' : 'email-status email-unconfigured';
+            document.getElementById('email-send-btn').disabled=!result.configured || (currentUser && currentUser.role==='observer');
+            document.getElementById('email-prospect-body').innerHTML=currentEmailProspects.map(row=>`<tr>
+                <td><input class="email-row-check" type="checkbox" value="${row.id}" ${row.status==='sent'||row.status==='unsubscribed'?'disabled':''} onchange="updateEmailSelectionCount()"></td>
+                <td>${escapeHtml(row.email)}</td><td>${escapeHtml(row.contact_name||'-')}</td>
+                <td>${escapeHtml(row.company_name||'-')}</td><td>${escapeHtml(row.status)}</td>
+                <td>${escapeHtml(row.last_sent_at||'-')}</td><td>${escapeHtml(row.notes||'-')}</td>
+                <td><button onclick="setEmailProspectStatus(${row.id}, '${row.status==='unsubscribed'?'pending':'unsubscribed'}')" ${currentUser&&currentUser.role==='observer'?'disabled':''}>${row.status==='unsubscribed'?'恢复':'标记退订'}</button></td>
+            </tr>`).join('') || '<tr><td colspan="8">暂无邮件线索</td></tr>';
+            updateEmailSelectionCount();
+        }
+        function selectedEmailIds() {
+            return [...document.querySelectorAll('.email-row-check:checked')].map(input=>Number(input.value));
+        }
+        function updateEmailSelectionCount() {
+            document.getElementById('email-selection-count').textContent=`已选择 ${selectedEmailIds().length} 人`;
+        }
+        function toggleAllEmailProspects(checked) {
+            document.querySelectorAll('.email-row-check:not(:disabled)').forEach(input=>input.checked=checked);
+            updateEmailSelectionCount();
+        }
+        async function setEmailProspectStatus(id, status) {
+            const res=await fetch('/api/email-prospects/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,status})});
+            const result=await res.json();
+            if(!res.ok || !result.success) {alert(result.error||'状态更新失败');return;}
+            await fetchEmailProspects();
+        }
+        async function previewSelectedEmails() {
+            const ids=selectedEmailIds(), output=document.getElementById('email-preview-list');
+            if(!ids.length) {output.innerHTML='<div class="email-status">请先选择收件人</div>';return;}
+            const payload={ids,subject:document.getElementById('email-subject').value,body:document.getElementById('email-body').value};
+            const res=await fetch('/api/email-prospects/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+            const result=await res.json();
+            if(!res.ok || !result.success) {output.textContent=result.error||'预览失败';return;}
+            output.innerHTML=result.previews.map(item=>`<div class="email-preview"><strong>To: ${escapeHtml(item.email)}</strong>\n<strong>Subject: ${escapeHtml(item.subject)}</strong>\n\n${escapeHtml(item.body)}</div>`).join('');
+        }
+        async function sendSelectedEmails() {
+            const ids=selectedEmailIds();
+            if(!ids.length) {document.getElementById('email-send-result').textContent='请先选择收件人';return;}
+            if(ids.length>50) {document.getElementById('email-send-result').textContent='每批最多发送 50 人';return;}
+            await previewSelectedEmails();
+            if(!confirm(`确认通过 Resend 向 ${ids.length} 位收件人逐封发送邮件？已发送或退订邮箱不会重复发送。`)) return;
+            const output=document.getElementById('email-send-result');
+            output.textContent='正在发送，请勿重复点击…';
+            const res=await fetch('/api/email-prospects/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+                ids,subject:document.getElementById('email-subject').value,body:document.getElementById('email-body').value,
+                confirmation:`SEND ${ids.length}`
+            })});
+            const result=await res.json();
+            output.textContent=res.ok ? `发送完成：成功 ${result.sent}，失败 ${result.failed}` : (result.error||'发送失败');
+            await fetchEmailProspects();
         }
 
         let currentDiscordCommunities = [];
@@ -3155,6 +3383,19 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
             )
             self.send_json(rows)
 
+        elif path == "/api/email-prospects":
+            user = self._require_user()
+            if not user:
+                return
+            self.send_json({
+                "rows": self.db.list_email_prospects(),
+                "configured": bool(
+                    os.environ.get("RESEND_API_KEY", "").strip()
+                    and os.environ.get("RESEND_FROM_EMAIL", "").strip()
+                ),
+                "sender": os.environ.get("RESEND_FROM_EMAIL", "").strip(),
+            })
+
         elif path == "/api/users":
             user = self._require_user(("admin",))
             if not user:
@@ -3324,6 +3565,146 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                 )
                 self.send_json({"success": True, "community": community})
             except (ValueError, TypeError) as error:
+                self.send_json({"success": False, "error": str(error)}, status=400)
+
+        elif path == "/api/email-prospects/import":
+            user = self._require_user(("admin", "sales_lead", "sales_rep"))
+            if not user:
+                return
+            try:
+                content_length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                records = data.get("records") or []
+                if not isinstance(records, list) or len(records) > 1000:
+                    raise ValueError("单次最多导入 1000 条邮件线索")
+                valid, invalid = [], []
+                seen = set()
+                for item in records:
+                    email = str((item or {}).get("email") or "").strip().lower()
+                    if not EMAIL_RE.fullmatch(email):
+                        invalid.append(email or "空邮箱")
+                    elif email not in seen:
+                        seen.add(email)
+                        valid.append({
+                            "email": email,
+                            "contact_name": item.get("contact_name", ""),
+                            "company_name": item.get("company_name", ""),
+                            "notes": item.get("notes", ""),
+                        })
+                result = self.db.import_email_prospects(
+                    valid, user.get("display_name") or user.get("username")
+                )
+                self.send_json({
+                    "success": True, **result, "valid": len(valid),
+                    "invalid": invalid[:20], "invalid_count": len(invalid),
+                })
+            except (ValueError, TypeError, json.JSONDecodeError) as error:
+                self.send_json({"success": False, "error": str(error)}, status=400)
+
+        elif path == "/api/email-prospects/preview":
+            user = self._require_user()
+            if not user:
+                return
+            try:
+                content_length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                ids = [int(value) for value in (data.get("ids") or [])][:100]
+                subject = str(data.get("subject") or "").strip()
+                body = str(data.get("body") or "").strip()
+                if not subject or not body:
+                    raise ValueError("邮件标题和正文不能为空")
+                rows = self.db.get_email_prospects(ids)
+                self.send_json({
+                    "success": True,
+                    "previews": [{
+                        "id": row["id"], "email": row["email"],
+                        "subject": render_email_template(subject, row),
+                        "body": render_email_template(body, row),
+                    } for row in rows[:5]],
+                    "count": len(rows),
+                })
+            except (ValueError, TypeError, json.JSONDecodeError) as error:
+                self.send_json({"success": False, "error": str(error)}, status=400)
+
+        elif path == "/api/email-prospects/status":
+            user = self._require_user(("admin", "sales_lead", "sales_rep"))
+            if not user:
+                return
+            try:
+                content_length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                prospect_id = int(data.get("id"))
+                status = str(data.get("status") or "")
+                if not self.db.update_email_prospect_status(prospect_id, status):
+                    raise ValueError("邮件线索不存在或状态无效")
+                self.send_json({"success": True, "id": prospect_id, "status": status})
+            except (ValueError, TypeError, json.JSONDecodeError) as error:
+                self.send_json({"success": False, "error": str(error)}, status=400)
+
+        elif path == "/api/email-prospects/send":
+            user = self._require_user(("admin", "sales_lead", "sales_rep"))
+            if not user:
+                return
+            try:
+                content_length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                ids = list(dict.fromkeys(int(value) for value in (data.get("ids") or [])))
+                subject = str(data.get("subject") or "").strip()
+                body = str(data.get("body") or "").strip()
+                if data.get("confirmation") != f"SEND {len(ids)}":
+                    raise ValueError("发送确认不匹配，请重新预览后发送")
+                if not ids or len(ids) > 50:
+                    raise ValueError("每批请选择 1–50 位收件人")
+                if not subject or not body:
+                    raise ValueError("邮件标题和正文不能为空")
+                sender = os.environ.get("RESEND_FROM_EMAIL", "").strip()
+                if not sender or not os.environ.get("RESEND_API_KEY", "").strip():
+                    raise ValueError("邮件服务尚未配置")
+                prospects = self.db.get_email_prospects(ids)
+                if len(prospects) != len(ids):
+                    raise ValueError("部分邮件线索不存在，请刷新后重试")
+                if any(row["status"] in ("sent", "unsubscribed") for row in prospects):
+                    raise ValueError("选择中包含已发送或已退订邮箱，已阻止重复发送")
+                messages = []
+                actor = user.get("display_name") or user.get("username")
+                for row in prospects:
+                    rendered_subject = render_email_template(subject, row)
+                    rendered_body = render_email_template(body, row)
+                    messages.append({
+                        "row": row, "email": row["email"],
+                        "subject": rendered_subject, "body": rendered_body,
+                    })
+                results = []
+                try:
+                    message_ids = send_resend_batch(messages)
+                    if len(message_ids) != len(messages):
+                        raise RuntimeError("Resend 返回的邮件数量与提交数量不一致")
+                    for message, message_id in zip(messages, message_ids):
+                        self.db.record_email_send(
+                            message["row"]["id"], message["subject"], message["body"], sender,
+                            "sent", actor, provider_message_id=message_id,
+                        )
+                        results.append({
+                            "id": message["row"]["id"], "email": message["email"],
+                            "status": "sent",
+                        })
+                except Exception as error:
+                    for message in messages:
+                        self.db.record_email_send(
+                            message["row"]["id"], message["subject"], message["body"], sender,
+                            "failed", actor, error_message=str(error)[:500],
+                        )
+                        results.append({
+                            "id": message["row"]["id"], "email": message["email"],
+                            "status": "failed", "error": str(error),
+                        })
+                self.send_json({
+                    "success": all(item["status"] == "sent" for item in results),
+                    "sent": sum(item["status"] == "sent" for item in results),
+                    "failed": sum(item["status"] == "failed" for item in results),
+                    "results": results,
+                })
+            except (ValueError, TypeError, json.JSONDecodeError) as error:
                 self.send_json({"success": False, "error": str(error)}, status=400)
 
         elif path == "/api/prospect/upsert":
