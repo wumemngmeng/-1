@@ -25,6 +25,16 @@ def html_template():
 
 
 class NotesTests(unittest.TestCase):
+    def test_email_pool_ui_has_safe_import_preview_and_send_controls(self):
+        html = html_template()
+        self.assertIn('id="view-email-pool"', html)
+        self.assertIn('id="email-csv-file"', html)
+        self.assertIn("{{name}}", html)
+        self.assertIn("{{company}}", html)
+        self.assertIn("previewSelectedEmails()", html)
+        self.assertIn("confirmation:`SEND ${ids.length}`", html)
+        self.assertIn("每批最多发送 50 人", html)
+
     @unittest.skipUnless(shutil.which("node"), "Node.js required")
     def test_prospect_edit_and_save_states(self):
         script = html_template().split("<script>", 1)[1].split("</script>", 1)[0]
