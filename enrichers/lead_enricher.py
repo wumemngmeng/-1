@@ -27,7 +27,7 @@ class LeadEnricher:
                 contact_name = row.get("姓名") or row.get("联系人") or row.get("Name") or row.get("contact_name")
                 job_title = row.get("职位") or row.get("头衔") or row.get("Title") or row.get("job_title") or "业务负责人"
                 phone = row.get("手机号") or row.get("电话") or row.get("Phone") or ""
-                wechat = row.get("微信号") or row.get("微信") or row.get("Wechat") or phone  # 默认手机微信同号
+                wechat = row.get("微信号") or row.get("微信") or row.get("Wechat") or ""
                 email = row.get("邮箱") or row.get("工作邮箱") or row.get("Email") or ""
                 linkedin = row.get("领英主页") or row.get("LinkedIn") or ""
                 source_method = row.get("来源渠道") or row.get("Source") or "高管联系人库"
@@ -64,13 +64,29 @@ class LeadEnricher:
                     "email": email.strip(),
                     "linkedin_url": linkedin.strip(),
                     "source_method": source_method.strip(),
-                    "confidence_score": 90 if (phone or email) else 70
+                    "confidence_score": 90 if (phone or email) else 70,
+                    "identity_source_url": (row.get("身份来源URL") or row.get("Identity Source URL") or "").strip(),
+                    "identity_evidence": (row.get("身份原文") or row.get("Identity Evidence") or "").strip(),
+                    "phone_source_url": (row.get("手机号来源URL") or row.get("Phone Source URL") or "").strip(),
+                    "phone_evidence": (row.get("手机号证据原文") or row.get("Phone Evidence") or "").strip(),
+                    "phone_confidence": (row.get("手机号可信等级") or row.get("Phone Confidence") or "").strip(),
+                    "wechat_source_url": (row.get("微信来源URL") or row.get("Wechat Source URL") or "").strip(),
+                    "wechat_evidence": (row.get("微信证据原文") or row.get("Wechat Evidence") or "").strip(),
+                    "wechat_confidence": (row.get("微信可信等级") or row.get("Wechat Confidence") or "").strip(),
+                    "verified_at": (row.get("核验日期") or row.get("Verified At") or "").strip(),
+                    "fit_score": row.get("适配评分") or row.get("Fit Score") or 0,
+                    "wechat_same_as_phone_confirmed": str(
+                        row.get("明确手机号同微信") or row.get("Wechat Same As Phone") or ""
+                    ).strip().lower() in ("1", "true", "yes", "是"),
                 })
                 count += 1
         return count
 
     def seed_verified_leads(self) -> int:
-        """为预置企业建立高匹配度的直连决策人样本库 (完全避开 HR，直取视觉/创意/电商一把手)"""
+        """Deprecated: synthetic contact templates must never enter the CRM."""
+        raise RuntimeError("已禁用模板联系人导入；请仅导入带公开证据的真实联系人")
+
+        # Kept below only for backward source compatibility; this code is unreachable.
         import sqlite3
         conn = sqlite3.connect(self.db.db_path)
         conn.row_factory = sqlite3.Row
