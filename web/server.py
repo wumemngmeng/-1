@@ -2429,11 +2429,13 @@ Aibubu Team</textarea>
                 const contact = contactName
                     ? `${escapeHtml(contactName)}${xUrl ? ` <a href="${escapeHtml(xUrl)}" onclick="event.stopPropagation()" target="_blank" rel="noopener noreferrer" class="company-link" title="打开创始人 X 主页">X ↗</a>` : ''}`
                     : '<span style="color:#64748b;">创始人待核验</span>';
+                const phoneDigits = String(r.phone || '').replace(/\D/g, '').replace(/^86(?=1\d{10}$)/, '');
+                const validDomesticMobile = !isCn || /^1[3-9]\d{9}$/.test(phoneDigits);
                 const direct = [
-                    r.phone ? `手机：${r.phone}` : '',
+                    r.phone && validDomesticMobile ? `手机：${r.phone}` : '',
                     r.wechat ? `微信：${r.wechat}` : '',
                     r.email ? `邮箱：${r.email}` : ''
-                ].filter(Boolean).join(' · ') || '-';
+                ].filter(Boolean).join(' · ') || (r.phone && !validDomesticMobile ? '座机/总机已拦截，创始人手机待核验' : '-');
                 const verificationLabels = {
                     sales_ready:'可销售触达', contact_verified:'联系方式已核验',
                     contact_partial:'部分联系方式已核验', identity_verified:'身份已核验',
