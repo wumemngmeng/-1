@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from http.server import ThreadingHTTPServer
 from urllib.parse import urlencode
 
@@ -226,6 +227,52 @@ class AuthTests(unittest.TestCase):
             "join_status": "已加入", "account_type": "个人号", "priority": 19,
         }, observer)
         self.assertEqual((status, payload["community"]["name"]), (200, "Test Community"))
+
+    def test_email_pool_import_preview_permissions_and_safe_send(self):
+        observer = self.login("viewer_test", "viewer-secure-password")
+        self.assertEqual(self.request("POST", "/api/email-prospects/import", {
+            "records": [{"email": "blocked@example.com"}]
+        }, observer)[0], 403)
+
+        admin = self.login("admin", "admin123")
+        self.request("POST", "/api/password", {
+            "current_password": "admin123", "new_password": "admin-secure-password"
+        }, admin)
+        status, payload, _ = self.request("POST", "/api/email-prospects/import", {
+            "records": [
+                {"email": "Alex@Example.com", "contact_name": "Alex", "company_name": "Example"},
+                {"email": "alex@example.com", "notes": "deduplicated"},
+                {"email": "invalid"},
+            ]
+        }, admin)
+        self.assertEqual((status, payload["inserted"], payload["updated"], payload["invalid_count"]), (200, 1, 0, 1))
+        rows = self.request("GET", "/api/email-prospects", cookie=admin)[1]["rows"]
+        self.assertEqual(len(rows), 1)
+        prospect_id = rows[0]["id"]
+        status, payload, _ = self.request("POST", "/api/email-prospects/preview", {
+            "ids": [prospect_id], "subject": "Hi {{company}}",
+            "body": "Hello {{name}} at {{email}}",
+        }, admin)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["previews"][0]["subject"], "Hi Example")
+        self.assertEqual(payload["previews"][0]["body"], "Hello Alex at alex@example.com")
+
+        self.assertEqual(self.request("POST", "/api/email-prospects/send", {
+            "ids": [prospect_id], "subject": "Hi", "body": "Body",
+            "confirmation": "wrong",
+        }, admin)[0], 400)
+        with patch.dict("os.environ", {
+            "RESEND_API_KEY": "test-key", "RESEND_FROM_EMAIL": "sales@example.com"
+        }), patch("web.server.send_resend_batch", return_value=["msg_123"]):
+            status, payload, _ = self.request("POST", "/api/email-prospects/send", {
+                "ids": [prospect_id], "subject": "Hi {{company}}",
+                "body": "Hello {{name}}", "confirmation": "SEND 1",
+            }, admin)
+        self.assertEqual((status, payload["sent"], payload["failed"]), (200, 1, 0))
+        self.assertEqual(self.request("POST", "/api/email-prospects/send", {
+            "ids": [prospect_id], "subject": "Hi", "body": "Again",
+            "confirmation": "SEND 1",
+        }, admin)[0], 400)
 
 
 if __name__ == "__main__":
