@@ -46,6 +46,13 @@ class LeadVerificationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "手机号必须同时填写"):
             normalize_lead_evidence(data)
 
+    def test_domestic_landline_cannot_be_founder_mobile(self):
+        data = self.verified_contact()
+        for phone in ("010-12345678", "400-123-4567", "0571 12345678"):
+            data["phone"] = phone
+            with self.assertRaisesRegex(ValueError, "座机、400 电话和企业总机不能入库"):
+                normalize_lead_evidence(data)
+
     def test_database_round_trip_includes_verification_fields(self):
         with tempfile.TemporaryDirectory() as directory:
             db = DatabaseManager(str(Path(directory) / "crm.db"))
