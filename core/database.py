@@ -9,8 +9,98 @@ import hmac
 import secrets
 from datetime import datetime
 from typing import List, Dict, Any, Optional
+from urllib.parse import urlparse
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "aibubu_crm.db")
+
+LEAD_EVIDENCE_FIELDS = (
+    "identity_source_url", "identity_evidence",
+    "phone_source_url", "phone_evidence", "phone_confidence",
+    "wechat_source_url", "wechat_evidence", "wechat_confidence",
+    "verified_at", "verification_status", "fit_score",
+    "wechat_same_as_phone_confirmed",
+)
+VERIFIED_CONFIDENCE_LEVELS = {"A", "B"}
+
+
+def _is_public_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
+
+def normalize_lead_evidence(data: Dict[str, Any], country_type: str = "domestic") -> Dict[str, Any]:
+    """Validate field-level provenance and derive a non-forgeable review status."""
+    normalized = dict(data)
+    text_fields = (
+        "contact_name", "job_title", "contact_role_category", "phone", "wechat",
+        "email", "linkedin_url", "x_url", "source_method",
+        "identity_source_url", "identity_evidence", "phone_source_url",
+        "phone_evidence", "phone_confidence", "wechat_source_url",
+        "wechat_evidence", "wechat_confidence", "verified_at",
+    )
+    for field in text_fields:
+        normalized[field] = str(normalized.get(field) or "").strip()
+
+    for channel in ("phone", "wechat"):
+        value = normalized[channel]
+        source_url = normalized[f"{channel}_source_url"]
+        evidence = normalized[f"{channel}_evidence"]
+        confidence = normalized[f"{channel}_confidence"].upper()
+        normalized[f"{channel}_confidence"] = confidence
+        if confidence and confidence not in {"A", "B", "C", "D"}:
+            raise ValueError(f"{channel} 可信等级只能是 A、B、C 或 D")
+        if country_type == "domestic" and value:
+            if not (_is_public_url(source_url) and evidence and confidence):
+                label = "手机号" if channel == "phone" else "微信号"
+                raise ValueError(f"{label}必须同时填写公开来源 URL、证据原文和可信等级")
+
+    if normalized["identity_source_url"] and not _is_public_url(normalized["identity_source_url"]):
+        raise ValueError("创始人身份来源必须是公开的 HTTP(S) URL")
+    for field in ("phone_source_url", "wechat_source_url"):
+        if normalized[field] and not _is_public_url(normalized[field]):
+            raise ValueError("联系方式来源必须是公开的 HTTP(S) URL")
+
+    same_as_phone = bool(normalized.get("wechat_same_as_phone_confirmed"))
+    normalized["wechat_same_as_phone_confirmed"] = int(same_as_phone)
+    if (normalized["phone"] and normalized["wechat"]
+            and normalized["phone"] == normalized["wechat"] and not same_as_phone):
+        raise ValueError("手机号不能自动视为微信号；请提供明确的“手机号同微信”证据并勾选确认")
+
+    try:
+        fit_score = int(normalized.get("fit_score") or 0)
+    except (TypeError, ValueError):
+        raise ValueError("适配评分必须是 0–100 的整数")
+    if fit_score < 0 or fit_score > 100:
+        raise ValueError("适配评分必须是 0–100 的整数")
+    normalized["fit_score"] = fit_score
+
+    identity_verified = bool(
+        normalized["contact_name"]
+        and normalized["identity_evidence"]
+        and _is_public_url(normalized["identity_source_url"])
+    )
+    phone_verified = bool(
+        normalized["phone"]
+        and normalized["phone_evidence"]
+        and _is_public_url(normalized["phone_source_url"])
+        and normalized["phone_confidence"] in VERIFIED_CONFIDENCE_LEVELS
+    )
+    wechat_verified = bool(
+        normalized["wechat"]
+        and normalized["wechat_evidence"]
+        and _is_public_url(normalized["wechat_source_url"])
+        and normalized["wechat_confidence"] in VERIFIED_CONFIDENCE_LEVELS
+    )
+    if identity_verified and phone_verified and wechat_verified:
+        status = "sales_ready" if fit_score >= 70 else "contact_verified"
+    elif identity_verified and (phone_verified or wechat_verified):
+        status = "contact_partial"
+    elif identity_verified:
+        status = "identity_verified"
+    else:
+        status = "pending_review"
+    normalized["verification_status"] = status
+    return normalized
 
 class RemoteCursor:
     def __init__(self, client):
@@ -143,6 +233,18 @@ CREATE TABLE IF NOT EXISTS leads (
     x_url TEXT,
     confidence_score INTEGER DEFAULT 80,
     source_method TEXT,
+    identity_source_url TEXT,
+    identity_evidence TEXT,
+    phone_source_url TEXT,
+    phone_evidence TEXT,
+    phone_confidence TEXT,
+    wechat_source_url TEXT,
+    wechat_evidence TEXT,
+    wechat_confidence TEXT,
+    verified_at TEXT,
+    verification_status TEXT DEFAULT 'pending_review',
+    fit_score INTEGER DEFAULT 0,
+    wechat_same_as_phone_confirmed INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
@@ -315,6 +417,23 @@ def init_db(db_path: str = DB_PATH):
     l_cols = [r['name'] for r in cursor.fetchall()]
     if 'x_url' not in l_cols:
         cursor.execute("ALTER TABLE leads ADD COLUMN x_url TEXT")
+    lead_migrations = {
+        "identity_source_url": "TEXT",
+        "identity_evidence": "TEXT",
+        "phone_source_url": "TEXT",
+        "phone_evidence": "TEXT",
+        "phone_confidence": "TEXT",
+        "wechat_source_url": "TEXT",
+        "wechat_evidence": "TEXT",
+        "wechat_confidence": "TEXT",
+        "verified_at": "TEXT",
+        "verification_status": "TEXT DEFAULT 'pending_review'",
+        "fit_score": "INTEGER DEFAULT 0",
+        "wechat_same_as_phone_confirmed": "INTEGER DEFAULT 0",
+    }
+    for field, definition in lead_migrations.items():
+        if field not in l_cols:
+            cursor.execute(f"ALTER TABLE leads ADD COLUMN {field} {definition}")
     
     # Estimated monthly Aibubu spend, CNY; unknown unless supported by evidence.
     for field, definition in [('company_description', 'TEXT'), ('description_source', 'TEXT'), ('estimated_monthly_spend', 'REAL'), ('spend_basis', 'TEXT'), ('discovery_url', 'TEXT'), ('customer_type', 'TEXT'), ('models_used', 'TEXT'), ('qualification_evidence', 'TEXT'), ('owner', 'TEXT'), ('company_follow_up_date', 'TEXT'), ('prospect_status', 'TEXT'), ('audience_scale', 'TEXT'), ('exclusion_reason', 'TEXT'), ('previous_prospect_status', 'TEXT')]:
@@ -531,9 +650,24 @@ class DatabaseManager:
     def insert_lead(self, data: Dict[str, Any]) -> int:
         conn = get_connection(self.db_path)
         cur = conn.cursor()
+        company = cur.execute(
+            "SELECT country_type FROM companies WHERE id = ?", (data["company_id"],)
+        ).fetchone()
+        if not company:
+            conn.close()
+            raise ValueError("关联企业不存在")
+        data = normalize_lead_evidence(data, company["country_type"])
         cur.execute("""
-            INSERT INTO leads (company_id, contact_name, job_title, contact_role_category, phone, wechat, email, linkedin_url, x_url, confidence_score, source_method)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO leads (
+                company_id, contact_name, job_title, contact_role_category,
+                phone, wechat, email, linkedin_url, x_url, confidence_score,
+                source_method, identity_source_url, identity_evidence,
+                phone_source_url, phone_evidence, phone_confidence,
+                wechat_source_url, wechat_evidence, wechat_confidence,
+                verified_at, verification_status, fit_score,
+                wechat_same_as_phone_confirmed
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             data['company_id'],
             data['contact_name'],
@@ -545,7 +679,19 @@ class DatabaseManager:
             data.get('linkedin_url', ''),
             data.get('x_url', ''),
             data.get('confidence_score', 85),
-            data.get('source_method', '商务渠道')
+            data.get('source_method', '商务渠道'),
+            data.get('identity_source_url', ''),
+            data.get('identity_evidence', ''),
+            data.get('phone_source_url', ''),
+            data.get('phone_evidence', ''),
+            data.get('phone_confidence', ''),
+            data.get('wechat_source_url', ''),
+            data.get('wechat_evidence', ''),
+            data.get('wechat_confidence', ''),
+            data.get('verified_at', ''),
+            data.get('verification_status', 'pending_review'),
+            data.get('fit_score', 0),
+            data.get('wechat_same_as_phone_confirmed', 0),
         ))
         conn.commit()
         lead_id = cur.lastrowid
@@ -668,6 +814,18 @@ class DatabaseManager:
                 l.linkedin_url,
                 l.x_url,
                 l.source_method as lead_source,
+                l.identity_source_url,
+                l.identity_evidence,
+                l.phone_source_url,
+                l.phone_evidence,
+                l.phone_confidence,
+                l.wechat_source_url,
+                l.wechat_evidence,
+                l.wechat_confidence,
+                l.verified_at,
+                l.verification_status,
+                l.fit_score,
+                l.wechat_same_as_phone_confirmed,
                 o.id as outreach_id,
                 coalesce(o.status, 'pending') as status,
                 o.channel,
@@ -890,7 +1048,7 @@ class DatabaseManager:
             'contact_name', 'job_title', 'contact_role_category',
             'phone', 'wechat', 'email', 'linkedin_url',
             'x_url',
-            'confidence_score', 'source_method'
+            'confidence_score', 'source_method', *LEAD_EVIDENCE_FIELDS
         }
         valid_updates = {k: v for k, v in updates.items() if k in allowed}
         if not valid_updates:
@@ -898,6 +1056,23 @@ class DatabaseManager:
         
         conn = get_connection(self.db_path)
         cur = conn.cursor()
+        existing = cur.execute(
+            """SELECT l.*, c.country_type
+               FROM leads l JOIN companies c ON c.id = l.company_id
+               WHERE l.id = ?""",
+            (lead_id,),
+        ).fetchone()
+        if not existing:
+            conn.close()
+            return False
+        merged = dict(existing)
+        merged.update(valid_updates)
+        normalized = normalize_lead_evidence(merged, existing["country_type"])
+        valid_updates = {
+            key: normalized[key]
+            for key in allowed
+            if key in valid_updates or key in ("verification_status", "fit_score")
+        }
         clauses = [f"{k} = ?" for k in valid_updates.keys()]
         clauses.append("updated_at = CURRENT_TIMESTAMP")
         values = list(valid_updates.values())
