@@ -28,6 +28,13 @@ def _is_public_url(value: str) -> bool:
     return parsed.scheme in ("http", "https") and bool(parsed.netloc)
 
 
+def _is_china_mobile(value: str) -> bool:
+    digits = "".join(character for character in str(value or "") if character.isdigit())
+    if digits.startswith("86") and len(digits) == 13:
+        digits = digits[2:]
+    return len(digits) == 11 and digits.startswith("1") and digits[1] in "3456789"
+
+
 def normalize_lead_evidence(data: Dict[str, Any], country_type: str = "domestic") -> Dict[str, Any]:
     """Validate field-level provenance and derive a non-forgeable review status."""
     normalized = dict(data)
@@ -50,6 +57,8 @@ def normalize_lead_evidence(data: Dict[str, Any], country_type: str = "domestic"
         if confidence and confidence not in {"A", "B", "C", "D"}:
             raise ValueError(f"{channel} 可信等级只能是 A、B、C 或 D")
         if country_type == "domestic" and value:
+            if channel == "phone" and not _is_china_mobile(value):
+                raise ValueError("创始人手机号必须是有效的中国大陆手机号，座机、400 电话和企业总机不能入库")
             if not (_is_public_url(source_url) and evidence and confidence):
                 label = "手机号" if channel == "phone" else "微信号"
                 raise ValueError(f"{label}必须同时填写公开来源 URL、证据原文和可信等级")
