@@ -408,6 +408,43 @@ def init_db(db_path: str = DB_PATH):
     cursor = conn.cursor()
     cursor.executescript(SCHEMA_SQL)
 
+    cursor.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'outreach_records'"
+    )
+    outreach_schema = cursor.fetchone()
+    if outreach_schema and "'x_dm'" not in (outreach_schema["sql"] or ""):
+        # RemoteConnection executes scripts through one atomic libSQL batch.
+        # Avoid explicit BEGIN/COMMIT, which libSQL rejects inside a batch.
+        cursor.executescript("""
+            CREATE TABLE outreach_records_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lead_id INTEGER NOT NULL,
+                channel TEXT CHECK(channel IN (
+                    'wechat_direct', 'phone_call', 'cold_email',
+                    'linkedin_inmail', 'x_dm', 'in_person'
+                )) NOT NULL,
+                status TEXT CHECK(status IN (
+                    'pending', 'contacted', 'sample_sent', 'team_trial',
+                    'negotiation', 'won', 'lost'
+                )) DEFAULT 'pending',
+                pitch_angle TEXT,
+                interaction_notes TEXT,
+                next_follow_up_date DATE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE
+            );
+            INSERT INTO outreach_records_new
+                (id, lead_id, channel, status, pitch_angle, interaction_notes,
+                 next_follow_up_date, created_at, updated_at)
+            SELECT id, lead_id, channel, status, pitch_angle, interaction_notes,
+                   next_follow_up_date, created_at, updated_at
+            FROM outreach_records;
+            DROP TABLE outreach_records;
+            ALTER TABLE outreach_records_new RENAME TO outreach_records;
+            CREATE INDEX IF NOT EXISTS idx_outreach_status ON outreach_records(status);
+        """)
+
     # Auto migrate sys_users table if password_hash column is missing
     cursor.execute("PRAGMA table_info(sys_users)")
     cols = [r['name'] for r in cursor.fetchall()]
