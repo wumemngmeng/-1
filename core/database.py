@@ -407,6 +407,8 @@ def init_db(db_path: str = DB_PATH):
     conn = get_connection(db_path)
     cursor = conn.cursor()
     cursor.executescript(SCHEMA_SQL)
+    from core.email_queue import SCHEMA as MAIL_QUEUE_SCHEMA
+    cursor.executescript(MAIL_QUEUE_SCHEMA)
 
     cursor.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'outreach_records'"
