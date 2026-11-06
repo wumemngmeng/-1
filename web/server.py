@@ -26,6 +26,10 @@ import urllib.parse
 import urllib.request
 import urllib.error
 import re
+import smtplib
+import ssl
+from email.message import EmailMessage
+from uuid import uuid4
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from http.cookies import SimpleCookie
@@ -87,6 +91,83 @@ def send_resend_batch(messages, settings=None, batch_id=None):
             return [item.get("id", "") for item in result.get("data", [])]
     except urllib.error.HTTPError as error:
         raise RuntimeError(f"Resend 返回 {error.code}，请管理员检查发件域名和配置") from None
+
+
+def send_smtp_batch(messages, settings=None, batch_id=None):
+    settings = settings or {}
+    password = settings.get("smtp_password", "")
+    host = settings.get("smtp_host", "")
+    username = settings.get("smtp_username", "")
+    if not host or not username or not password:
+        raise RuntimeError("SMTP 尚未完整配置服务器、账号和密码")
+    port = int(settings.get("smtp_port", 465))
+    security = settings.get("smtp_security", "ssl")
+    client = smtplib.SMTP_SSL(host, port, timeout=20) if security == "ssl" else smtplib.SMTP(host, port, timeout=20)
+    try:
+        client.ehlo()
+        if security == "starttls":
+            client.starttls(context=ssl.create_default_context())
+            client.ehlo()
+        if security != "none" or username:
+            client.login(username, password)
+        ids = []
+        for message in messages:
+            mail = EmailMessage()
+            mail["From"] = f'{settings["from_name"]} <{settings["from_email"]}>' if settings.get("from_name") else settings["from_email"]
+            mail["To"] = message["email"]
+            mail["Subject"] = message["subject"]
+            if settings.get("reply_to"):
+                mail["Reply-To"] = settings["reply_to"]
+            mail.set_content(message["body"])
+            client.send_message(mail)
+            ids.append(f"smtp-{uuid4().hex}")
+        return ids
+    finally:
+        client.quit()
+
+
+def send_mail_batch(messages, settings=None, batch_id=None):
+    if settings.get("provider") == "smtp":
+        return send_smtp_batch(messages, settings=settings, batch_id=batch_id)
+    return send_resend_batch(messages, settings=settings, batch_id=batch_id)
+
+
+def run_email_automation(db):
+    queue = EmailQueue(db)
+    automation = queue.automation()
+    if not automation.get("enabled"):
+        return {"sent": 0, "skipped": "disabled"}
+    now = datetime.now(ZoneInfo(automation["timezone"]))
+    if now.hour != int(automation["send_hour"]) or now.minute > 10:
+        return {"sent": 0, "skipped": "outside_schedule"}
+    settings = queue.settings(private=True, sender_id=int(automation["sender_id"]))
+    if not settings["configured"]:
+        return {"sent": 0, "skipped": "sender_not_configured"}
+    remaining = int(automation["daily_limit"]) - queue.sent_count_today()
+    if remaining <= 0:
+        return {"sent": 0, "skipped": "daily_limit"}
+    pending = [row for row in queue.recipients() if row["status"] == "pending"][:remaining]
+    if not pending:
+        return {"sent": 0, "skipped": "no_pending"}
+    actor = "自动邮件任务"
+    lead_ids = [row["lead_id"] for row in pending]
+    ids = queue.prepare(lead_ids, actor)
+    rows = queue.select(ids, sendable=True)
+    previews = [{
+        **row,
+        "subject": render_email_template(automation["subject_template"], row),
+        "body": render_email_template(automation["body_template"], row),
+    } for row in rows]
+    batch = queue.claim(ids)
+    try:
+        message_ids = send_mail_batch(previews, settings=settings, batch_id=batch)
+        if len(message_ids) != len(rows) or not all(message_ids):
+            raise RuntimeError("邮件服务返回结果不完整")
+        for row, provider_id in zip(previews, message_ids):
+            queue.complete(row, row["subject"], row["body"], settings["from_email"], provider_id, actor)
+    except Exception:
+        raise
+    return {"sent": len(rows), "sender": settings["from_email"]}
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="zh-CN">
@@ -1251,37 +1332,52 @@ Aibubu Team</textarea>
             <header>
                 <div>
                     <h2 class="page-title">邮件发送配置</h2>
-                    <div class="email-status">这里只管理发件域名、发件邮箱、Reply-To、API Key 和批次限制，不展示或修改客户线索。</div>
+                    <div class="email-status">这里管理自有 SMTP 发信、备用 Resend 配置和每日自动发送规则，不展示或修改客户线索。</div>
                 </div>
             </header>
             <section class="email-panel">
-                <h3>发件服务与邮箱</h3>
-                <p>配置步骤：在 Resend 验证自己的发件域名，按其提示设置 DNS（SPF / DKIM）；创建有发送权限的 API Key，再填写下方配置。Reply-To 用于接收回复。</p>
-                <p>服务器配置：若要在页面保存 API Key，先在部署环境设置 <code>MAIL_CONFIG_KEY</code>，用 <code>python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"</code> 生成一次并妥善保管，勿提交 Git。也可直接在部署环境设置 <code>RESEND_API_KEY</code> 与 <code>RESEND_FROM_EMAIL</code>。环境变量修改后需重新部署，主密钥丢失需重新填写 API Key。</p>
+                <h3>自有 SMTP 发件服务</h3>
+                <p>选择 SMTP 后，邮件从你自己的企业邮箱服务器发出。腾讯、阿里、网易等企业邮箱通常需要使用 SMTP 专用密码或授权码，不要填写网页登录密码。</p>
+                <p>页面保存的 SMTP 密码会加密保存。服务器必须设置 <code>MAIL_CONFIG_KEY</code>；没有它只能预览，不能保存密码或发送。</p>
                 <div id="email-config-fields">
                     <label for="mail-edit-sender">管理发件邮箱（仅管理员可保存）</label><select id="mail-edit-sender" onchange="loadMailSender()"></select>
-                    <label>邮件服务</label><input value="Resend" disabled>
+                    <label for="mail-provider">邮件服务</label><select id="mail-provider" onchange="toggleMailProvider()"><option value="smtp">自有 SMTP</option><option value="resend">Resend（备用）</option></select>
+                    <label for="mail-smtp-host">SMTP 服务器</label><input id="mail-smtp-host" placeholder="smtp.example.com">
+                    <label for="mail-smtp-port">SMTP 端口</label><input id="mail-smtp-port" type="number" min="1" max="65535" value="465">
+                    <label for="mail-smtp-security">SMTP 加密</label><select id="mail-smtp-security"><option value="ssl">SSL/TLS（465）</option><option value="starttls">STARTTLS（587）</option><option value="none">不加密（不推荐）</option></select>
+                    <label for="mail-smtp-username">SMTP 账号</label><input id="mail-smtp-username" type="email" placeholder="sales@example.com">
+                    <label for="mail-smtp-password">SMTP 密码 / 授权码（留空保留原密码）</label><input id="mail-smtp-password" type="password" autocomplete="new-password">
                     <label for="mail-sending-domain">发件域名</label><input id="mail-sending-domain" type="text" placeholder="mail.your-domain.com" autocomplete="off">
-                    <p>填写你在 Resend 添加的域名或子域名，不要填写网站地址。发件邮箱 @ 后必须与这里一致。保存仅登记配置，不会添加域名、修改 DNS 或验证域名；验证状态请到 Resend 查看。</p>
+                    <p>填写发件邮箱域名。SMTP 服务器、发件邮箱和账号应属于同一个企业邮箱服务。</p>
                     <label>发件邮箱（已验证域名）</label><input id="mail-from-email" type="email" placeholder="sales@your-domain.com">
                     <label>发件人名称</label><input id="mail-from-name" maxlength="100">
                     <label>回复邮箱 Reply-To（可选）</label><input id="mail-reply-to" type="email">
                     <label>单批发送上限（1–50）</label><input id="mail-batch-limit" type="number" min="1" max="50" value="20">
-                    <label>API Key（留空保留原密钥，保存后不回显）</label><input id="mail-api-key" type="password" autocomplete="new-password">
+                    <label>Resend API Key（仅备用 Resend 模式使用）</label><input id="mail-api-key" type="password" autocomplete="new-password">
                     <button id="mail-save-settings" onclick="saveMailSettings()">保存配置（不会发送邮件）</button>
                 </div>
                 <div id="email-config-result" class="email-status"></div>
-                <details><summary>第一次配置？按这几步完成</summary>
+                <details><summary>第一次配置 SMTP？按这几步完成</summary>
                     <ol>
-                        <li>准备你能管理 DNS 的域名，建议使用发件子域名，如 mail.example.com，不要求与本网站域名相同。</li>
-                        <li>进入 Resend 的 Domains 添加该域名。复制控制台实际给出的 DNS 记录类型、主机名、值、优先级，到域名注册商的 DNS 管理页添加。SPF / DKIM / MX 的具体值以 Resend 为准，不要照抄示例或覆盖现有收信记录。</li>
-                        <li>在 Resend 确认域名验证通过，建立有该域名发送权限的 API Key，填写本页。每个发件邮箱可以使用独立 Key；留空只保留该邮箱自己的旧 Key。</li>
-                        <li>填写发件域名 mail.example.com、发件邮箱 sales@mail.example.com、显示名称、能收信的 Reply-To。发件服务不会替你建立收信邮箱。</li>
-                        <li>保存不会发送邮件。添加其他邮箱时选择“新增发件邮箱”；发送前在线索池选择本批使用的邮箱。</li>
+                        <li>从企业邮箱后台获取 SMTP 主机、端口、SSL/STARTTLS 和授权码。</li>
+                        <li>填写 SMTP 账号、发件邮箱和 Reply-To；保存不会发送邮件。</li>
+                        <li>先用 1 个测试收件人预览，确认无误后再批量发送。</li>
                     </ol>
-                    <p>页面保存密钥需要部署环境的 MAIL_CONFIG_KEY。设置后重新部署，不要把主密钥填进 API Key，也不要发到聊天中。</p>
+                    <p>不要把 SMTP 密码或授权码发到聊天中。自动发送只会在你打开开关后运行。</p>
                 </details>
-                <p>参数齐全不代表域名已验证或服务已连通。发送成功表示 Resend 已接受，不代表送达或已读。</p>
+                <p>参数齐全不代表 SMTP 已连通；发送成功表示服务器接受，不代表送达或已读。</p>
+            </section>
+            <section class="email-panel" style="margin-top:16px">
+                <h3>每日自动发送</h3>
+                <p>自动任务按北京时间运行，每天只取未发送、未退订、未移除的联系人；每日上限 1–50。</p>
+                <label><input id="mail-auto-enabled" type="checkbox"> 开启每日自动发送</label>
+                <label>使用发件邮箱<select id="mail-auto-sender"></select></label>
+                <label>每日上限<input id="mail-auto-limit" type="number" min="1" max="50" value="20"></label>
+                <label>发送时间（小时）<input id="mail-auto-hour" type="number" min="0" max="23" value="9"></label>
+                <label>标题模板<input id="mail-auto-subject"></label>
+                <label>正文模板<textarea id="mail-auto-body" rows="8"></textarea></label>
+                <button id="mail-save-automation" onclick="saveMailAutomation()">保存自动发送规则（不会立即发送）</button>
+                <div id="mail-automation-result" class="email-status"></div>
             </section>
         </div>
 
@@ -1935,12 +2031,14 @@ Aibubu Team</textarea>
         let currentEmailProspects = [];
         let mailSenders = [];
         let emailProviderConfigured = false;
+        let mailAutomation = {};
         async function fetchEmailProspects() {
             const res=await fetch('/api/email-recipients');
             const result=await res.json();
             if(!res.ok) return;
             currentEmailProspects=result.rows||[];
             mailSenders=result.senders||[];
+            mailAutomation=result.automation||{};
             for(const id of ['email-sender','mail-edit-sender']) {
                 const input=document.getElementById(id), previous=input.value;
                 input.innerHTML=mailSenders.map(s=>`<option value="${s.id}">${escapeHtml(s.from_email||'默认邮箱（未配置）')}</option>`).join('');
@@ -1948,6 +2046,7 @@ Aibubu Team</textarea>
                 if([...input.options].some(o=>o.value===previous)) input.value=previous;
             }
             loadMailSender();
+            loadMailAutomation();
             updateMailSenderStatus();
             renderEmailRecipients();
             document.getElementById('email-history').innerHTML=(result.history||[]).map(row=>`<div class="email-preview">${escapeHtml(row.created_at)} UTC · ${escapeHtml(row.sender)} → ${escapeHtml(row.email)}<br>${escapeHtml(row.company_name)} · ${escapeHtml(row.subject)} · 操作人：${escapeHtml(row.sent_by)}</div>`).join('')||'暂无发送记录';
@@ -1956,7 +2055,7 @@ Aibubu Team</textarea>
             const settings=mailSenders.find(s=>String(s.id)===document.getElementById('email-sender').value)||{};
             emailProviderConfigured=!!settings.configured;
             const provider=document.getElementById('email-provider-status');
-            provider.textContent=settings.configured ? `参数齐全 · 本批发件人：${settings.from_email} · 域名验证请在 Resend 确认` : '所选发件邮箱未配置完整，可以预览，不能发送';
+            provider.textContent=settings.configured ? `参数齐全 · ${settings.provider==='smtp'?'自有 SMTP':'Resend'} · 本批发件人：${settings.from_email}` : '所选发件邮箱未配置完整，可以预览，不能发送';
             provider.className=settings.configured ? 'email-status email-configured' : 'email-status email-unconfigured';
             document.getElementById('email-send-btn').disabled=!settings.configured;
             document.getElementById('email-preview-list').textContent='';
@@ -1965,16 +2064,36 @@ Aibubu Team</textarea>
             const settings=mailSenders.find(s=>String(s.id)===document.getElementById('mail-edit-sender').value)||{
                 from_name:'Aibubu',batch_limit:20,encryption_ready:mailSenders[0]?.encryption_ready
             };
-            for(const field of ['sending-domain','from-email','from-name','reply-to','batch-limit']) {
+            for(const field of ['sending-domain','from-email','from-name','reply-to','batch-limit','smtp-host','smtp-port','smtp-security','smtp-username']) {
                 const input=document.getElementById('mail-'+field);
                 input.value=settings[field.replaceAll('-','_')]??'';
                 input.disabled=currentUser?.role!=='admin';
             }
+            document.getElementById('mail-provider').value=settings.provider||'resend';
+            document.getElementById('mail-smtp-password').value='';
             document.getElementById('mail-save-settings').hidden=currentUser?.role!=='admin';
             document.getElementById('mail-api-key').disabled=currentUser?.role!=='admin'||!settings.encryption_ready;
             document.getElementById('mail-api-key').value='';
             document.getElementById('email-config-result').textContent=
-                `API Key：${settings.key_configured?'已配置（不回显）':'未配置'}；页面加密存储：${settings.encryption_ready?'可用':'未启用，请先设置 MAIL_CONFIG_KEY'}`;
+                `${settings.provider==='smtp'?'SMTP密码':'API Key'}：${settings.key_configured?'已配置（不回显）':'未配置'}；页面加密存储：${settings.encryption_ready?'可用':'未启用，请先设置 MAIL_CONFIG_KEY'}`;
+            toggleMailProvider();
+        }
+        function toggleMailProvider() {
+            const smtp=document.getElementById('mail-provider').value==='smtp';
+            for(const id of ['mail-smtp-host','mail-smtp-port','mail-smtp-security','mail-smtp-username','mail-smtp-password'])
+                document.getElementById(id).disabled=!smtp||currentUser?.role!=='admin';
+            document.getElementById('mail-api-key').disabled=smtp||currentUser?.role!=='admin';
+        }
+        function loadMailAutomation() {
+            const a=mailAutomation||{};
+            document.getElementById('mail-auto-enabled').checked=!!a.enabled;
+            document.getElementById('mail-auto-limit').value=a.daily_limit??20;
+            document.getElementById('mail-auto-hour').value=a.send_hour??9;
+            document.getElementById('mail-auto-subject').value=a.subject_template||'{{company}} × Aibubu：更高效的 AI 图片与视频工作流';
+            document.getElementById('mail-auto-body').value=a.body_template||'Hi {{name}},\\n\\nI’m reaching out from Aibubu.\\n\\nBest,\\nAibubu Team';
+            const select=document.getElementById('mail-auto-sender');
+            select.innerHTML=mailSenders.map(s=>`<option value="${s.id}">${escapeHtml(s.from_email||'未配置')}</option>`).join('');
+            if(a.sender_id) select.value=String(a.sender_id);
         }
         function renderEmailRecipients() {
             const market=document.getElementById('email-market-filter').value;
@@ -2052,7 +2171,7 @@ Aibubu Team</textarea>
 
         async function saveMailSettings() {
             const data={};
-            for(const field of ['sending-domain','from-email','from-name','reply-to','batch-limit','api-key'])
+            for(const field of ['provider','sending-domain','from-email','from-name','reply-to','batch-limit','api-key','smtp-host','smtp-port','smtp-security','smtp-username','smtp-password'])
                 data[field.replaceAll('-','_')]=document.getElementById('mail-'+field).value;
             const editId=document.getElementById('mail-edit-sender').value;
             if(editId!=='new') data.id=Number(editId);
@@ -2066,6 +2185,20 @@ Aibubu Team</textarea>
                 loadMailSender();
                 alert('配置已保存，没有发送任何邮件');
             } catch(error) {document.getElementById('email-config-result').textContent=error.message;}
+        }
+        async function saveMailAutomation() {
+            const data={
+                enabled:document.getElementById('mail-auto-enabled').checked,
+                sender_id:Number(document.getElementById('mail-auto-sender').value||1),
+                daily_limit:Number(document.getElementById('mail-auto-limit').value),
+                send_hour:Number(document.getElementById('mail-auto-hour').value),
+                send_minute:0, timezone:'Asia/Shanghai',
+                subject_template:document.getElementById('mail-auto-subject').value,
+                body_template:document.getElementById('mail-auto-body').value
+            };
+            const res=await fetch('/api/email-automation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+            const result=await res.json();
+            document.getElementById('mail-automation-result').textContent=res.ok?'自动发送规则已保存，不会立即发送':(result.error||'保存失败');
         }
 
         let currentDiscordCommunities = [];
@@ -3435,7 +3568,7 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
         return cookie
 
     def handle_email_queue(self, path, method):
-        roles = ("admin",) if path in ("/api/email-settings", "/api/email-senders") and method == "POST" else (
+        roles = ("admin",) if path in ("/api/email-settings", "/api/email-senders", "/api/email-automation") and method == "POST" else (
             ("admin", "sales_lead", "sales_rep") if method == "POST" else None
         )
         user = self._require_user(roles)
@@ -3452,11 +3585,13 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({
                     "success": True, "settings": settings,
                     "rows": queue.rows(owner) if path == "/api/email-queue" else [],
+                    "automation": queue.automation() if path == "/api/email-settings" else None,
                 })
                 return
             if method == "GET" and path == "/api/email-recipients":
                 self.send_json({"success": True, "rows": queue.recipients(owner),
-                                "senders": queue.senders(), "history": queue.history(owner)})
+                                "senders": queue.senders(), "history": queue.history(owner),
+                                "automation": queue.automation()})
                 return
             if path.startswith("/api/email-prospects"):
                 self.send_json({"success": False, "error": "独立邮件名单已停用，请从客户池加入邮件队列"}, status=410)
@@ -3474,6 +3609,9 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
             if path == "/api/email-senders":
                 sender_id = int(data["id"]) if data.get("id") else None
                 self.send_json({"success": True, "settings": queue.save_settings(data, sender_id=sender_id)})
+                return
+            if path == "/api/email-automation":
+                self.send_json({"success": True, "automation": queue.save_automation(data)})
                 return
             if path == "/api/email-queue/add":
                 ids = list(dict.fromkeys(int(value) for value in data.get("lead_ids", [])))
@@ -3526,7 +3664,7 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                 raise ValueError("邮件服务尚未配置，请联系管理员")
             batch = queue.claim(ids)
             try:
-                message_ids = send_resend_batch(previews, settings=settings, batch_id=batch)
+                message_ids = send_mail_batch(previews, settings=settings, batch_id=batch)
                 if len(message_ids) != len(rows) or not all(message_ids):
                     raise RuntimeError("邮件服务返回结果不完整")
                 for row, provider_id in zip(previews, message_ids):
@@ -3535,7 +3673,7 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                 # A timeout can occur after acceptance. Never reset to pending automatically.
                 self.send_json({
                     "success": False,
-                    "error": "发送结果待核实，已锁定发送中记录以防重复。请管理员核对 Resend 发送日志，勿重复提交。",
+                    "error": "发送结果待核实，已锁定发送中记录以防重复。请核对 SMTP/邮件服务器发送日志，勿重复提交。",
                 }, status=502)
                 return
             self.send_json({"success": True, "sent": len(rows), "failed": 0})
@@ -3545,6 +3683,18 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if path == "/api/email-automation/run":
+            secret = os.environ.get("CRON_SECRET", "").strip()
+            supplied = urllib.parse.parse_qs(parsed.query).get("token", [""])[0]
+            auth = self.headers.get("Authorization", "")
+            if not secret or not hmac.compare_digest(supplied or auth.removeprefix("Bearer ").strip(), secret):
+                self.send_json({"success": False, "error": "未授权"}, status=401)
+                return
+            try:
+                self.send_json({"success": True, **run_email_automation(self.db)})
+            except Exception as error:
+                self.send_json({"success": False, "error": str(error)}, status=502)
+            return
         if path.startswith("/api/email-"):
             self.handle_email_queue(path, "GET")
             return
