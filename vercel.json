@@ -10,5 +10,11 @@
       "src": "/(.*)",
       "dest": "/api/index.py"
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/email-automation/run",
+      "schedule": "0 * * * *"
+    }
   ]
 }
