@@ -26,6 +26,19 @@ CREATE TABLE IF NOT EXISTS mail_senders (
     encrypted_key TEXT NOT NULL DEFAULT ''
 );
 INSERT OR IGNORE INTO mail_senders(id) VALUES(1);
+CREATE TABLE IF NOT EXISTS mail_automation (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    enabled INTEGER NOT NULL DEFAULT 0,
+    sender_id INTEGER NOT NULL DEFAULT 1,
+    daily_limit INTEGER NOT NULL DEFAULT 20,
+    send_hour INTEGER NOT NULL DEFAULT 9,
+    send_minute INTEGER NOT NULL DEFAULT 0,
+    timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+    subject_template TEXT NOT NULL DEFAULT '{{company}} × Aibubu：更高效的 AI 图片与视频工作流',
+    body_template TEXT NOT NULL DEFAULT 'Hi {{name}},\n\nI’m reaching out from Aibubu. We provide an AI workspace and API for creating product images and short videos at scale.\n\nBest,\nAibubu Team',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+INSERT OR IGNORE INTO mail_automation(id) VALUES(1);
 CREATE TABLE IF NOT EXISTS mail_queue (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     company_id INTEGER NOT NULL REFERENCES companies(id),
@@ -73,6 +86,11 @@ class EmailQueue:
         values.setdefault("from_name", "Aibubu")
         values.setdefault("reply_to", "")
         values.setdefault("batch_limit", 20)
+        values.setdefault("provider", "resend")
+        values.setdefault("smtp_host", "")
+        values.setdefault("smtp_port", 465)
+        values.setdefault("smtp_security", "ssl")
+        values.setdefault("smtp_username", "")
         key = os.environ.get("RESEND_API_KEY", "").strip() if sender_id == 1 else ""
         encrypted = row["encrypted_key"] if row else ""
         encryption_ready = bool(os.environ.get("MAIL_CONFIG_KEY"))
@@ -82,16 +100,59 @@ class EmailQueue:
                 key = self.cipher().decrypt(encrypted.encode()).decode()
             except Exception:
                 raise ValueError("无法解密邮件密钥，请管理员检查 MAIL_CONFIG_KEY 或重新保存 API Key") from None
+        credential_configured = bool(key or encrypted)
+        if values["provider"] == "smtp":
+            credential_configured = bool(encrypted and values["smtp_host"] and values["smtp_username"])
         values.update(
             id=sender_id,
-            provider="Resend",
+            provider=values["provider"],
             key_configured=bool(key or encrypted),
+            credential_configured=credential_configured,
             encryption_ready=encryption_ready,
-            configured=bool((key or encrypted) and key_readable and EMAIL_RE.fullmatch(values["from_email"])),
+            configured=bool(credential_configured and key_readable and EMAIL_RE.fullmatch(values["from_email"])),
         )
         if private:
             values["api_key"] = key
+            values["smtp_password"] = (
+                self.cipher().decrypt(encrypted.encode()).decode()
+                if encrypted and values["provider"] == "smtp" else ""
+            )
         return values
+
+    def automation(self):
+        conn = self.connection()
+        try:
+            row = conn.execute("SELECT * FROM mail_automation WHERE id=1").fetchone()
+            return dict(row) if row else {}
+        finally:
+            conn.close()
+
+    def save_automation(self, data):
+        enabled = 1 if data.get("enabled") else 0
+        sender_id = int(data.get("sender_id", 1))
+        daily_limit = int(data.get("daily_limit", 20))
+        hour, minute = int(data.get("send_hour", 9)), int(data.get("send_minute", 0))
+        timezone = str(data.get("timezone") or "Asia/Shanghai").strip()
+        if not 1 <= daily_limit <= 50:
+            raise ValueError("每日自动发送上限须为 1–50")
+        if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+            raise ValueError("发送时间无效")
+        if timezone not in {"Asia/Shanghai", "UTC", "America/Los_Angeles", "America/New_York", "Europe/London"}:
+            raise ValueError("不支持的时区")
+        subject = str(data.get("subject_template") or "").strip()
+        body = str(data.get("body_template") or "").strip()
+        if not subject or not body or len(subject) > 300 or len(body) > 50000:
+            raise ValueError("自动邮件标题和正文不能为空")
+        conn = self.connection()
+        try:
+            conn.execute("""UPDATE mail_automation SET enabled=?,sender_id=?,daily_limit=?,
+                send_hour=?,send_minute=?,timezone=?,subject_template=?,body_template=?,
+                updated_at=CURRENT_TIMESTAMP WHERE id=1""",
+                (enabled, sender_id, daily_limit, hour, minute, timezone, subject, body))
+            conn.commit()
+        finally:
+            conn.close()
+        return self.automation()
 
     @staticmethod
     def cipher():
@@ -115,7 +176,7 @@ class EmailQueue:
     def save_settings(self, data, sender_id=1):
         values = {
             field: str(data.get(field) or "").strip()
-            for field in ("from_email", "from_name", "reply_to")
+            for field in ("from_email", "from_name", "reply_to", "smtp_host", "smtp_username", "smtp_security")
         }
         if not EMAIL_RE.fullmatch(values["from_email"]):
             raise ValueError("请填写有效的发件邮箱")
@@ -133,9 +194,21 @@ class EmailQueue:
         values["batch_limit"] = int(data.get("batch_limit", 20))
         if not 1 <= values["batch_limit"] <= 50:
             raise ValueError("单批数量须为 1–50")
+        values["provider"] = str(data.get("provider") or "resend").strip().lower()
+        if values["provider"] not in {"resend", "smtp"}:
+            raise ValueError("不支持的邮件服务")
+        values["smtp_port"] = int(data.get("smtp_port", 465))
+        values["smtp_security"] = values["smtp_security"] or "ssl"
+        if not 1 <= values["smtp_port"] <= 65535:
+            raise ValueError("SMTP端口无效")
+        if values["smtp_security"] not in {"ssl", "starttls", "none"}:
+            raise ValueError("SMTP加密方式无效")
+        if values["provider"] == "smtp" and (not values["smtp_host"] or not values["smtp_username"]):
+            raise ValueError("SMTP模式需要填写服务器和账号")
+        secret = data.get("smtp_password") if values["provider"] == "smtp" else data.get("api_key")
         encrypted = None
-        if data.get("api_key"):
-            encrypted = self.cipher().encrypt(str(data["api_key"]).strip().encode()).decode()
+        if secret:
+            encrypted = self.cipher().encrypt(str(secret).strip().encode()).decode()
         conn = self.connection()
         try:
             if sender_id is None:
@@ -233,6 +306,15 @@ class EmailQueue:
                 JOIN companies c ON c.id=q.company_id JOIN leads l ON l.id=q.lead_id
                 WHERE (? IS NULL OR c.owner=?) ORDER BY s.id DESC LIMIT 500""", (owner, owner)
             ).fetchall()]
+        finally:
+            conn.close()
+
+    def sent_count_today(self):
+        conn = self.connection()
+        try:
+            return int(conn.execute(
+                "SELECT count(*) FROM mail_queue_sends WHERE date(created_at)=date('now')"
+            ).fetchone()[0])
         finally:
             conn.close()
 
