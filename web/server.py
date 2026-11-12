@@ -126,6 +126,29 @@ def send_smtp_batch(messages, settings=None, batch_id=None):
         client.quit()
 
 
+def test_smtp_connection(settings=None):
+    settings = settings or {}
+    password = settings.get("smtp_password", "")
+    host = settings.get("smtp_host", "")
+    username = settings.get("smtp_username", "")
+    if not host or not username or not password:
+        raise RuntimeError("SMTP 尚未完整配置服务器、账号和密码")
+    port = int(settings.get("smtp_port", 465))
+    security = settings.get("smtp_security", "ssl")
+    client = smtplib.SMTP_SSL(host, port, timeout=20) if security == "ssl" else smtplib.SMTP(host, port, timeout=20)
+    try:
+        client.ehlo()
+        if security == "starttls":
+            client.starttls(context=ssl.create_default_context())
+            client.ehlo()
+        client.login(username, password)
+    finally:
+        try:
+            client.quit()
+        except smtplib.SMTPException:
+            pass
+
+
 def send_mail_batch(messages, settings=None, batch_id=None):
     if settings.get("provider") == "smtp":
         return send_smtp_batch(messages, settings=settings, batch_id=batch_id)
@@ -3570,7 +3593,7 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
     def handle_email_queue(self, path, method):
         roles = ("admin",) if path in (
             "/api/email-settings", "/api/email-senders", "/api/email-automation",
-            "/api/email-queue/recover",
+            "/api/email-queue/recover", "/api/email-senders/test",
         ) and method == "POST" else (
             ("admin", "sales_lead", "sales_rep") if method == "POST" else None
         )
@@ -3615,6 +3638,24 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                 return
             if path == "/api/email-automation":
                 self.send_json({"success": True, "automation": queue.save_automation(data)})
+                return
+            if path == "/api/email-senders/test":
+                sender_id = int(data.get("id", 1))
+                settings = queue.settings(private=True, sender_id=sender_id)
+                if settings.get("provider") != "smtp":
+                    raise ValueError("所选发件邮箱不是 SMTP")
+                try:
+                    test_smtp_connection(settings)
+                except smtplib.SMTPAuthenticationError:
+                    self.send_json({"success": False, "error": "SMTP 登录失败，请检查邮箱密码或客户端安全密码"}, status=400)
+                    return
+                except (TimeoutError, OSError):
+                    self.send_json({"success": False, "error": "SMTP 服务器连接失败或超时"}, status=502)
+                    return
+                except smtplib.SMTPException:
+                    self.send_json({"success": False, "error": "SMTP 服务器拒绝连接或登录"}, status=400)
+                    return
+                self.send_json({"success": True, "message": "SMTP 连接和登录验证成功，未发送邮件"})
                 return
             if path == "/api/email-queue/add":
                 ids = list(dict.fromkeys(int(value) for value in data.get("lead_ids", [])))
