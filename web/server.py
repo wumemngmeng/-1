@@ -1160,6 +1160,35 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .email-table input[type=checkbox] { width:auto; }
         .email-configured { color:#34d399; }
         .email-unconfigured { color:#fbbf24; }
+        .email-config-savebar {
+            position:sticky;
+            bottom:12px;
+            z-index:5;
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:12px;
+            margin-top:16px;
+            padding:12px 14px;
+            background:rgba(15,23,42,.97);
+            border:1px solid #3b82f6;
+            border-radius:10px;
+            box-shadow:0 8px 24px #0008;
+        }
+        .email-config-savebar .email-status { color:#cbd5e1; }
+        .email-config-savebar button {
+            flex:0 0 auto;
+            min-height:42px;
+            padding:10px 18px;
+            background:#2563eb;
+            border:1px solid #60a5fa;
+            border-radius:7px;
+            color:#fff;
+            font-weight:700;
+            cursor:pointer;
+        }
+        .email-config-savebar button:hover { background:#1d4ed8; }
+        .email-config-savebar button:focus-visible { outline:2px solid #bfdbfe; outline-offset:2px; }
         .email-push-badge { display:inline-block; padding:3px 9px; border-radius:999px; font-size:11px; font-weight:700; white-space:nowrap; }
         .email-push-pending { color:#cbd5e1; background:#334155; }
         .email-push-sent { color:#bbf7d0; background:#166534; }
@@ -1168,6 +1197,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         @media (max-width: 900px) {
             .community-stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
             .email-layout { grid-template-columns:1fr; }
+        }
+        @media (max-width: 600px) {
+            .email-config-savebar { align-items:stretch; flex-direction:column; }
+            .email-config-savebar button { width:100%; }
         }
     </style>
 </head>
@@ -1377,7 +1410,10 @@ Aibubu Team</textarea>
                     <label>回复邮箱 Reply-To（可选）</label><input id="mail-reply-to" type="email">
                     <label>单批发送上限（1–50）</label><input id="mail-batch-limit" type="number" min="1" max="50" value="20">
                     <label>Resend API Key（仅备用 Resend 模式使用）</label><input id="mail-api-key" type="password" autocomplete="new-password">
-                    <button id="mail-save-settings" onclick="saveMailSettings()">保存配置（不会发送邮件）</button>
+                </div>
+                <div class="email-config-savebar" role="group" aria-label="保存邮件发件配置">
+                    <span class="email-status">参数填写完成后点击保存。保存只更新配置，不会发送邮件。</span>
+                    <button id="mail-save-settings" onclick="saveMailSettings()">保存发件配置</button>
                 </div>
                 <div id="email-config-result" class="email-status"></div>
                 <details><summary>第一次配置 SMTP？按这几步完成</summary>
