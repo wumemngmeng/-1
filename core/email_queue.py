@@ -387,9 +387,9 @@ class EmailQueue:
                 (status, queue_id),
             )
             changed = conn.execute(
-                "SELECT count(*) FROM mail_queue WHERE id=? AND status=?",
+                "SELECT count(*) AS total FROM mail_queue WHERE id=? AND status=?",
                 (queue_id, status),
-            ).fetchone()[0]
+            ).fetchone()["total"]
             if changed != 1:
                 conn.rollback()
                 raise ValueError("发送中的记录不能修改")
@@ -410,10 +410,10 @@ class EmailQueue:
                 (batch, *ids, *ids, len(ids)),
             )
             claimed = conn.execute(
-                f"""SELECT count(*) FROM mail_queue
+                f"""SELECT count(*) AS total FROM mail_queue
                 WHERE id IN ({marks}) AND status='sending' AND batch_id=?""",
                 (*ids, batch),
-            ).fetchone()[0]
+            ).fetchone()["total"]
             if claimed != len(ids):
                 conn.rollback()
                 raise ValueError("队列状态已变化，已阻止重复发送")
@@ -429,9 +429,9 @@ class EmailQueue:
         conn = self.connection()
         try:
             sent = conn.execute(
-                "SELECT count(*) FROM mail_queue_sends WHERE queue_id=?",
+                "SELECT count(*) AS total FROM mail_queue_sends WHERE queue_id=?",
                 (queue_id,),
-            ).fetchone()[0]
+            ).fetchone()["total"]
             if sent:
                 raise ValueError("已有发送记录，不能恢复以免重复发送")
             conn.execute(
@@ -441,9 +441,10 @@ class EmailQueue:
                 (queue_id, queue_id),
             )
             recovered = conn.execute(
-                "SELECT count(*) FROM mail_queue WHERE id=? AND status='pending' AND batch_id IS NULL",
+                """SELECT count(*) AS total FROM mail_queue
+                WHERE id=? AND status='pending' AND batch_id IS NULL""",
                 (queue_id,),
-            ).fetchone()[0]
+            ).fetchone()["total"]
             if recovered != 1:
                 conn.rollback()
                 raise ValueError("队列状态已变化，恢复失败")
