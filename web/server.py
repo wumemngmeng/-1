@@ -3568,7 +3568,10 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
         return cookie
 
     def handle_email_queue(self, path, method):
-        roles = ("admin",) if path in ("/api/email-settings", "/api/email-senders", "/api/email-automation") and method == "POST" else (
+        roles = ("admin",) if path in (
+            "/api/email-settings", "/api/email-senders", "/api/email-automation",
+            "/api/email-queue/recover",
+        ) and method == "POST" else (
             ("admin", "sales_lead", "sales_rep") if method == "POST" else None
         )
         user = self._require_user(roles)
@@ -3632,6 +3635,13 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
             if path == "/api/email-queue/status":
                 queue.status(int(data["id"]), str(data.get("status")), owner)
                 self.send_json({"success": True})
+                return
+            if path == "/api/email-queue/recover":
+                queue_id = int(data["id"])
+                if data.get("confirmation") != f"RECOVER {queue_id}":
+                    raise ValueError("恢复确认不匹配")
+                queue.recover_unsent(queue_id, owner)
+                self.send_json({"success": True, "id": queue_id, "status": "pending"})
                 return
             if path not in ("/api/email-queue/preview", "/api/email-queue/send"):
                 self.send_json({"success": False, "error": "接口不存在"}, status=404)
