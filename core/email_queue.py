@@ -422,6 +422,35 @@ class EmailQueue:
             conn.close()
         return batch
 
+    def recover_unsent(self, queue_id, owner=None):
+        row = self.select([queue_id], owner)[0]
+        if row["status"] != "sending":
+            raise ValueError("仅发送中的记录可以恢复")
+        conn = self.connection()
+        try:
+            sent = conn.execute(
+                "SELECT count(*) FROM mail_queue_sends WHERE queue_id=?",
+                (queue_id,),
+            ).fetchone()[0]
+            if sent:
+                raise ValueError("已有发送记录，不能恢复以免重复发送")
+            conn.execute(
+                """UPDATE mail_queue SET status='pending',batch_id=NULL,updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND status='sending'
+                AND NOT EXISTS (SELECT 1 FROM mail_queue_sends WHERE queue_id=?)""",
+                (queue_id, queue_id),
+            )
+            recovered = conn.execute(
+                "SELECT count(*) FROM mail_queue WHERE id=? AND status='pending' AND batch_id IS NULL",
+                (queue_id,),
+            ).fetchone()[0]
+            if recovered != 1:
+                conn.rollback()
+                raise ValueError("队列状态已变化，恢复失败")
+            conn.commit()
+        finally:
+            conn.close()
+
     def complete(self, row, subject, body, sender, provider_id, actor):
         conn = self.connection()
         try:
