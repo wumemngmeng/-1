@@ -382,13 +382,18 @@ class EmailQueue:
             raise ValueError("仅支持移除或退订，不允许重置已发送记录")
         conn = self.connection()
         try:
-            cur = conn.execute(
+            conn.execute(
                 "UPDATE mail_queue SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND status!='sending'",
                 (status, queue_id),
             )
-            conn.commit()
-            if cur.rowcount != 1:
+            changed = conn.execute(
+                "SELECT count(*) FROM mail_queue WHERE id=? AND status=?",
+                (queue_id, status),
+            ).fetchone()[0]
+            if changed != 1:
+                conn.rollback()
                 raise ValueError("发送中的记录不能修改")
+            conn.commit()
         finally:
             conn.close()
 
@@ -398,15 +403,21 @@ class EmailQueue:
         marks = ",".join("?" for _ in ids)
         conn = self.connection()
         try:
-            cur = conn.execute(
+            conn.execute(
                 f"""UPDATE mail_queue SET status='sending',batch_id=?,updated_at=CURRENT_TIMESTAMP
                 WHERE id IN ({marks}) AND status='pending'
                 AND (SELECT count(*) FROM mail_queue WHERE id IN ({marks}) AND status='pending')=?""",
                 (batch, *ids, *ids, len(ids)),
             )
-            conn.commit()
-            if cur.rowcount != len(ids):
+            claimed = conn.execute(
+                f"""SELECT count(*) FROM mail_queue
+                WHERE id IN ({marks}) AND status='sending' AND batch_id=?""",
+                (*ids, batch),
+            ).fetchone()[0]
+            if claimed != len(ids):
+                conn.rollback()
                 raise ValueError("队列状态已变化，已阻止重复发送")
+            conn.commit()
         finally:
             conn.close()
         return batch
