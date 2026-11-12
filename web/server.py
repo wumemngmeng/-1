@@ -1363,6 +1363,29 @@ Aibubu Team</textarea>
                 </section>
             </div>
             <section class="email-panel" style="margin-top:16px">
+                <h3>创建邮件推送包</h3>
+                <p class="email-status">按线索入库日期筛选后，批量选择或逐条勾选联系人。包创建后可按该包预览并发送。</p>
+                <div class="filter-grid">
+                    <label>入库日期从<input type="date" id="package-date-from" onchange="renderPackageCandidates()"></label>
+                    <label>入库日期至<input type="date" id="package-date-to" onchange="renderPackageCandidates()"></label>
+                    <button onclick="togglePackageCandidates(true)">全选当前筛选</button>
+                    <button onclick="togglePackageCandidates(false)">取消全选</button>
+                </div>
+                <div id="package-candidate-count" class="email-status"></div>
+                <div class="table-container"><table class="email-table">
+                    <thead><tr><th>选择</th><th>入库日期</th><th>联系人</th><th>公司</th><th>邮箱</th><th>状态</th></tr></thead>
+                    <tbody id="package-candidate-body"></tbody>
+                </table></div>
+                <label for="email-package-title">推送包名称</label>
+                <input id="email-package-title" maxlength="120" placeholder="例如：AI 视频工具创始人首轮联系">
+                <div class="email-actions">
+                    <button id="email-package-create" onclick="createEmailPackage()">创建推送包（仅保存草稿）</button>
+                    <span id="email-package-result" class="email-status"></span>
+                </div>
+                <div id="email-package-list" class="email-status"></div>
+                <div id="email-package-preview"></div>
+            </section>
+            <section class="email-panel" style="margin-top:16px">
                 <h3>邮箱客户线索</h3>
                 <div class="filter-grid">
                     <label>市场<select id="email-market-filter" onchange="renderEmailRecipients()"><option value="">国内与海外</option><option value="domestic">国内</option><option value="overseas">海外</option></select></label>
@@ -2091,6 +2114,7 @@ Aibubu Team</textarea>
         let mailSenders = [];
         let emailProviderConfigured = false;
         let mailAutomation = {};
+        let packageSelectedIds = new Set();
         async function fetchEmailProspects() {
             const res=await fetch('/api/email-recipients');
             const result=await res.json();
@@ -2098,6 +2122,7 @@ Aibubu Team</textarea>
             currentEmailProspects=result.rows||[];
             mailSenders=result.senders||[];
             mailAutomation=result.automation||{};
+            mailPackages=result.packages||[];
             for(const id of ['email-sender','mail-edit-sender']) {
                 const input=document.getElementById(id), previous=input.value;
                 input.innerHTML=mailSenders.map(s=>`<option value="${s.id}">${escapeHtml(s.from_email||'默认邮箱（未配置）')}</option>`).join('');
@@ -2108,7 +2133,78 @@ Aibubu Team</textarea>
             loadMailAutomation();
             updateMailSenderStatus();
             renderEmailRecipients();
+            renderEmailPackages();
             document.getElementById('email-history').innerHTML=(result.history||[]).map(row=>`<div class="email-preview">${escapeHtml(row.created_at)} UTC · ${escapeHtml(row.sender)} → ${escapeHtml(row.email)}<br>${escapeHtml(row.company_name)} · ${escapeHtml(row.subject)} · 操作人：${escapeHtml(row.sent_by)}</div>`).join('')||'暂无发送记录';
+        }
+        let mailPackages = [];
+        function renderEmailPackages() {
+            const target=document.getElementById('email-package-list');
+            if(!target) return;
+            target.innerHTML=mailPackages.length ? mailPackages.map(item=>
+                `<div class="email-preview"><strong>${escapeHtml(item.title)}</strong> · ${item.recipient_count} 人 · ${item.status==='sent'?'已发送':'草稿'} · ${escapeHtml(item.created_at)}<br>${escapeHtml(item.subject)}<br>${item.status==='draft'?`<button onclick="previewEmailPackage(${item.id})">预览此包</button> <button onclick="sendEmailPackage(${item.id})">发送此包</button>`:''}</div>`
+            ).join('') : '暂无推送包草稿';
+            renderPackageCandidates();
+        }
+        function renderPackageCandidates() {
+            const body=document.getElementById('package-candidate-body');
+            if(!body) return;
+            const from=document.getElementById('package-date-from').value;
+            const to=document.getElementById('package-date-to').value;
+            const rows=currentEmailProspects.filter(row=>row.status==='pending'&&
+                (!from||String(row.lead_created_at||'').slice(0,10)>=from)&&
+                (!to||String(row.lead_created_at||'').slice(0,10)<=to));
+            const eligible=new Set(rows.map(row=>row.lead_id));
+            packageSelectedIds=new Set([...packageSelectedIds].filter(id=>eligible.has(id)));
+            document.getElementById('package-candidate-count').textContent=`筛选到 ${rows.length} 位未发送线索，已选择 ${packageSelectedIds.size} 位`;
+            body.innerHTML=rows.map(row=>`<tr><td><input type="checkbox" ${packageSelectedIds.has(row.lead_id)?'checked':''} onchange="togglePackageLead(${row.lead_id},this.checked)"></td><td>${escapeHtml(String(row.lead_created_at||'').slice(0,10)||'-')}</td><td>${escapeHtml(row.contact_name||'-')}</td><td>${escapeHtml(row.company_name||'-')}</td><td>${escapeHtml(row.email)}</td><td>${emailPushBadge(row.status)}</td></tr>`).join('')||'<tr><td colspan="6">当前日期范围内没有可加入推送包的线索</td></tr>';
+        }
+        function togglePackageLead(id, checked) {
+            if(checked) packageSelectedIds.add(id); else packageSelectedIds.delete(id);
+            renderPackageCandidates();
+        }
+        function togglePackageCandidates(checked) {
+            const from=document.getElementById('package-date-from').value, to=document.getElementById('package-date-to').value;
+            currentEmailProspects.filter(row=>row.status==='pending'&&(!from||String(row.lead_created_at||'').slice(0,10)>=from)&&(!to||String(row.lead_created_at||'').slice(0,10)<=to)).forEach(row=>checked?packageSelectedIds.add(row.lead_id):packageSelectedIds.delete(row.lead_id));
+            renderPackageCandidates();
+        }
+        async function createEmailPackage() {
+            const ids=[...packageSelectedIds], output=document.getElementById('email-package-result');
+            const title=document.getElementById('email-package-title').value.trim();
+            if(!ids.length) {output.textContent='请先在下方线索列表中选择收件人';return;}
+            if(!title) {output.textContent='请填写推送包名称';return;}
+            const sender=mailSenders.find(s=>String(s.id)===document.getElementById('email-sender').value);
+            const button=document.getElementById('email-package-create');
+            button.disabled=true; output.textContent='正在保存草稿包…';
+            try {
+                const res=await fetch('/api/email-packages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+                    title,lead_ids:ids,sender_id:Number(sender?.id||1),
+                    date_from:document.getElementById('package-date-from').value,
+                    date_to:document.getElementById('package-date-to').value,
+                    subject:document.getElementById('email-subject').value,
+                    body:document.getElementById('email-body').value
+                })});
+                const result=await res.json();
+                if(!res.ok||!result.success) throw Error(result.error||'创建失败');
+                mailPackages=[result.package,...mailPackages.filter(item=>item.id!==result.package.id)];
+                packageSelectedIds.clear();
+                renderEmailPackages(); output.textContent=`已保存“${result.package.title}”，${result.package.recipient_count} 位联系人；未发送邮件。`;
+            } catch(error) { output.textContent=error.message||'创建推送包失败'; }
+            finally { button.disabled=false; }
+        }
+        async function previewEmailPackage(id) {
+            const item=mailPackages.find(value=>value.id===id), target=document.getElementById('email-package-preview');
+            if(!item) return;
+            target.innerHTML=item.recipients.map(row=>`<div class="email-preview"><strong>To: ${escapeHtml(row.email)}</strong><br><strong>Subject: ${escapeHtml(item.subject.replaceAll('{{company}}',row.company_name||'your team').replaceAll('{{name}}',row.contact_name||'there'))}</strong><br><br>${escapeHtml(item.body.replaceAll('{{company}}',row.company_name||'your team').replaceAll('{{name}}',row.contact_name||'there'))}</div>`).join('');
+        }
+        async function sendEmailPackage(id) {
+            const item=mailPackages.find(value=>value.id===id);
+            if(!item||item.status!=='draft') return;
+            await previewEmailPackage(id);
+            if(!confirm(`确认发送推送包“${item.title}”内的 ${item.recipient_count} 封邮件？`)) return;
+            const res=await fetch('/api/email-packages/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,confirmation:`SEND PACKAGE ${id}`})});
+            const result=await res.json();
+            document.getElementById('email-package-result').textContent=res.ok?`推送包发送完成：${result.sent} 封。`:result.error||'发送失败';
+            await fetchEmailProspects();
         }
         function updateMailSenderStatus() {
             const settings=mailSenders.find(s=>String(s.id)===document.getElementById('email-sender').value)||{};
@@ -3653,7 +3749,7 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
             if method == "GET" and path == "/api/email-recipients":
                 self.send_json({"success": True, "rows": queue.recipients(owner),
                                 "senders": queue.senders(), "history": queue.history(owner),
-                                "automation": queue.automation()})
+                                "automation": queue.automation(), "packages": queue.packages(owner)})
                 return
             if path.startswith("/api/email-prospects"):
                 self.send_json({"success": False, "error": "独立邮件名单已停用，请从客户池加入邮件队列"}, status=410)
@@ -3692,6 +3788,35 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                     self.send_json({"success": False, "error": "SMTP 服务器拒绝连接或登录"}, status=400)
                     return
                 self.send_json({"success": True, "message": "SMTP 连接和登录验证成功，未发送邮件"})
+                return
+            if path == "/api/email-packages":
+                if any(not self._can_access_owner(user, self.db.lead_company_owner(int(value)))
+                       for value in data.get("lead_ids", [])):
+                    self.send_json({"success": False, "error": "推送包包含无权访问的联系人"}, status=403)
+                    return
+                package = queue.create_package(data, actor, owner)
+                self.send_json({"success": True, "package": package})
+                return
+            if path == "/api/email-packages/send":
+                package_id = int(data.get("id"))
+                if data.get("confirmation") != f"SEND PACKAGE {package_id}":
+                    raise ValueError("推送包发送确认不匹配")
+                package, settings, batch, messages = queue.send_package_rows(package_id, owner)
+                try:
+                    message_ids = send_mail_batch(messages, settings=settings, batch_id=batch)
+                    if len(message_ids) != len(messages) or not all(message_ids):
+                        raise RuntimeError("邮件服务返回结果不完整")
+                    for row, provider_id in zip(messages, message_ids):
+                        queue.complete(row, row["subject"], row["body"],
+                                       settings["from_email"], provider_id, actor)
+                except Exception:
+                    self.send_json({
+                        "success": False,
+                        "error": "发送结果待核实，队列已锁定以防重复；请核对邮件服务器记录。",
+                    }, status=502)
+                    return
+                queue.mark_package_sent(package_id)
+                self.send_json({"success": True, "sent": len(messages), "package_id": package_id})
                 return
             if path == "/api/email-queue/add":
                 ids = list(dict.fromkeys(int(value) for value in data.get("lead_ids", [])))

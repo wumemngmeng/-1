@@ -228,7 +228,130 @@ class AuthTests(unittest.TestCase):
         }, observer)
         self.assertEqual((status, payload["community"]["name"]), (200, "Test Community"))
 
-    def test_email_pool_import_preview_permissions_and_safe_send(self):
+    def mail_admin(self):
+        admin = self.login("admin", "admin123")
+        self.request("POST", "/api/password", {
+            "current_password": "admin123", "new_password": "admin-secure-password"
+        }, admin)
+        return admin
+
+    def test_email_queue_scope_settings_and_uncertain_send(self):
+        from cryptography.fernet import Fernet
+        admin = self.mail_admin()
+        rep = self.login("rep_test", "rep-secure-password")
+        observer = self.login("viewer_test", "viewer-secure-password")
+        owned = self.db.insert_lead({"company_id": self.owned_id, "contact_name": "Owned", "email": "owned@example.com"})
+        other = self.db.insert_lead({"company_id": self.other_id, "contact_name": "Other", "email": "other@example.com"})
+        self.assertEqual(self.request("GET", "/api/email-queue")[0], 401)
+        self.assertEqual(self.request("GET", "/api/email-queue", cookie=observer)[0], 403)
+        self.assertEqual(self.request("POST", "/api/email-queue/add", {"lead_ids": [other]}, rep)[0], 403)
+        self.request("POST", "/api/email-queue/add", {"lead_ids": [owned, other]}, admin)
+        own_rows = self.request("GET", "/api/email-queue", cookie=rep)[1]["rows"]
+        self.assertEqual([row["lead_id"] for row in own_rows], [owned])
+        other_row = next(row for row in self.request("GET", "/api/email-queue", cookie=admin)[1]["rows"] if row["lead_id"] == other)
+        self.assertEqual(self.request("POST", "/api/email-queue/preview", {
+            "ids": [other_row["id"]], "subject": "Hi", "body": "Body"
+        }, rep)[0], 400)
+        self.assertEqual(self.request("POST", "/api/email-settings", {"from_email": "sales@example.com"}, rep)[0], 403)
+        with patch.dict("os.environ", {"MAIL_CONFIG_KEY": Fernet.generate_key().decode()}), patch("web.server.send_resend_batch") as send:
+            status, payload, _ = self.request("POST", "/api/email-settings", {
+                "from_email": "sales@example.com", "api_key": "do-not-echo",
+                "batch_limit": 1, "reply_to": "reply@example.com",
+            }, admin)
+            self.assertEqual(status, 200)
+            self.assertNotIn("do-not-echo", json.dumps(payload))
+            send.assert_not_called()
+            send.side_effect = TimeoutError("unknown")
+            status, payload, _ = self.request("POST", "/api/email-queue/send", {
+                "ids": [own_rows[0]["id"]], "subject": "Hi", "body": "Body", "confirmation": "SEND 1"
+            }, rep)
+            self.assertEqual(status, 502)
+            self.assertEqual(self.request("GET", "/api/email-queue", cookie=rep)[1]["rows"][0]["status"], "sending")
+            self.assertEqual(self.request("POST", "/api/email-queue/send", {
+                "ids": [own_rows[0]["id"]], "subject": "Hi", "body": "Body", "confirmation": "SEND 1"
+            }, rep)[0], 400)
+            self.assertEqual(send.call_count, 1)
+
+    def test_admin_can_test_smtp_login_without_sending(self):
+        from cryptography.fernet import Fernet
+        admin = self.mail_admin()
+        rep = self.login("rep_test", "rep-secure-password")
+        with patch.dict("os.environ", {"MAIL_CONFIG_KEY": Fernet.generate_key().decode()}):
+            status, payload, _ = self.request("POST", "/api/email-senders", {
+                "provider": "smtp", "sending_domain": "example.com",
+                "from_email": "sales@example.com", "smtp_host": "smtp.example.com",
+                "smtp_port": 465, "smtp_security": "ssl",
+                "smtp_username": "sales@example.com", "smtp_password": "secret",
+            }, admin)
+            self.assertEqual(status, 200)
+            sender_id = payload["settings"]["id"]
+            self.assertEqual(self.request("POST", "/api/email-senders/test", {
+                "id": sender_id
+            }, rep)[0], 403)
+            with patch("web.server.test_smtp_connection") as test:
+                status, payload, _ = self.request("POST", "/api/email-senders/test", {
+                    "id": sender_id
+                }, admin)
+                self.assertEqual((status, payload["success"]), (200, True))
+                test.assert_called_once()
+
+    def test_daily_email_page_recipients_sender_selection_and_independent_history(self):
+        from cryptography.fernet import Fernet
+        admin = self.mail_admin()
+        rep = self.login("rep_test", "rep-secure-password")
+        observer = self.login("viewer_test", "viewer-secure-password")
+        lead = self.db.insert_lead({
+            "company_id": self.owned_id, "contact_name": "Daily", "email": "daily@example.com"
+        })
+        other = self.db.insert_lead({"company_id": self.other_id, "email": "other@example.com"})
+        self.assertEqual(self.request("GET", "/api/email-recipients", cookie=observer)[0], 403)
+        payload = self.request("GET", "/api/email-recipients", cookie=rep)[1]
+        self.assertEqual([row["lead_id"] for row in payload["rows"]], [lead])
+        self.assertEqual(self.request("GET", "/api/email-queue", cookie=rep)[1]["rows"], [])
+        self.assertEqual(self.request("POST", "/api/email-senders", {
+            "from_email": "denied@example.com"
+        }, rep)[0], 403)
+        message = {"lead_ids": [lead], "subject": "Hi {{company}}", "body": "Hello {{name}}"}
+        self.assertEqual(self.request("POST", "/api/email-queue/preview", dict(
+            message, lead_ids=[other]
+        ), rep)[0], 400)
+        with patch.dict("os.environ", {"MAIL_CONFIG_KEY": Fernet.generate_key().decode()}), patch(
+            "web.server.send_resend_batch", return_value=["daily_msg"]
+        ) as send:
+            status, payload, _ = self.request("POST", "/api/email-senders", {
+                "sending_domain": "other.com", "from_email": "selected@other.com",
+                "api_key": "selected-secret", "batch_limit": 5,
+            }, admin)
+            self.assertEqual(status, 200)
+            sender_id = payload["settings"]["id"]
+            send.assert_not_called()
+            self.assertNotIn("selected-secret", json.dumps(self.request(
+                "GET", "/api/email-recipients", cookie=rep
+            )[1]))
+            message["sender_id"] = sender_id
+            status, preview, _ = self.request("POST", "/api/email-queue/preview", message, rep)
+            self.assertEqual(status, 200)
+            self.assertEqual(preview["sender"], "selected@other.com")
+            self.assertEqual(preview["previews"][0]["body"], "Hello Daily")
+            status, result, _ = self.request("POST", "/api/email-queue/send", dict(
+                message, confirmation="SEND 1"
+            ), rep)
+            self.assertEqual((status, result["sent"]), (200, 1))
+            self.assertEqual(send.call_args.kwargs["settings"]["api_key"], "selected-secret")
+            self.assertEqual(send.call_args.kwargs["settings"]["from_email"], "selected@other.com")
+            # Changing the sender never permits a second delivery to the same recipient.
+            self.assertEqual(self.request("POST", "/api/email-queue/send", dict(
+                message, sender_id=1, confirmation="SEND 1"
+            ), rep)[0], 400)
+            self.assertEqual(send.call_count, 1)
+        data = self.request("GET", "/api/email-recipients", cookie=rep)[1]
+        self.assertEqual(data["rows"][0]["status"], "sent")
+        self.assertEqual(data["history"][0]["sender"], "selected@other.com")
+        crm = next(row for row in self.db.query_pipeline() if row["lead_id"] == lead)
+        self.assertIsNone(crm["channel"])
+        self.assertEqual(crm["status"], "pending")
+
+    def test_email_queue_permissions_preview_and_safe_send(self):
         observer = self.login("viewer_test", "viewer-secure-password")
         self.assertEqual(self.request("POST", "/api/email-prospects/import", {
             "records": [{"email": "blocked@example.com"}]
@@ -238,41 +361,97 @@ class AuthTests(unittest.TestCase):
         self.request("POST", "/api/password", {
             "current_password": "admin123", "new_password": "admin-secure-password"
         }, admin)
-        status, payload, _ = self.request("POST", "/api/email-prospects/import", {
-            "records": [
-                {"email": "Alex@Example.com", "contact_name": "Alex", "company_name": "Example"},
-                {"email": "alex@example.com", "notes": "deduplicated"},
-                {"email": "invalid"},
-            ]
-        }, admin)
-        self.assertEqual((status, payload["inserted"], payload["updated"], payload["invalid_count"]), (200, 1, 0, 1))
-        rows = self.request("GET", "/api/email-prospects", cookie=admin)[1]["rows"]
+        self.assertEqual(self.request("POST", "/api/email-prospects/import", {
+            "records": [{"email": "old@example.com"}]
+        }, admin)[0], 410)
+        lead = self.db.insert_lead({
+            "company_id": self.owned_id, "contact_name": "Alex", "email": "alex@example.com"
+        })
+        status, payload, _ = self.request("POST", "/api/email-queue/add", {"lead_ids": [lead]}, admin)
+        self.assertEqual((status, payload["added"]), (200, 1))
+        self.assertEqual(self.request("POST", "/api/email-queue/add", {"lead_ids": [lead]}, admin)[1]["added"], 0)
+        rows = self.request("GET", "/api/email-queue", cookie=admin)[1]["rows"]
         self.assertEqual(len(rows), 1)
         prospect_id = rows[0]["id"]
-        status, payload, _ = self.request("POST", "/api/email-prospects/preview", {
+        status, payload, _ = self.request("POST", "/api/email-queue/preview", {
             "ids": [prospect_id], "subject": "Hi {{company}}",
             "body": "Hello {{name}} at {{email}}",
         }, admin)
         self.assertEqual(status, 200)
-        self.assertEqual(payload["previews"][0]["subject"], "Hi Example")
+        self.assertEqual(payload["previews"][0]["subject"], "Hi 销售名下客户")
         self.assertEqual(payload["previews"][0]["body"], "Hello Alex at alex@example.com")
 
-        self.assertEqual(self.request("POST", "/api/email-prospects/send", {
+        self.assertEqual(self.request("POST", "/api/email-queue/send", {
             "ids": [prospect_id], "subject": "Hi", "body": "Body",
             "confirmation": "wrong",
         }, admin)[0], 400)
         with patch.dict("os.environ", {
             "RESEND_API_KEY": "test-key", "RESEND_FROM_EMAIL": "sales@example.com"
         }), patch("web.server.send_resend_batch", return_value=["msg_123"]):
-            status, payload, _ = self.request("POST", "/api/email-prospects/send", {
+            status, payload, _ = self.request("POST", "/api/email-queue/send", {
                 "ids": [prospect_id], "subject": "Hi {{company}}",
                 "body": "Hello {{name}}", "confirmation": "SEND 1",
             }, admin)
         self.assertEqual((status, payload["sent"], payload["failed"]), (200, 1, 0))
-        self.assertEqual(self.request("POST", "/api/email-prospects/send", {
+        self.assertEqual(self.request("POST", "/api/email-queue/send", {
             "ids": [prospect_id], "subject": "Hi", "body": "Again",
             "confirmation": "SEND 1",
         }, admin)[0], 400)
+        row = next(row for row in self.db.query_pipeline() if row["lead_id"] == lead)
+        self.assertIsNone(row["channel"])
+        self.assertEqual(row["status"], "pending")
+
+    def test_email_package_creates_owned_draft_without_queue_or_send(self):
+        from cryptography.fernet import Fernet
+
+        lead = self.db.insert_lead({
+            "company_id": self.owned_id, "contact_name": "Package lead",
+            "email": "package@example.com",
+        })
+        other = self.db.insert_lead({
+            "company_id": self.other_id, "contact_name": "Private lead",
+            "email": "private@example.com",
+        })
+        admin = self.login("admin", "admin123")
+        self.request("POST", "/api/password", {
+            "current_password": "admin123", "new_password": "admin-secure-password"
+        }, admin)
+        with patch.dict("os.environ", {"MAIL_CONFIG_KEY": Fernet.generate_key().decode()}):
+            status, configured, _ = self.request("POST", "/api/email-senders", {
+                "provider": "smtp", "from_email": "sales@example.com",
+                "smtp_host": "smtp.example.com", "smtp_username": "sales@example.com",
+                "smtp_password": "test-password",
+            }, admin)
+            self.assertEqual(status, 200)
+            rep = self.login("rep_test", "rep-secure-password")
+            message = {
+                "title": "Founder package", "sender_id": configured["settings"]["id"],
+                "lead_ids": [lead], "subject": "Hi {{company}}",
+                "body": "Hello {{name}}",
+            }
+            with patch("web.server.send_smtp_batch") as send:
+                status, result, _ = self.request("POST", "/api/email-packages", message, rep)
+                self.assertEqual((status, result["success"]), (200, True))
+                self.assertEqual(result["package"]["recipient_count"], 1)
+                self.assertEqual(result["package"]["status"], "draft")
+                send.assert_not_called()
+            self.assertEqual(self.request("POST", "/api/email-packages", dict(
+                message, lead_ids=[other]
+            ), rep)[0], 403)
+            self.assertEqual(self.request("GET", "/api/email-queue", cookie=rep)[1]["rows"], [])
+            packages = self.request("GET", "/api/email-recipients", cookie=rep)[1]["packages"]
+            self.assertEqual([item["title"] for item in packages], ["Founder package"])
+            with patch("web.server.send_smtp_batch", return_value=["smtp-package-msg"]) as send:
+                status, sent, _ = self.request("POST", "/api/email-packages/send", {
+                    "id": result["package"]["id"],
+                    "confirmation": f"SEND PACKAGE {result['package']['id']}",
+                }, rep)
+            self.assertEqual((status, sent["success"], sent["sent"]), (200, True, 1))
+            self.assertEqual(send.call_args.args[0][0]["email"], "package@example.com")
+            self.assertEqual(send.call_args.args[0][0]["subject"], "Hi 销售名下客户")
+            updated = self.request("GET", "/api/email-recipients", cookie=rep)[1]
+            self.assertEqual(updated["packages"][0]["status"], "sent")
+            self.assertEqual(updated["rows"][0]["status"], "sent")
 
 
 if __name__ == "__main__":

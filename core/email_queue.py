@@ -39,6 +39,19 @@ CREATE TABLE IF NOT EXISTS mail_automation (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 INSERT OR IGNORE INTO mail_automation(id) VALUES(1);
+CREATE TABLE IF NOT EXISTS mail_packages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    sender_id INTEGER NOT NULL DEFAULT 1,
+    subject TEXT NOT NULL,
+    body TEXT NOT NULL,
+    recipients_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'draft',
+    sent_at TIMESTAMP,
+    created_by TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS mail_queue (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     company_id INTEGER NOT NULL REFERENCES companies(id),
@@ -154,6 +167,141 @@ class EmailQueue:
             conn.close()
         return self.automation()
 
+    def create_package(self, data, actor, owner=None):
+        title = str(data.get("title") or "").strip()
+        subject = str(data.get("subject") or "").strip()
+        body = str(data.get("body") or "").strip()
+        try:
+            lead_ids = list(dict.fromkeys(int(value) for value in data.get("lead_ids", [])))
+            sender_id = int(data.get("sender_id", 1))
+        except (TypeError, ValueError):
+            raise ValueError("推送包收件人或发件邮箱无效")
+        if not title or len(title) > 120:
+            raise ValueError("推送包名称不能为空且最多 120 字")
+        if not 1 <= len(lead_ids) <= 200:
+            raise ValueError("每个推送包须选择 1–200 位联系人")
+        if not subject or not body or len(subject) > 300 or len(body) > 50000:
+            raise ValueError("邮件标题和正文不能为空，且不能超过长度限制")
+        sender = self.settings(sender_id=sender_id)
+        if not sender["configured"]:
+            raise ValueError("所选发件邮箱尚未配置完整")
+        visible = {row["lead_id"]: row for row in self.recipients(owner)}
+        if any(value not in visible for value in lead_ids):
+            raise ValueError("推送包包含无权访问或无效的邮箱联系人")
+        recipients = [visible[value] for value in lead_ids]
+        if any(row["status"] != "pending" for row in recipients):
+            raise ValueError("仅可将未发送、未退订的联系人加入推送包")
+        if len({row["email"].lower() for row in recipients}) != len(recipients):
+            raise ValueError("推送包中存在重复邮箱")
+        date_from = str(data.get("date_from") or "").strip()
+        date_to = str(data.get("date_to") or "").strip()
+        for date_value in (date_from, date_to):
+            if date_value and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_value):
+                raise ValueError("入库日期格式应为 YYYY-MM-DD")
+        if date_from and date_to and date_from > date_to:
+            raise ValueError("开始日期不能晚于结束日期")
+        if any(
+            (date_from and str(row.get("lead_created_at") or "")[:10] < date_from)
+            or (date_to and str(row.get("lead_created_at") or "")[:10] > date_to)
+            for row in recipients
+        ):
+            raise ValueError("所选线索不在指定的入库日期范围内")
+        snapshot = [{
+            key: row.get(key) for key in
+            ("lead_id", "email", "contact_name", "company_name", "country_type", "lead_created_at")
+        } for row in recipients]
+        conn = self.connection()
+        try:
+            cur = conn.execute(
+                """INSERT INTO mail_packages
+                   (title,sender_id,subject,body,recipients_json,created_by)
+                   VALUES(?,?,?,?,?,?)""",
+                (title, sender_id, subject, body,
+                 json.dumps(snapshot, ensure_ascii=False), actor),
+            )
+            package_id = cur.lastrowid
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get_package(package_id, owner)
+
+    def send_package_rows(self, package_id, owner=None):
+        package = self.get_package(package_id, owner)
+        if not package:
+            raise ValueError("推送包不存在或无权访问")
+        if package["status"] != "draft":
+            raise ValueError("该推送包已发送或正在处理")
+        settings = self.settings(private=True, sender_id=int(package["sender_id"]))
+        if not settings["configured"]:
+            raise ValueError("所选发件邮箱尚未配置完整")
+        lead_ids = [int(item["lead_id"]) for item in package["recipients"]]
+        ids = self.prepare(lead_ids, package["created_by"], owner)
+        rows = self.select(ids, owner, sendable=True)
+        batch = self.claim(ids)
+        messages = []
+        for row in rows:
+            fields = {
+                "company": row.get("company_name") or "your team",
+                "name": row.get("contact_name") or "there",
+                "email": row.get("email") or "",
+            }
+            subject, body = package["subject"], package["body"]
+            for key, value in fields.items():
+                subject = subject.replace("{{" + key + "}}", str(value))
+                body = body.replace("{{" + key + "}}", str(value))
+            messages.append({**row, "subject": subject, "body": body})
+        return package, settings, batch, messages
+
+    def mark_package_sent(self, package_id):
+        conn = self.connection()
+        try:
+            conn.execute(
+                """UPDATE mail_packages SET status='sent',sent_at=CURRENT_TIMESTAMP,
+                   updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='draft'""",
+                (int(package_id),),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_package(self, package_id, owner=None):
+        conn = self.connection()
+        try:
+            row = conn.execute(
+                "SELECT * FROM mail_packages WHERE id=?", (int(package_id),)
+            ).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return None
+        package = dict(row)
+        package["recipients"] = json.loads(package.pop("recipients_json") or "[]")
+        if owner is not None and any(
+            recipient["lead_id"] not in {
+                item["lead_id"] for item in self.recipients(owner)
+            }
+            for recipient in package["recipients"]
+        ):
+            return None
+        package["recipient_count"] = len(package["recipients"])
+        return package
+
+    def packages(self, owner=None):
+        conn = self.connection()
+        try:
+            rows = conn.execute(
+                "SELECT id FROM mail_packages ORDER BY id DESC LIMIT 100"
+            ).fetchall()
+            ids = [row["id"] for row in rows]
+        finally:
+            conn.close()
+        results = []
+        for package_id in ids:
+            package = self.get_package(package_id, owner)
+            if package is not None:
+                results.append(package)
+        return results
+
     @staticmethod
     def cipher():
         from cryptography.fernet import Fernet
@@ -237,8 +385,10 @@ class EmailQueue:
         conn = self.connection()
         try:
             leads = conn.execute(
-                """SELECT l.id AS lead_id,l.email,l.contact_name,c.id AS company_id,
-                c.name AS company_name,c.country_type FROM leads l JOIN companies c ON c.id=l.company_id
+                """SELECT l.id AS lead_id,l.email,l.contact_name,
+                l.created_at AS lead_created_at,
+                c.id AS company_id,c.name AS company_name,c.country_type
+                FROM leads l JOIN companies c ON c.id=l.company_id
                 WHERE (? IS NULL OR c.owner=?) ORDER BY l.id DESC""", (owner, owner)
             ).fetchall()
             queued = conn.execute(
