@@ -191,6 +191,8 @@ class EmailQueue:
         recipients = [visible[value] for value in lead_ids]
         if any(row["status"] != "pending" for row in recipients):
             raise ValueError("仅可将未发送、未退订的联系人加入推送包")
+        if any(row["country_type"] == "pending_verification" for row in recipients):
+            raise ValueError("待核验市场线索不可加入推送包，请先确认国内或海外")
         if len({row["email"].lower() for row in recipients}) != len(recipients):
             raise ValueError("推送包中存在重复邮箱")
         date_from = str(data.get("date_from") or "").strip()
@@ -387,7 +389,9 @@ class EmailQueue:
             leads = conn.execute(
                 """SELECT l.id AS lead_id,l.email,l.contact_name,
                 l.created_at AS lead_created_at,
-                c.id AS company_id,c.name AS company_name,c.country_type
+                c.id AS company_id,c.name AS company_name,
+                CASE WHEN c.market_classification='pending_verification'
+                     THEN 'pending_verification' ELSE c.country_type END AS country_type
                 FROM leads l JOIN companies c ON c.id=l.company_id
                 WHERE (? IS NULL OR c.owner=?) ORDER BY l.id DESC""", (owner, owner)
             ).fetchall()
@@ -431,6 +435,8 @@ class EmailQueue:
         rows = [visible[value] for value in lead_ids]
         if any(row["status"] != "pending" for row in rows):
             raise ValueError("仅未推送联系人可发送，已推送、退订或待核实联系人已拦截")
+        if any(row["country_type"] == "pending_verification" for row in rows):
+            raise ValueError("待核验市场线索不可发送，请先确认国内或海外")
         if len({row["email"] for row in rows}) != len(rows):
             raise ValueError("所选联系人包含重复邮箱，请每个邮箱只选一人")
         for row in rows:
