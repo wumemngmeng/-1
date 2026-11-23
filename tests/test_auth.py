@@ -134,6 +134,12 @@ class AuthTests(unittest.TestCase):
             self.assertEqual(stats["companies_by_tier"], {"B": 1})
             self.assertEqual(stats["yesterday_outreach"], {"sample_sent": 1})
             self.assertTrue(stats["data_last_updated"])
+        pending = self.db.insert_company({"name": "待核验名下客户", "country_type": "pending_verification"})
+        self.db.update_company(pending, {"owner": "测试销售"})
+        status, rows, _ = self.request("GET", "/api/pipeline?country=pending_verification", cookie=rep)
+        self.assertEqual(status, 200)
+        self.assertEqual([row["company_id"] for row in rows], [pending])
+        self.assertEqual(self.request("GET", "/api/stats?country=pending_verification", cookie=rep)[0], 200)
         self.assertEqual(self.request("GET", "/api/stats?country=invalid", cookie=rep)[0], 400)
 
     def test_pipeline_orders_by_latest_company_lead_or_outreach_update(self):
@@ -234,6 +240,31 @@ class AuthTests(unittest.TestCase):
             "current_password": "admin123", "new_password": "admin-secure-password"
         }, admin)
         return admin
+
+    def test_feishu_mail_import_is_admin_only_and_fails_closed_without_credentials(self):
+        self.assertEqual(self.request("GET", "/api/feishu-mail-import/status")[0], 401)
+        observer = self.login("viewer_test", "viewer-secure-password")
+        self.assertEqual(self.request(
+            "GET", "/api/feishu-mail-import/status", cookie=observer
+        )[0], 403)
+        admin = self.mail_admin()
+        with patch.dict("os.environ", {
+            "FEISHU_APP_ID": "", "FEISHU_APP_SECRET": "",
+        }):
+            status, payload, _ = self.request(
+                "GET", "/api/feishu-mail-import/status", cookie=admin
+            )
+            self.assertEqual((status, payload["configured"]), (200, False))
+            status, payload, _ = self.request(
+                "POST", "/api/feishu-mail-import/preview", {}, admin
+            )
+            self.assertEqual(status, 400)
+            self.assertIn("尚未配置飞书应用凭证", payload["error"])
+            self.assertEqual(self.request(
+                "POST", "/api/feishu-mail-import/apply", {
+                    "confirmation": "IMPORT FEISHU MAIL SHEET"
+                }, observer
+            )[0], 403)
 
     def test_email_queue_scope_settings_and_uncertain_send(self):
         from cryptography.fernet import Fernet
