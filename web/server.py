@@ -211,6 +211,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             --accent: #10b981;
             --tag-cn: #0284c7;
             --tag-global: #8b5cf6;
+            --tag-pending: #d97706;
             --tier-s: #ef4444;
             --tier-a: #f59e0b;
             --tier-b: #3b82f6;
@@ -755,6 +756,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             color: #c084fc;
             border: 1px solid rgba(139, 92, 246, 0.4);
         }
+        .tag-pending {
+            background: rgba(217, 119, 6, 0.2);
+            color: #fbbf24;
+            border: 1px solid rgba(217, 119, 6, 0.4);
+        }
         
         .status-badge {
             font-size: 11px;
@@ -1222,6 +1228,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <li class="nav-item active" id="domestic-nav" onclick="switchPipelineMarket('domestic', this)">
                     <span>⚡</span> <span>国内客户</span>
                 </li>
+                <li class="nav-item" id="pending-verification-nav" onclick="switchPipelineMarket('pending_verification', this)">
+                    <span>🔎</span> <span>待核验线索</span>
+                </li>
                 <li class="nav-item" id="email-pool-nav" onclick="switchNav('email-pool', this)">
                     <span>✉️</span> <span>邮件线索池</span>
                 </li>
@@ -1299,7 +1308,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
             <div class="controls-panel compact-filters">
                 <div class="filter-toolbar"><strong>筛选企业</strong><div class="filter-toolbar-actions"><label class="filter-field" title=""><span>名单</span><select id="exclusion-filter" onchange="renderTable()"><option value="active">待开发 / 跟进中</option><option value="excluded">已剔除</option><option value="all">全部（含已剔除）</option></select></label><button onclick="resetFilters()">重置筛选</button></div></div>
-                <div class="filter-grid"><label class="filter-field" title=""><span>市场区域</span><select id="country-filter" onchange="activeCountry=this.value;renderTable()"><option value="all">全部地区</option><option value="domestic">国内</option><option value="overseas">国外</option></select></label><label class="filter-field" title="沿用现有综合预估等级，非核实后的企业规模"><span>企业级别（预估）</span><select id="tier-filter" onchange="activeTier=this.value;renderTable()"><option value="all">全部级别</option><option value="S">S级 · 超大规模</option><option value="A">A级 · 大型企业</option><option value="B">B级 · 成长企业</option><option value="C">C级 · 小微 / 潜力企业</option></select></label><label class="filter-field" title=""><span>公司来源</span><select id="source-filter" onchange="selectedSources.clear();if(this.value!=='all')selectedSources.add(this.value);activeSourceMode='include';renderTable()"><option value="all">全部来源</option></select></label><label class="filter-field" title=""><span>触达动作</span><select id="stage-filter" onchange="activeTouch='all';activeStage=this.value;renderTable()"><option value="all">全部动作</option><option value="pending">待触达</option><option value="sample_sent">已推送未回复</option><option value="contacted">已建连</option><option value="negotiation">有意向</option><option value="team_trial">已注册</option><option value="won">已充值</option><option value="lost">不触达</option></select></label><label class="filter-field" title=""><span>客户类型</span><select id="type-filter" onchange="renderTable()"><option value="all">全部类型</option><option value="电商商拍客户">电商商拍客户</option><option value="API / AI 应用客户">API / AI 应用客户</option><option value="广告 / 代运营机构">广告 / 代运营机构</option><option value="unknown">待分类</option></select></label><label class="filter-field" title=""><span>跟进情况</span><select id="due-filter" onchange="renderTable()"><option value="all">全部情况</option><option value="due">今天到期 / 已逾期</option><option value="unclaimed">未领取</option></select></label><label class="filter-field" title=""><span>行业</span><select id="industry-filter" onchange="renderTable()"><option value="all">全部行业</option></select></label><label class="filter-field" title=""><span>每月预计消耗</span><select id="spend-filter" onchange="renderTable()"><option value="all">全部消耗</option><option value="unknown">待评估</option><option value="small">5,000 元以下</option><option value="medium">5,000–2万元（不含）</option><option value="large">2–5万元（不含）</option><option value="enterprise">5万元及以上</option></select></label></div>
+                <div class="filter-grid"><label class="filter-field" title=""><span>市场区域</span><select id="country-filter" onchange="activeCountry=this.value;renderTable()"><option value="all">全部地区</option><option value="domestic">国内</option><option value="overseas">国外</option><option value="pending_verification">待核验</option></select></label><label class="filter-field" title="沿用现有综合预估等级，非核实后的企业规模"><span>企业级别（预估）</span><select id="tier-filter" onchange="activeTier=this.value;renderTable()"><option value="all">全部级别</option><option value="S">S级 · 超大规模</option><option value="A">A级 · 大型企业</option><option value="B">B级 · 成长企业</option><option value="C">C级 · 小微 / 潜力企业</option></select></label><label class="filter-field" title=""><span>公司来源</span><select id="source-filter" onchange="selectedSources.clear();if(this.value!=='all')selectedSources.add(this.value);activeSourceMode='include';renderTable()"><option value="all">全部来源</option></select></label><label class="filter-field" title=""><span>触达动作</span><select id="stage-filter" onchange="activeTouch='all';activeStage=this.value;renderTable()"><option value="all">全部动作</option><option value="pending">待触达</option><option value="sample_sent">已推送未回复</option><option value="contacted">已建连</option><option value="negotiation">有意向</option><option value="team_trial">已注册</option><option value="won">已充值</option><option value="lost">不触达</option></select></label><label class="filter-field" title=""><span>客户类型</span><select id="type-filter" onchange="renderTable()"><option value="all">全部类型</option><option value="电商商拍客户">电商商拍客户</option><option value="API / AI 应用客户">API / AI 应用客户</option><option value="广告 / 代运营机构">广告 / 代运营机构</option><option value="unknown">待分类</option></select></label><label class="filter-field" title=""><span>跟进情况</span><select id="due-filter" onchange="renderTable()"><option value="all">全部情况</option><option value="due">今天到期 / 已逾期</option><option value="unclaimed">未领取</option></select></label><label class="filter-field" title=""><span>行业</span><select id="industry-filter" onchange="renderTable()"><option value="all">全部行业</option></select></label><label class="filter-field" title=""><span>每月预计消耗</span><select id="spend-filter" onchange="renderTable()"><option value="all">全部消耗</option><option value="unknown">待评估</option><option value="small">5,000 元以下</option><option value="medium">5,000–2万元（不含）</option><option value="large">2–5万元（不含）</option><option value="enterprise">5万元及以上</option></select></label></div>
                 <div class="filter-footer"><span>企业级别沿用现有综合预估；消耗单位为人民币 / 月，非已确认预算。</span><span id="filter-count" aria-live="polite">加载中…</span></div>
             </div>
 
@@ -1333,10 +1342,19 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <header>
                 <div>
                     <h2 class="page-title">邮件线索池</h2>
-                    <div class="email-status">与国内、海外客户池独立并列，自动读取有效邮箱。已发送客户显示“已推送”，不会修改原客户资料或销售阶段。</div>
+                    <div class="email-status">与国内、海外客户池独立并列，自动读取有效邮箱。已发送客户显示“已推送”；待核验市场线索只展示、不可发送。</div>
                 </div>
                 <div id="email-provider-status" class="email-status">正在检查 Resend 配置…</div>
             </header>
+            <section id="feishu-mail-import-panel" class="email-panel" hidden style="margin:16px 0">
+                <h3>同步飞书邮件表到 CRM</h3>
+                <p class="email-status">按公司名称或官网域名匹配企业；已有公司只补空字段。有效邮箱按地址去重，冲突行跳过并列出原因。导入只写 CRM，不会发送邮件。</p>
+                <button id="feishu-mail-import-preview" onclick="previewFeishuMailImport()">检查飞书表并预览</button>
+                <span id="feishu-mail-import-status" class="email-status"></span>
+                <div id="feishu-mail-import-summary" class="email-status" aria-live="polite"></div>
+                <div id="feishu-mail-import-conflicts"></div>
+                <button id="feishu-mail-import-apply" onclick="applyFeishuMailImport()" hidden disabled>确认导入可导入线索</button>
+            </section>
             <div>
                 <section class="email-panel">
                     <h3>编写、预览并发送</h3>
@@ -1388,7 +1406,7 @@ Aibubu Team</textarea>
             <section class="email-panel" style="margin-top:16px">
                 <h3>邮箱客户线索</h3>
                 <div class="filter-grid">
-                    <label>市场<select id="email-market-filter" onchange="renderEmailRecipients()"><option value="">国内与海外</option><option value="domestic">国内</option><option value="overseas">海外</option></select></label>
+                    <label>市场<select id="email-market-filter" onchange="renderEmailRecipients()"><option value="">全部市场</option><option value="domestic">国内</option><option value="overseas">海外</option><option value="pending_verification">待核验</option></select></label>
                     <label>推送状态<select id="email-status-filter" onchange="renderEmailRecipients()"><option value="pending">未推送（可发送）</option><option value="sent">已推送</option><option value="sending">发送中 / 待核实</option><option value="unsubscribed">已退订</option><option value="removed">已移除</option><option value="email_changed">邮箱变更待核实</option><option value="">全部</option></select></label>
                     <label>公司 / 姓名 / 邮箱<input id="email-search" oninput="renderEmailRecipients()" placeholder="搜索客户"></label>
                     <button onclick="fetchEmailProspects()">刷新客户及发送状态</button>
@@ -1957,6 +1975,17 @@ Aibubu Team</textarea>
             return currentData.filter(row => row.country_type === activeCountry);
         }
 
+        const MARKET_LABELS = {domestic:'国内', overseas:'海外', pending_verification:'待核验'};
+        function marketLabel(country) {
+            return MARKET_LABELS[country] || '待核验';
+        }
+        function marketTagClass(country) {
+            return country === 'domestic' ? 'tag-cn' : country === 'overseas' ? 'tag-global' : 'tag-pending';
+        }
+        function isEmailSendable(row) {
+            return row.status === 'pending' && row.country_type !== 'pending_verification';
+        }
+
         function refreshMarketOptions() {
             const rows = marketRows();
             currentSourceChannels = [...new Set(rows.map(r => r.source_channel).filter(Boolean))].sort();
@@ -1972,7 +2001,7 @@ Aibubu Team</textarea>
         }
 
         function switchPipelineMarket(country, elem) {
-            if (!['domestic', 'overseas'].includes(country)) return;
+            if (!['domestic', 'overseas', 'pending_verification'].includes(country)) return;
             marketFilters[activeCountry] = {
                 values:Object.fromEntries(pipelineFilterIds.map(id => [id, document.getElementById(id).value])),
                 sources:[...selectedSources], leadSources:[...selectedLeadSources],
@@ -1980,7 +2009,8 @@ Aibubu Team</textarea>
             };
             activeCountry = country;
             document.getElementById('country-filter').value = country;
-            document.getElementById('pipeline-title').textContent = country === 'domestic' ? '国内客户' : '海外客户';
+            document.getElementById('pipeline-title').textContent =
+                {domestic:'国内客户', overseas:'海外客户', pending_verification:'待核验线索'}[country];
             refreshMarketOptions();
             const saved = marketFilters[country];
             resetFilters();
@@ -2087,6 +2117,7 @@ Aibubu Team</textarea>
             document.getElementById('current-user-role').innerText = `● ${ROLE_NAME_MAP[currentUser.role] || currentUser.role}`;
             document.getElementById('permissions-nav').style.display = currentUser.role === 'admin' ? '' : 'none';
             document.getElementById('tab-register-btn').style.display = currentUser.role === 'admin' ? '' : 'none';
+            document.getElementById('feishu-mail-import-panel').hidden = currentUser.role !== 'admin';
         }
 
         // 导航切换
@@ -2101,6 +2132,7 @@ Aibubu Team</textarea>
                 fetchUsers();
             } else if (navId === 'email-pool' || navId === 'email-settings') {
                 fetchEmailProspects();
+                if (navId === 'email-pool' && currentUser?.role === 'admin') loadFeishuMailImportStatus();
             } else if (navId === 'funnel') {
                 renderFunnelView();
             } else if (navId === 'strategy') {
@@ -2150,7 +2182,7 @@ Aibubu Team</textarea>
             if(!body) return;
             const from=document.getElementById('package-date-from').value;
             const to=document.getElementById('package-date-to').value;
-            const rows=currentEmailProspects.filter(row=>row.status==='pending'&&
+            const rows=currentEmailProspects.filter(row=>isEmailSendable(row)&&
                 (!from||String(row.lead_created_at||'').slice(0,10)>=from)&&
                 (!to||String(row.lead_created_at||'').slice(0,10)<=to));
             const eligible=new Set(rows.map(row=>row.lead_id));
@@ -2164,7 +2196,7 @@ Aibubu Team</textarea>
         }
         function togglePackageCandidates(checked) {
             const from=document.getElementById('package-date-from').value, to=document.getElementById('package-date-to').value;
-            currentEmailProspects.filter(row=>row.status==='pending'&&(!from||String(row.lead_created_at||'').slice(0,10)>=from)&&(!to||String(row.lead_created_at||'').slice(0,10)<=to)).forEach(row=>checked?packageSelectedIds.add(row.lead_id):packageSelectedIds.delete(row.lead_id));
+            currentEmailProspects.filter(row=>isEmailSendable(row)&&(!from||String(row.lead_created_at||'').slice(0,10)>=from)&&(!to||String(row.lead_created_at||'').slice(0,10)<=to)).forEach(row=>checked?packageSelectedIds.add(row.lead_id):packageSelectedIds.delete(row.lead_id));
             renderPackageCandidates();
         }
         async function createEmailPackage() {
@@ -2260,9 +2292,9 @@ Aibubu Team</textarea>
             document.getElementById('email-preview-list').textContent='';
             document.getElementById('email-recipient-count').textContent=`当前筛选 ${rows.length} 位邮箱联系人；重复邮箱发送时会拦截。`;
             document.getElementById('email-prospect-body').innerHTML=rows.map(row=>`<tr>
-                <td><input class="email-row-check" type="checkbox" value="${row.lead_id}" ${row.status!=='pending'?'disabled':''} onchange="updateEmailSelectionCount()"></td>
+                <td><input class="email-row-check" type="checkbox" value="${row.lead_id}" ${!isEmailSendable(row)?'disabled':''} onchange="updateEmailSelectionCount()"></td>
                 <td>${escapeHtml(row.email)}</td><td>${escapeHtml(row.contact_name||'-')}</td>
-                <td>${escapeHtml(row.company_name||'-')} / ${row.country_type==='domestic'?'国内':'海外'}</td><td>${emailPushBadge(row.status)}</td>
+                <td>${escapeHtml(row.company_name||'-')} / ${marketLabel(row.country_type)}</td><td>${row.country_type==='pending_verification'?'<span class="email-push-badge email-push-warning">市场待核验，不可发送</span>':emailPushBadge(row.status)}</td>
                 <td>${escapeHtml(row.last_sent_at||'-')}</td><td>${escapeHtml(row.last_sender||'-')}</td>
                 <td>${row.queue_id?`<button onclick="setEmailProspectStatus(${row.queue_id}, 'unsubscribed')" ${row.status==='sending'?'disabled':''}>标记退订</button>`:'-'}</td>
             </tr>`).join('') || '<tr><td colspan="8">当前筛选下没有邮箱联系人，无需在客户池操作</td></tr>';
@@ -2321,6 +2353,77 @@ Aibubu Team</textarea>
             } catch(error) {output.textContent='网络中断，请刷新队列并核对发送状态，勿重复提交';}
             finally {
             await fetchEmailProspects();
+            }
+        }
+
+        let feishuMailImportPreview = null;
+        async function loadFeishuMailImportStatus() {
+            const status = document.getElementById('feishu-mail-import-status');
+            try {
+                const response = await fetch('/api/feishu-mail-import/status', {cache:'no-store'});
+                const result = await response.json();
+                status.textContent = result.configured
+                    ? '飞书连接已配置'
+                    : '尚未配置飞书 App ID/Secret；配置后即可读取邮件表。';
+            } catch (_) {
+                status.textContent = '无法检查飞书连接状态';
+            }
+        }
+        async function previewFeishuMailImport() {
+            const status = document.getElementById('feishu-mail-import-status');
+            const summary = document.getElementById('feishu-mail-import-summary');
+            const conflicts = document.getElementById('feishu-mail-import-conflicts');
+            const applyButton = document.getElementById('feishu-mail-import-apply');
+            applyButton.hidden = true;
+            applyButton.disabled = true;
+            conflicts.innerHTML = '';
+            summary.textContent = '正在读取飞书邮件表并核对公司名、官网域名和邮箱…';
+            try {
+                const response = await fetch('/api/feishu-mail-import/preview', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+                const result = await response.json();
+                if (!response.ok || !result.success) throw Error(result.error || '读取预览失败');
+                feishuMailImportPreview = result;
+                summary.textContent = `表内 ${result.total_rows} 行；可导入联系人 ${result.eligible_contacts}；新建公司 ${result.new_companies}；匹配已有公司 ${result.matched_companies}；需跳过/人工核对 ${result.conflict_count}。已有公司只补 CRM 空字段，不覆盖已有信息。`;
+                if (result.conflicts?.length) {
+                    conflicts.innerHTML = `<details><summary>查看冲突明细（最多显示100条）</summary><div class="table-container"><table class="email-table"><thead><tr><th>飞书行</th><th>公司</th><th>邮箱</th><th>处理</th></tr></thead><tbody>${result.conflicts.map(row=>`<tr><td>${Number(row.row)||'-'}</td><td>${escapeHtml(row.company||'-')}</td><td>${escapeHtml(row.email||'-')}</td><td>${escapeHtml(row.reason||'需核对')}</td></tr>`).join('')}</tbody></table></div></details>`;
+                }
+                applyButton.hidden = false;
+                applyButton.disabled = result.eligible_contacts === 0;
+                status.textContent = result.eligible_contacts ? '预览完成，尚未写入 CRM。' : '没有可导入联系人。';
+            } catch (error) {
+                feishuMailImportPreview = null;
+                summary.textContent = '';
+                status.textContent = error.message;
+            }
+        }
+        async function applyFeishuMailImport() {
+            if (!feishuMailImportPreview?.eligible_contacts) return;
+            const preview = feishuMailImportPreview;
+            if (!confirm(`确认导入 ${preview.eligible_contacts} 位联系人、新建 ${preview.new_companies} 家公司？已有公司只补空字段，冲突项跳过；此操作不会发送邮件。`)) return;
+            const button = document.getElementById('feishu-mail-import-apply');
+            button.disabled = true;
+            document.getElementById('feishu-mail-import-status').textContent = '正在导入…';
+            try {
+                const response = await fetch('/api/feishu-mail-import/apply', {
+                    method:'POST', headers:{'Content-Type':'application/json'},
+                    body:JSON.stringify({
+                        confirmation:'IMPORT FEISHU MAIL SHEET',
+                        preview_fingerprint:preview.fingerprint
+                    })
+                });
+                const result = await response.json();
+                if (!response.ok || !result.success) throw Error(result.error || '导入失败');
+                document.getElementById('feishu-mail-import-summary').textContent =
+                    `导入完成：新建公司 ${result.created_companies} 家；补充公司信息 ${result.updated_companies} 家；新建联系人 ${result.created_contacts} 位；冲突/重复跳过 ${result.conflicts} 条；沿用“已推送/退订”状态并防止重复触达 ${result.suppressed_existing_statuses} 位。`;
+                document.getElementById('feishu-mail-import-status').textContent = '导入已完成，不会自动发送邮件。';
+                document.getElementById('feishu-mail-import-conflicts').innerHTML = '';
+                feishuMailImportPreview = null;
+                button.hidden = true;
+                await fetchPipeline();
+                await fetchEmailProspects();
+            } catch (error) {
+                document.getElementById('feishu-mail-import-status').textContent = error.message;
+                button.disabled = false;
             }
         }
 
@@ -2787,8 +2890,8 @@ Aibubu Team</textarea>
             filtered.forEach(r => {
                 const tr = document.createElement('tr');
                 const isCn = r.country_type === 'domestic';
-                const tagClass = isCn ? 'tag-cn' : 'tag-global';
-                const tagLabel = isCn ? '国内' : '海外';
+                const tagClass = marketTagClass(r.country_type);
+                const tagLabel = marketLabel(r.country_type);
                 const contactName = r.contact_name || '';
                 const xUrl = /^https:\/\/(?:x\.com|twitter\.com)\//i.test(r.x_url || '') ? r.x_url : '';
                 const contact = contactName
@@ -3492,7 +3595,7 @@ ${escapeHtml(data.email_body_zh)}</div>`;
             }
             const columns = [
                 ['客户等级', r => r.client_tier || 'B'], ['企业ID', r => r.company_id],
-                ['企业名称', r => r.company_name], ['区域', r => r.country_type === 'domestic' ? '国内' : '海外'],
+                ['企业名称', r => r.company_name], ['区域', r => marketLabel(r.country_type)],
                 ['行业赛道', r => r.industry], ['企业描述', r => r.company_description],
                 ['描述来源与核验日期', r => r.description_source], ['客户类型', r => r.customer_type],
                 ['每月预计消耗', r => r.estimated_monthly_spend], ['消费估算依据', r => r.spend_basis],
@@ -3513,7 +3616,7 @@ ${escapeHtml(data.email_body_zh)}</div>`;
             const url = URL.createObjectURL(blob);
             const link = document.createElement('a');
             link.href = url;
-            link.download = `Aibubu_${activeCountry === 'domestic' ? '国内' : '海外'}客户_${new Date().toISOString().slice(0, 10)}.csv`;
+            link.download = `Aibubu_${marketLabel(activeCountry)}客户_${new Date().toISOString().slice(0, 10)}.csv`;
             document.body.appendChild(link);
             link.click();
             link.remove();
@@ -3892,6 +3995,56 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
         except (ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
             self.send_json({"success": False, "error": str(error)}, status=400)
 
+    def handle_feishu_mail_import(self, path, method):
+        user = self._require_user(("admin",))
+        if not user:
+            return
+        from core.feishu_import import FeishuImportError, FeishuMailSheetImporter
+
+        importer = FeishuMailSheetImporter(self.db)
+        if method == "GET" and path == "/api/feishu-mail-import/status":
+            self.send_json({
+                "success": True,
+                "configured": importer.configured(),
+                "source": "飞书邮件表",
+                "spreadsheet_token_configured": bool(importer.spreadsheet_token),
+                "sheet_id_configured": bool(importer.sheet_id),
+            })
+            return
+        try:
+            if method != "POST" or path not in (
+                "/api/feishu-mail-import/preview", "/api/feishu-mail-import/apply"
+            ):
+                self.send_json({"success": False, "error": "接口不存在"}, status=404)
+                return
+            length = int(self.headers.get("Content-Length", 0))
+            if not 0 < length <= 10000:
+                raise ValueError("请求内容为空或过大")
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("无效请求")
+            if path.endswith("/preview"):
+                plan = importer.preview()
+                self.send_json({
+                    "success": True,
+                    **{key: value for key, value in plan.items() if key != "entries"},
+                })
+                return
+            if data.get("confirmation") != "IMPORT FEISHU MAIL SHEET":
+                raise ValueError("导入确认不匹配，请先预览飞书邮件表")
+            fingerprint = str(data.get("preview_fingerprint") or "").strip()
+            if not fingerprint:
+                raise ValueError("请先生成导入预览，再确认导入")
+            actor = user.get("display_name") or user["username"]
+            self.send_json({
+                "success": True,
+                **importer.apply(actor, expected_fingerprint=fingerprint),
+            })
+        except FeishuImportError as error:
+            self.send_json({"success": False, "error": str(error)}, status=400)
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
+            self.send_json({"success": False, "error": str(error)}, status=400)
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
@@ -3909,6 +4062,9 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
             return
         if path.startswith("/api/email-"):
             self.handle_email_queue(path, "GET")
+            return
+        if path.startswith("/api/feishu-mail-import/"):
+            self.handle_feishu_mail_import(path, "GET")
             return
 
         if path == "/" or path == "/index.html":
@@ -3934,7 +4090,7 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
             owner = self._owner_filter(user)
             params = urllib.parse.parse_qs(parsed.query)
             country = params.get("country", [None])[0]
-            if country not in (None, "domestic", "overseas"):
+            if country not in (None, "domestic", "overseas", "pending_verification"):
                 self.send_json({"success": False, "error": "无效的市场区域"}, status=400)
                 return
             if owner is None and country is None:
@@ -4123,6 +4279,9 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if path.startswith("/api/feishu-mail-import/"):
+            self.handle_feishu_mail_import(path, "POST")
+            return
         if path.startswith("/api/email-"):
             self.handle_email_queue(path, "POST")
             return

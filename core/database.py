@@ -484,7 +484,7 @@ def init_db(db_path: str = DB_PATH):
             cursor.execute(f"ALTER TABLE leads ADD COLUMN {field} {definition}")
     
     # Estimated monthly Aibubu spend, CNY; unknown unless supported by evidence.
-    for field, definition in [('company_description', 'TEXT'), ('description_source', 'TEXT'), ('estimated_monthly_spend', 'REAL'), ('spend_basis', 'TEXT'), ('discovery_url', 'TEXT'), ('customer_type', 'TEXT'), ('models_used', 'TEXT'), ('qualification_evidence', 'TEXT'), ('owner', 'TEXT'), ('company_follow_up_date', 'TEXT'), ('prospect_status', 'TEXT'), ('audience_scale', 'TEXT'), ('exclusion_reason', 'TEXT'), ('previous_prospect_status', 'TEXT')]:
+    for field, definition in [('market_classification', "TEXT NOT NULL DEFAULT 'verified'"), ('company_description', 'TEXT'), ('description_source', 'TEXT'), ('estimated_monthly_spend', 'REAL'), ('spend_basis', 'TEXT'), ('discovery_url', 'TEXT'), ('customer_type', 'TEXT'), ('models_used', 'TEXT'), ('qualification_evidence', 'TEXT'), ('owner', 'TEXT'), ('company_follow_up_date', 'TEXT'), ('prospect_status', 'TEXT'), ('audience_scale', 'TEXT'), ('exclusion_reason', 'TEXT'), ('previous_prospect_status', 'TEXT')]:
         if field not in c_cols:
             cursor.execute(f"ALTER TABLE companies ADD COLUMN {field} {definition}")
 
@@ -664,11 +664,22 @@ class DatabaseManager:
     def insert_company(self, data: Dict[str, Any]) -> int:
         conn = get_connection(self.db_path)
         cur = conn.cursor()
+        requested_market = data.get('country_type', 'domestic')
+        if requested_market not in {'domestic', 'overseas', 'pending_verification'}:
+            conn.close()
+            raise ValueError("市场区域只能是国内、海外或待核验")
+        country_type = 'overseas' if requested_market == 'pending_verification' else requested_market
+        market_classification = (
+            'pending_verification'
+            if requested_market == 'pending_verification'
+            else data.get('market_classification', 'verified')
+        )
         cur.execute("""
-            INSERT INTO companies (name, country_type, industry, scale, website, city_or_region, source_channel, annual_revenue_range, client_tier, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO companies (name, country_type, market_classification, industry, scale, website, city_or_region, source_channel, annual_revenue_range, client_tier, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(name) DO UPDATE SET
                 country_type=excluded.country_type,
+                market_classification=excluded.market_classification,
                 industry=excluded.industry,
                 scale=excluded.scale,
                 website=coalesce(excluded.website, companies.website),
@@ -678,7 +689,8 @@ class DatabaseManager:
                 updated_at=CURRENT_TIMESTAMP
         """, (
             data['name'],
-            data.get('country_type', 'domestic'),
+            country_type,
+            market_classification,
             data.get('industry', '未知赛道'),
             data.get('scale', '50-150人'),
             data.get('website', ''),
@@ -857,7 +869,7 @@ class DatabaseManager:
         conditions = []
         params: List[Any] = []
         if country_type:
-            conditions.append("c.country_type = ?")
+            conditions.append("(CASE WHEN c.market_classification='pending_verification' THEN 'pending_verification' ELSE c.country_type END) = ?")
             params.append(country_type)
         if owner is not None:
             conditions.append("coalesce(c.owner, '') = ?")
@@ -890,7 +902,7 @@ class DatabaseManager:
                 c.name as company_name,
                 c.estimated_monthly_spend, c.spend_basis, c.discovery_url,
                 c.customer_type, c.models_used, c.qualification_evidence, c.owner, c.company_follow_up_date, c.prospect_status, c.audience_scale, c.exclusion_reason, c.previous_prospect_status, c.created_at as first_discovered,
-                c.country_type,
+                CASE WHEN c.market_classification='pending_verification' THEN 'pending_verification' ELSE c.country_type END AS country_type,
                 c.industry,
                 c.scale,
                 c.website,
@@ -958,7 +970,7 @@ class DatabaseManager:
         """
         params = []
         if country_type:
-            query += " AND c.country_type = ?"
+            query += " AND (CASE WHEN c.market_classification='pending_verification' THEN 'pending_verification' ELSE c.country_type END) = ?"
             params.append(country_type)
         if status:
             query += " AND coalesce(o.status, 'pending') = ?"
@@ -1104,7 +1116,7 @@ class DatabaseManager:
 
     def update_company(self, company_id: int, updates: Dict[str, Any]) -> bool:
         allowed = {
-            'name', 'country_type', 'industry', 'scale', 'website',
+            'name', 'country_type', 'market_classification', 'industry', 'scale', 'website',
             'city_or_region', 'source_channel', 'annual_revenue_range',
             'client_tier', 'has_image_heavy_demand', 'notes',
             'company_description', 'description_source',
@@ -1184,13 +1196,22 @@ class DatabaseManager:
         cur = conn.cursor()
         stats = {}
         
-        country_filter_co = " WHERE country_type = ?" if country_type else ""
+        country_filter_co = (
+            " WHERE CASE WHEN market_classification='pending_verification' "
+            "THEN 'pending_verification' ELSE country_type END = ?"
+            if country_type else ""
+        )
         country_param_co = (country_type,) if country_type else ()
         
         cur.execute(f"SELECT count(*) as total_companies FROM companies{country_filter_co}", country_param_co)
         stats['total_companies'] = cur.fetchone()['total_companies']
         
-        cur.execute("SELECT country_type, count(*) as count FROM companies GROUP BY country_type")
+        cur.execute("""
+            SELECT CASE WHEN market_classification='pending_verification'
+                        THEN 'pending_verification' ELSE country_type END AS country_type,
+                   count(*) AS count
+            FROM companies GROUP BY 1
+        """)
         stats['companies_by_region'] = {r['country_type']: r['count'] for r in cur.fetchall()}
 
         if country_type:
@@ -1198,7 +1219,8 @@ class DatabaseManager:
                 SELECT count(l.id) as total_leads 
                 FROM leads l 
                 JOIN companies c ON l.company_id = c.id 
-                WHERE c.country_type = ?
+                WHERE CASE WHEN c.market_classification='pending_verification'
+                           THEN 'pending_verification' ELSE c.country_type END = ?
             """, (country_type,))
         else:
             cur.execute("SELECT count(*) as total_leads FROM leads")
@@ -1215,7 +1237,8 @@ class DatabaseManager:
                 LEFT JOIN (
                     SELECT lead_id, status FROM outreach_records GROUP BY lead_id HAVING id=MAX(id)
                 ) o ON l.id=o.lead_id 
-                WHERE c.country_type = ?
+                WHERE CASE WHEN c.market_classification='pending_verification'
+                           THEN 'pending_verification' ELSE c.country_type END = ?
                 GROUP BY coalesce(o.status, 'pending')
             """, (country_type,))
         else:
@@ -1250,7 +1273,7 @@ class DatabaseManager:
             query += " AND coalesce(c.owner, '') = ?"
             params.append(owner)
         if country_type:
-            query += " AND c.country_type = ?"
+            query += " AND (CASE WHEN c.market_classification='pending_verification' THEN 'pending_verification' ELSE c.country_type END) = ?"
             params.append(country_type)
         query += " GROUP BY r.status"
         cur.execute(query, params)
@@ -1278,7 +1301,7 @@ class DatabaseManager:
             query += " AND coalesce(c.owner, '') = ?"
             params.append(owner)
         if country_type:
-            query += " AND c.country_type = ?"
+            query += " AND (CASE WHEN c.market_classification='pending_verification' THEN 'pending_verification' ELSE c.country_type END) = ?"
             params.append(country_type)
         if client_tier:
             query += " AND coalesce(c.client_tier, 'B') = ?"
