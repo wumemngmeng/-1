@@ -1,15 +1,17 @@
 import http.client
+import base64
 import json
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 from http.server import ThreadingHTTPServer
 from urllib.parse import urlencode
 
 from core.database import DatabaseManager
-from web.server import CustomHandler
+from web.server import CustomHandler, verify_github_actions_oidc
 
 
 class AuthTests(unittest.TestCase):
@@ -288,6 +290,82 @@ class AuthTests(unittest.TestCase):
         self.assertEqual((status, payload["success"]), (200, True))
         self.assertEqual(payload["created_contacts"], 3)
         apply.assert_called_once_with("Vercel Feishu Sync")
+
+    def test_feishu_mail_sync_accepts_only_verified_github_actions_identity(self):
+        result = {
+            "created_companies": 0,
+            "updated_companies": 0,
+            "created_contacts": 0,
+            "conflicts": 0,
+            "suppressed_existing_statuses": 0,
+        }
+        with patch.dict("os.environ", {"CRON_SECRET": ""}), patch(
+            "web.server.verify_github_actions_oidc", return_value=True
+        ) as verify, patch(
+            "core.feishu_import.FeishuMailSheetImporter.apply", return_value=result
+        ) as apply:
+            status, payload, _ = self.request(
+                "GET",
+                "/api/feishu-mail-sync/run",
+                extra_headers={"Authorization": "Bearer signed-github-token"},
+            )
+        self.assertEqual((status, payload["success"]), (200, True))
+        verify.assert_called_once_with("signed-github-token")
+        apply.assert_called_once_with("Vercel Feishu Sync")
+
+    def test_github_actions_oidc_verifier_checks_signature_and_workflow_identity(self):
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import padding, rsa
+
+        def encode(value):
+            raw = json.dumps(value, separators=(",", ":")).encode()
+            return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+        def integer(value):
+            length = (value.bit_length() + 7) // 8
+            return base64.urlsafe_b64encode(value.to_bytes(length, "big")).rstrip(b"=").decode()
+
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        numbers = private_key.public_key().public_numbers()
+        timestamp = int(time.time())
+        header = {"alg": "RS256", "kid": "test-key"}
+        claims = {
+            "iss": "https://token.actions.githubusercontent.com",
+            "aud": "aibubu-feishu-sync",
+            "repository": "wumemngmeng/-1",
+            "ref": "refs/heads/main",
+            "workflow_ref": "wumemngmeng/-1/.github/workflows/feishu-sync.yml@refs/heads/main",
+            "event_name": "schedule",
+            "iat": timestamp - 10,
+            "nbf": timestamp - 10,
+            "exp": timestamp + 300,
+        }
+
+        def token(payload):
+            encoded = f"{encode(header)}.{encode(payload)}"
+            signature = private_key.sign(
+                encoded.encode(), padding.PKCS1v15(), hashes.SHA256()
+            )
+            return f"{encoded}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return json.dumps({"keys": [{
+                    "kid": "test-key", "kty": "RSA",
+                    "e": integer(numbers.e), "n": integer(numbers.n),
+                }]}).encode()
+
+        opener = lambda *_args, **_kwargs: Response()
+        self.assertTrue(verify_github_actions_oidc(token(claims), opener, timestamp))
+        self.assertFalse(verify_github_actions_oidc(
+            token(dict(claims, repository="attacker/repo")), opener, timestamp
+        ))
 
     def test_email_queue_scope_settings_and_uncertain_send(self):
         from cryptography.fernet import Fernet
