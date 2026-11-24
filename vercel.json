@@ -15,10 +15,6 @@
     {
       "path": "/api/email-automation/run",
       "schedule": "0 9 * * *"
-    },
-    {
-      "path": "/api/feishu-mail-sync/run",
-      "schedule": "0 */6 * * *"
     }
   ]
 }
