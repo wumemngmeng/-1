@@ -4045,15 +4045,39 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
         except (ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
             self.send_json({"success": False, "error": str(error)}, status=400)
 
+    def _cron_authorized(self, parsed):
+        secret = os.environ.get("CRON_SECRET", "").strip()
+        supplied = urllib.parse.parse_qs(parsed.query).get("token", [""])[0]
+        auth = self.headers.get("Authorization", "")
+        candidate = supplied or auth.removeprefix("Bearer ").strip()
+        return bool(secret and hmac.compare_digest(candidate, secret))
+
+    def handle_feishu_mail_sync(self):
+        from core.feishu_import import FeishuImportError, FeishuMailSheetImporter
+
+        try:
+            importer = FeishuMailSheetImporter(self.db)
+            self.send_json({
+                "success": True,
+                **importer.apply("Vercel Feishu Sync"),
+            })
+        except FeishuImportError as error:
+            self.send_json({"success": False, "error": str(error)}, status=400)
+        except Exception:
+            self.send_json({
+                "success": False,
+                "error": "飞书邮件表自动同步失败，请检查服务日志",
+            }, status=502)
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-        if path == "/api/email-automation/run":
-            secret = os.environ.get("CRON_SECRET", "").strip()
-            supplied = urllib.parse.parse_qs(parsed.query).get("token", [""])[0]
-            auth = self.headers.get("Authorization", "")
-            if not secret or not hmac.compare_digest(supplied or auth.removeprefix("Bearer ").strip(), secret):
+        if path in ("/api/email-automation/run", "/api/feishu-mail-sync/run"):
+            if not self._cron_authorized(parsed):
                 self.send_json({"success": False, "error": "未授权"}, status=401)
+                return
+            if path == "/api/feishu-mail-sync/run":
+                self.handle_feishu_mail_sync()
                 return
             try:
                 self.send_json({"success": True, **run_email_automation(self.db)})
