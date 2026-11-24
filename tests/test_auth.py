@@ -47,9 +47,9 @@ class AuthTests(unittest.TestCase):
         self.thread.join()
         self.directory.cleanup()
 
-    def request(self, method, path, body=None, cookie=None):
+    def request(self, method, path, body=None, cookie=None, extra_headers=None):
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port)
-        headers = {}
+        headers = dict(extra_headers or {})
         if body is not None:
             body = json.dumps(body)
             headers["Content-Type"] = "application/json"
@@ -265,6 +265,29 @@ class AuthTests(unittest.TestCase):
                     "confirmation": "IMPORT FEISHU MAIL SHEET"
                 }, observer
             )[0], 403)
+
+    def test_feishu_mail_sync_requires_cron_secret_and_never_uses_user_session(self):
+        self.assertEqual(self.request("GET", "/api/feishu-mail-sync/run")[0], 401)
+        with patch.dict("os.environ", {"CRON_SECRET": "cron-test-secret"}):
+            self.assertEqual(self.request("GET", "/api/feishu-mail-sync/run")[0], 401)
+            with patch(
+                "core.feishu_import.FeishuMailSheetImporter.apply",
+                return_value={
+                    "created_companies": 2,
+                    "updated_companies": 1,
+                    "created_contacts": 3,
+                    "conflicts": 4,
+                    "suppressed_existing_statuses": 1,
+                },
+            ) as apply:
+                status, payload, _ = self.request(
+                    "GET",
+                    "/api/feishu-mail-sync/run",
+                    extra_headers={"Authorization": "Bearer cron-test-secret"},
+                )
+        self.assertEqual((status, payload["success"]), (200, True))
+        self.assertEqual(payload["created_contacts"], 3)
+        apply.assert_called_once_with("Vercel Feishu Sync")
 
     def test_email_queue_scope_settings_and_uncertain_send(self):
         from cryptography.fernet import Fernet
