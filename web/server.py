@@ -48,6 +48,64 @@ SESSION_SECRET = (
     or "aibubu-local-development-session-key"
 ).encode()
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
+GITHUB_OIDC_JWKS = f"{GITHUB_OIDC_ISSUER}/.well-known/jwks"
+FEISHU_SYNC_OIDC_AUDIENCE = "aibubu-feishu-sync"
+FEISHU_SYNC_WORKFLOW_REF = (
+    "wumemngmeng/-1/.github/workflows/feishu-sync.yml@refs/heads/main"
+)
+
+
+def _decode_base64url(value):
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def verify_github_actions_oidc(token, opener=None, now=None):
+    """Verify the scheduled sync caller without storing another shared secret."""
+    try:
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import padding, rsa
+
+        header_part, claims_part, signature_part = str(token or "").split(".")
+        header = json.loads(_decode_base64url(header_part))
+        claims = json.loads(_decode_base64url(claims_part))
+        if header.get("alg") != "RS256" or not header.get("kid"):
+            return False
+        timestamp = int(time.time() if now is None else now)
+        audience = claims.get("aud")
+        audiences = audience if isinstance(audience, list) else [audience]
+        if (
+            claims.get("iss") != GITHUB_OIDC_ISSUER
+            or FEISHU_SYNC_OIDC_AUDIENCE not in audiences
+            or claims.get("repository") != "wumemngmeng/-1"
+            or claims.get("ref") != "refs/heads/main"
+            or claims.get("workflow_ref") != FEISHU_SYNC_WORKFLOW_REF
+            or claims.get("event_name") not in {"schedule", "workflow_dispatch"}
+            or int(claims.get("exp") or 0) <= timestamp
+            or int(claims.get("nbf") or 0) > timestamp
+            or int(claims.get("iat") or 0) > timestamp + 60
+        ):
+            return False
+        request = urllib.request.Request(
+            GITHUB_OIDC_JWKS,
+            headers={"Accept": "application/json", "User-Agent": "Aibubu-Feishu-Sync"},
+        )
+        with (opener or urllib.request.urlopen)(request, timeout=10) as response:
+            keys = json.loads(response.read().decode("utf-8")).get("keys", [])
+        key = next(item for item in keys if item.get("kid") == header["kid"])
+        public_key = rsa.RSAPublicNumbers(
+            int.from_bytes(_decode_base64url(key["e"]), "big"),
+            int.from_bytes(_decode_base64url(key["n"]), "big"),
+        ).public_key()
+        public_key.verify(
+            _decode_base64url(signature_part),
+            f"{header_part}.{claims_part}".encode("ascii"),
+            padding.PKCS1v15(),
+            hashes.SHA256(),
+        )
+        return True
+    except (ValueError, TypeError, KeyError, StopIteration, OSError, json.JSONDecodeError):
+        return False
 
 
 def render_email_template(template, prospect):
@@ -4045,14 +4103,48 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
         except (ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
             self.send_json({"success": False, "error": str(error)}, status=400)
 
+    def _cron_secret_authorized(self, parsed):
+        secret = os.environ.get("CRON_SECRET", "").strip()
+        supplied = urllib.parse.parse_qs(parsed.query).get("token", [""])[0]
+        auth = self.headers.get("Authorization", "")
+        candidate = supplied or auth.removeprefix("Bearer ").strip()
+        return bool(secret and hmac.compare_digest(candidate, secret))
+
+    def _feishu_sync_authorized(self, parsed):
+        if self._cron_secret_authorized(parsed):
+            return True
+        auth = self.headers.get("Authorization", "")
+        token = auth.removeprefix("Bearer ").strip()
+        return bool(token and verify_github_actions_oidc(token))
+
+    def handle_feishu_mail_sync(self):
+        from core.feishu_import import FeishuImportError, FeishuMailSheetImporter
+
+        try:
+            importer = FeishuMailSheetImporter(self.db)
+            self.send_json({
+                "success": True,
+                **importer.apply("Vercel Feishu Sync"),
+            })
+        except FeishuImportError as error:
+            self.send_json({"success": False, "error": str(error)}, status=400)
+        except Exception:
+            self.send_json({
+                "success": False,
+                "error": "飞书邮件表自动同步失败，请检查服务日志",
+            }, status=502)
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if path == "/api/feishu-mail-sync/run":
+            if not self._feishu_sync_authorized(parsed):
+                self.send_json({"success": False, "error": "未授权"}, status=401)
+                return
+            self.handle_feishu_mail_sync()
+            return
         if path == "/api/email-automation/run":
-            secret = os.environ.get("CRON_SECRET", "").strip()
-            supplied = urllib.parse.parse_qs(parsed.query).get("token", [""])[0]
-            auth = self.headers.get("Authorization", "")
-            if not secret or not hmac.compare_digest(supplied or auth.removeprefix("Bearer ").strip(), secret):
+            if not self._cron_secret_authorized(parsed):
                 self.send_json({"success": False, "error": "未授权"}, status=401)
                 return
             try:
