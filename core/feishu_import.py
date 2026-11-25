@@ -165,6 +165,7 @@ class FeishuMailSheetImporter:
             cursor = conn.cursor()
             companies = self._existing_companies(cursor)
             existing_leads = self._existing_leads(cursor)
+            status_sync = self._status_sync_plan(cursor, records)
         finally:
             conn.close()
 
@@ -265,7 +266,8 @@ class FeishuMailSheetImporter:
             for entry in entries
         ]
         fingerprint = hashlib.sha256(json.dumps(
-            {"rows": fingerprint_rows, "conflicts": conflicts},
+            {"rows": fingerprint_rows, "conflicts": conflicts,
+             "source_statuses": records, "status_sync": status_sync},
             ensure_ascii=False, sort_keys=True, separators=(",", ":"),
         ).encode("utf-8")).hexdigest()
         return {
@@ -277,14 +279,199 @@ class FeishuMailSheetImporter:
             "conflicts": conflicts[:100],
             "fingerprint": fingerprint,
             "entries": entries,
+            "status_sync": status_sync,
         }
 
     def preview(self) -> Dict[str, Any]:
         return self.plan(self.fetch_records())
 
+    @staticmethod
+    def _mail_status(value: Any) -> str:
+        status = str(value or "").strip().casefold()
+        if status in {"已推送", "已发送", "sent", "pushed"}:
+            return "sent"
+        if status in {"已退订", "退订", "unsubscribed"}:
+            return "unsubscribed"
+        if status in {"待联系", "pending", "待发送"}:
+            return "pending"
+        return ""
+
+    def _status_sync_plan(self, cursor, records: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Preview Feishu outreach-state reconciliation without changing CRM data."""
+        counts = defaultdict(int)
+        conflicts, actions = [], []
+        by_email = defaultdict(list)
+        for row in cursor.execute(
+            """SELECT l.id,l.company_id,l.email,c.name AS company_name,c.website
+               FROM leads l JOIN companies c ON c.id=l.company_id
+               WHERE trim(coalesce(l.email,''))<>''"""
+        ).fetchall():
+            by_email[str(row["email"]).strip().casefold()].append(dict(row))
+        by_queue_email, by_queue_lead = defaultdict(list), defaultdict(list)
+        for row in cursor.execute("SELECT id,status,lead_id,email FROM mail_queue").fetchall():
+            queue = dict(row)
+            by_queue_email[str(row["email"]).strip().casefold()].append(queue)
+            by_queue_lead[row["lead_id"]].append(queue)
+        legacy = {
+            str(row["email"]).strip().casefold(): row["status"]
+            for row in cursor.execute(
+                "SELECT email,status FROM email_prospects WHERE status IN ('sent','unsubscribed')"
+            ).fetchall()
+        }
+        latest_outreach = {
+            row["lead_id"]: dict(row)
+            for row in cursor.execute(
+                """SELECT r.* FROM outreach_records r
+                   WHERE r.id=(SELECT max(r2.id) FROM outreach_records r2 WHERE r2.lead_id=r.lead_id)"""
+            ).fetchall()
+        }
+        outreach_actions = []
+        source = defaultdict(list)
+        for record in records:
+            source_status = self._mail_status(record.get("mail_status"))
+            email = str(record.get("email") or "").strip().casefold()
+            if not source_status or not email:
+                continue
+            source[email].append(record)
+        for email, source_rows in source.items():
+            record = source_rows[0]
+            leads = by_email[email]
+            if not leads:
+                counts["unmatched"] += 1
+                continue
+            if len(leads) != 1 or any(
+                normalize_company_name(item.get("company_name")) != normalize_company_name(leads[0]["company_name"])
+                and not (
+                    normalize_domain(item.get("website"))
+                    and normalize_domain(item.get("website")) == normalize_domain(leads[0]["website"])
+                )
+                for item in source_rows
+            ):
+                conflicts.append({
+                    "row": record.get("sheet_row"), "email": email,
+                    "company": record.get("company_name") or "",
+                    "reason": "邮箱或公司归属不唯一，未同步触达状态",
+                })
+                counts["conflicts"] += 1
+                continue
+            lead = leads[0]
+            queues = {
+                row["id"]: row for row in by_queue_email[email] + by_queue_lead[lead["id"]]
+            }
+            if len(queues) > 1 or any(
+                row["lead_id"] != lead["id"] or str(row["email"]).strip().casefold() != email
+                for row in queues.values()
+            ):
+                conflicts.append({
+                    "row": record.get("sheet_row"), "email": email,
+                    "company": record.get("company_name") or "",
+                    "reason": "邮箱命中多个后台队列记录，未同步触达状态",
+                })
+                counts["conflicts"] += 1
+                continue
+            statuses = {self._mail_status(item.get("mail_status")) for item in source_rows}
+            source_status = next(value for value in ("unsubscribed", "sent", "pending") if value in statuses)
+            queue = next(iter(queues.values())) if queues else None
+            current = queue["status"] if queue else None
+            latest = latest_outreach.get(lead["id"])
+            if source_status == "pending":
+                counts["preserved" if current and current != "pending" else "unchanged"] += 1
+            elif current == source_status:
+                counts["unchanged"] += 1
+            elif current in {"sending", "unsubscribed", "removed"} or (
+                current == "sent" and source_status != "unsubscribed"
+            ) or (legacy.get(email) == "unsubscribed" and source_status != "unsubscribed"):
+                counts["preserved"] += 1
+            else:
+                action = "update" if queue else "create"
+                counts[f"{action}_{source_status}"] += 1
+                actions.append({
+                    "action": action, "status": source_status, "email": email,
+                    "lead_id": lead["id"], "company_id": lead["company_id"],
+                    "queue_id": queue["id"] if queue else None,
+                    "previous_status": current,
+                })
+            if (
+                source_status == "sent"
+                and current in {None, "pending", "sent"}
+                and (not latest or latest["status"] == "pending")
+            ):
+                outreach_actions.append({
+                    "lead_id": lead["id"],
+                    "previous_id": latest["id"] if latest else None,
+                })
+        return {
+            "records_with_status": sum(value for key, value in counts.items()
+                                       if key not in {"conflicts", "unmatched"}),
+            "create_sent": counts["create_sent"],
+            "create_unsubscribed": counts["create_unsubscribed"],
+            "update_sent": counts["update_sent"],
+            "update_unsubscribed": counts["update_unsubscribed"],
+            "preserved": counts["preserved"],
+            "unchanged": counts["unchanged"],
+            "unmatched": counts["unmatched"],
+            "conflicts": conflicts[:100],
+            "conflict_count": counts["conflicts"],
+            "actions": actions,
+            "outreach_updates": len(outreach_actions),
+            "outreach_actions": outreach_actions,
+        }
+
+    def _sync_outreach_statuses(self, cursor, records: List[Dict[str, Any]], actor: str) -> Dict[str, int]:
+        """Reconcile source statuses without downgrading protected CRM states."""
+        result = {
+            "created_sent_statuses": 0,
+            "created_unsubscribed_statuses": 0,
+            "updated_sent_statuses": 0,
+            "updated_unsubscribed_statuses": 0,
+            "preserved_statuses": 0,
+            "unmatched_statuses": 0,
+            "status_conflicts": 0,
+            "synced_outreach_records": 0,
+        }
+        plan = self._status_sync_plan(cursor, records)
+        result.update(preserved_statuses=plan["preserved"],
+                      unmatched_statuses=plan["unmatched"],
+                      status_conflicts=plan["conflict_count"])
+        for action in plan["actions"]:
+            source_status = action["status"]
+            if action["action"] == "create":
+                cursor.execute(
+                    """INSERT OR IGNORE INTO mail_queue
+                       (company_id,lead_id,email,status,created_by)
+                       VALUES (?,?,?,?,?)""",
+                    (action["company_id"], action["lead_id"], action["email"], source_status, actor),
+                )
+                verb = "created"
+            else:
+                cursor.execute(
+                    """UPDATE mail_queue
+                       SET status=?, updated_at=CURRENT_TIMESTAMP
+                       WHERE id=? AND status=? AND lead_id=? AND lower(email)=?""",
+                    (source_status, action["queue_id"], action["previous_status"],
+                     action["lead_id"], action["email"]),
+                )
+                verb = "updated"
+            changed = cursor.execute("SELECT changes() AS count").fetchone()["count"]
+            result[f"{verb}_{source_status}_statuses"] += int(changed)
+        for action in plan["outreach_actions"]:
+            cursor.execute(
+                """INSERT INTO outreach_records(lead_id,channel,status,interaction_notes)
+                   SELECT ?,'cold_email','contacted',?
+                   WHERE coalesce((SELECT max(id) FROM outreach_records WHERE lead_id=?),0)=?""",
+                (action["lead_id"],
+                 "飞书邮件表：已推送（历史触达状态同步；本记录时间为同步时间，原触达日期未知；未发送新邮件）",
+                 action["lead_id"], action["previous_id"] or 0),
+            )
+            result["synced_outreach_records"] += int(
+                cursor.execute("SELECT changes() AS count").fetchone()["count"]
+            )
+        return result
+
     def apply(self, actor: str, expected_fingerprint: Optional[str] = None) -> Dict[str, int]:
         """Reread the source and apply the current plan idempotently."""
-        plan = self.plan(self.fetch_records())
+        records = self.fetch_records()
+        plan = self.plan(records)
         if expected_fingerprint and expected_fingerprint != plan["fingerprint"]:
             raise FeishuImportError("飞书表或CRM数据在预览后发生变化，请重新预览再导入")
         conn = self.db.connection() if hasattr(self.db, "connection") else None
@@ -378,6 +565,7 @@ class FeishuMailSheetImporter:
                         (company_id, lead_id, entry["email"], queue_status, actor),
                     )
                     suppressed += 1
+            status_sync = self._sync_outreach_statuses(cursor, records, actor)
             conn.commit()
         except Exception:
             rollback = getattr(conn, "rollback", None)
@@ -392,4 +580,5 @@ class FeishuMailSheetImporter:
             "created_contacts": created_contacts,
             "conflicts": plan["conflict_count"],
             "suppressed_existing_statuses": suppressed,
+            **status_sync,
         }

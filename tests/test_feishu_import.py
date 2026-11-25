@@ -150,6 +150,118 @@ class FeishuImportTests(unittest.TestCase):
         self.assertEqual(company["country_type"], "overseas")
         self.assertEqual(company["market_classification"], "pending_verification")
 
+    def test_status_sync_updates_existing_queue_without_creating_send_history(self):
+        importer = FeishuMailSheetImporter(self.db, environ={})
+        source = [self.record(mail_status="待联系")]
+        with patch.object(importer, "fetch_records", return_value=source):
+            importer.apply("管理员")
+        conn = get_connection(self.db.db_path)
+        lead_id = conn.execute("SELECT id FROM leads").fetchone()["id"]
+        conn.execute(
+            """INSERT INTO mail_queue(company_id,lead_id,email,status,created_by)
+               SELECT company_id,id,email,'pending','管理员' FROM leads WHERE id=?""",
+            (lead_id,),
+        )
+        conn.commit()
+        conn.close()
+
+        changed = [self.record(mail_status="已推送")]
+        with patch.object(importer, "fetch_records", return_value=changed):
+            result = importer.apply("Vercel Feishu Sync")
+        conn = get_connection(self.db.db_path)
+        queue = conn.execute("SELECT status FROM mail_queue").fetchone()
+        sends = conn.execute("SELECT count(*) AS count FROM mail_queue_sends").fetchone()["count"]
+        conn.close()
+        self.assertEqual(result["updated_sent_statuses"], 1)
+        self.assertEqual(queue["status"], "sent")
+        self.assertEqual(sends, 0)
+
+    def test_status_sync_never_downgrades_backend_sent_to_feishu_pending(self):
+        importer = FeishuMailSheetImporter(self.db, environ={})
+        source = [self.record(mail_status="已推送")]
+        with patch.object(importer, "fetch_records", return_value=source):
+            importer.apply("管理员")
+        changed = [self.record(mail_status="待联系")]
+        with patch.object(importer, "fetch_records", return_value=changed):
+            result = importer.apply("Vercel Feishu Sync")
+        conn = get_connection(self.db.db_path)
+        queue = conn.execute("SELECT status FROM mail_queue").fetchone()
+        conn.close()
+        self.assertEqual(queue["status"], "sent")
+        self.assertGreaterEqual(result["preserved_statuses"], 1)
+
+    def test_existing_contact_status_also_updates_pipeline_idempotently(self):
+        importer = FeishuMailSheetImporter(self.db, environ={})
+        source = [self.record()]
+        with patch.object(importer, "fetch_records", return_value=source):
+            importer.apply("管理员")
+        source[0]["mail_status"] = "已推送"
+        with patch.object(importer, "fetch_records", return_value=source):
+            preview = importer.preview()
+            first = importer.apply("管理员", preview["fingerprint"])
+            second = importer.apply("管理员")
+        self.assertEqual(preview["eligible_contacts"], 0)
+        self.assertEqual(preview["status_sync"]["create_sent"], 1)
+        self.assertEqual(preview["status_sync"]["outreach_updates"], 1)
+        self.assertEqual(first["synced_outreach_records"], 1)
+        self.assertEqual(second["synced_outreach_records"], 0)
+        self.assertEqual(self.db.query_pipeline()[0]["status"], "contacted")
+
+    def test_protected_queue_and_advanced_pipeline_states_are_preserved(self):
+        importer = FeishuMailSheetImporter(self.db, environ={})
+        for index, status in enumerate(("sending", "unsubscribed", "removed"), 1):
+            source = [self.record(email=f"person{index}@acme.example")]
+            with patch.object(importer, "fetch_records", return_value=source):
+                importer.apply("管理员")
+            conn = get_connection(self.db.db_path)
+            lead = conn.execute("SELECT id,company_id FROM leads WHERE email=?", (source[0]["email"],)).fetchone()
+            conn.execute(
+                "INSERT INTO mail_queue(company_id,lead_id,email,status,created_by) VALUES(?,?,?,?,?)",
+                (lead["company_id"], lead["id"], source[0]["email"], status, "管理员"),
+            )
+            conn.commit()
+            conn.close()
+            self.db.record_outreach({"lead_id": lead["id"], "channel": "cold_email", "status": "negotiation"})
+            source[0]["mail_status"] = "已推送"
+            with patch.object(importer, "fetch_records", return_value=source):
+                result = importer.apply("管理员")
+            conn = get_connection(self.db.db_path)
+            self.assertEqual(conn.execute("SELECT status FROM mail_queue WHERE lead_id=?", (lead["id"],)).fetchone()["status"], status)
+            self.assertEqual(conn.execute("SELECT status FROM outreach_records WHERE lead_id=? ORDER BY id DESC LIMIT 1", (lead["id"],)).fetchone()["status"], "negotiation")
+            conn.close()
+            self.assertEqual(result["synced_outreach_records"], 0)
+
+    def test_unsubscribe_overrides_sent_without_removing_send_history(self):
+        importer = FeishuMailSheetImporter(self.db, environ={})
+        source = [self.record(mail_status="已推送")]
+        with patch.object(importer, "fetch_records", return_value=source):
+            importer.apply("管理员")
+        source[0]["mail_status"] = "已退订"
+        with patch.object(importer, "fetch_records", return_value=source):
+            result = importer.apply("管理员")
+        conn = get_connection(self.db.db_path)
+        self.assertEqual(conn.execute("SELECT status FROM mail_queue").fetchone()["status"], "unsubscribed")
+        conn.close()
+        self.assertEqual(result["updated_unsubscribed_statuses"], 1)
+
+    def test_company_mismatch_and_status_only_stale_previews_fail_safe(self):
+        importer = FeishuMailSheetImporter(self.db, environ={})
+        source = [self.record()]
+        with patch.object(importer, "fetch_records", return_value=source):
+            importer.apply("管理员")
+            fingerprint = importer.preview()["fingerprint"]
+        source[0]["mail_status"] = "已推送"
+        with patch.object(importer, "fetch_records", return_value=source):
+            with self.assertRaisesRegex(FeishuImportError, "发生变化"):
+                importer.apply("管理员", fingerprint)
+        source[0].update(company_name="Unrelated Company", website="https://unrelated.example")
+        with patch.object(importer, "fetch_records", return_value=source):
+            result = importer.apply("管理员")
+        conn = get_connection(self.db.db_path)
+        self.assertEqual(conn.execute("SELECT count(*) FROM mail_queue").fetchone()[0], 0)
+        conn.close()
+        self.assertEqual(result["status_conflicts"], 1)
+
     def test_unconfigured_feishu_credentials_fail_closed(self):
         importer = FeishuMailSheetImporter(self.db, environ={})
         with self.assertRaises(FeishuImportError):
