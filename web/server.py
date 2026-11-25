@@ -1402,7 +1402,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             </div>
             <ul class="nav-list">
                 <li class="nav-section-label">客户线索池</li>
-                <li class="nav-item" id="overseas-nav" onclick="switchPipelineMarket('overseas', this)">
+                <li class="nav-item active" id="overseas-nav" onclick="switchPipelineMarket('overseas', this)">
                     <span>🌐</span> <span>海外客户线索池</span>
                 </li>
                 <li class="nav-sublist" id="overseas-pool-nav">
@@ -1416,7 +1416,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         <span>💬 Discord 线索</span><span class="nav-subcount" id="overseas-discord-count">0</span>
                     </button>
                 </li>
-                <li class="nav-item active" id="domestic-nav" onclick="switchPipelineMarket('domestic', this)">
+                <li class="nav-item" id="domestic-nav" onclick="switchPipelineMarket('domestic', this)">
                     <span>⚡</span> <span>国内客户线索池</span>
                 </li>
                 <li class="nav-sublist" id="domestic-pool-nav">
@@ -1428,8 +1428,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <span>🔎</span> <span>待核验线索</span>
                 </li>
                 <li class="nav-sublist" id="pending-verification-pool-nav">
-                    <button class="nav-subitem" data-market="pending_verification" data-channel="email" onclick="switchEmailPoolMarket('pending_verification', this)">
-                        <span>待核验邮箱（不可发送）</span><span class="nav-subcount" id="pending_verification-email-count">0</span>
+                    <button class="nav-subitem" data-market="pending_verification" data-channel="email" onclick="switchPipelineChannel('pending_verification', 'email', this)">
+                        <span>✉️ 邮件组线索</span><span class="nav-subcount" id="pending_verification-email-count">0</span>
+                    </button>
+                    <button class="nav-subitem" data-market="pending_verification" data-channel="x" onclick="switchPipelineChannel('pending_verification', 'x', this)">
+                        <span>𝕏 X 线索</span><span class="nav-subcount" id="pending_verification-x-count">0</span>
                     </button>
                 </li>
                 <li class="nav-section-label">邮件运营</li>
@@ -1481,7 +1484,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <div id="view-pipeline" class="view-section active">
             <header>
                 <div>
-                    <h2 class="page-title" id="pipeline-title">国内客户</h2>
+                    <h2 class="page-title" id="pipeline-title">海外客户</h2>
                     <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">
                         三段解耦流水线: 智能评级 ➔ 真实决策人 ➔ ROI话术直达 (双层精细筛选)
                     </div>
@@ -1493,7 +1496,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             </header>
             <section id="lead-pool-switcher" class="lead-pool-switcher" aria-label="线索渠道池">
                 <div class="lead-pool-switcher-head">
-                    <h3 id="lead-pool-title">国内客户线索池 · 全部渠道</h3>
+                    <h3 id="lead-pool-title">海外客户线索池 · 全部渠道</h3>
                     <p>先按市场分池，再按来源渠道进入对应的跟进队列</p>
                 </div>
                 <div id="lead-pool-cards" class="lead-pool-cards"></div>
@@ -2225,7 +2228,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         let currentLeadSources = [];
         
         // 筛选状态
-        let activeCountry = 'domestic';
+        let activeCountry = 'overseas';
         let activeLeadChannel = 'all';
         let activeEmailMarket = null;
         const marketFilters = {};
@@ -2253,6 +2256,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         };
         function leadMatchesChannel(row, channel) {
             const source = String(row.lead_source || '').toLowerCase();
+            if (row.country_type === 'pending_verification' && ['email', 'x'].includes(channel)) {
+                const hasXHomepage = Boolean(String(row.x_url || '').trim());
+                return channel === 'x' ? hasXHomepage : !hasXHomepage;
+            }
             if (channel === 'email') return Boolean(String(row.email || '').trim());
             if (channel === 'x') return Boolean(String(row.x_url || '').trim()) || /\\bx\\b/.test(source) || source.includes('twitter');
             if (channel === 'discord') return source.includes('discord') || String(row.discovery_url || '').toLowerCase().includes('discord');
@@ -2275,17 +2282,18 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 Object.keys(LEAD_CHANNEL_META).forEach(channel => {
                     const count = document.getElementById(`${market}-${channel}-count`);
                     if (count && channel !== 'discord') {
-                        count.textContent = channel === 'email'
-                            ? emailCounts[market]
-                            : counts[channel];
+                        count.textContent = channel === 'email' && market !== 'pending_verification'
+                            ? emailCounts[market] : counts[channel];
                     }
                 });
             });
-            document.getElementById('lead-pool-switcher').hidden = activeCountry === 'pending_verification';
+            document.getElementById('lead-pool-switcher').hidden = false;
             const rows = marketRows();
             const counts = leadChannelCounts(rows);
             const channels = Object.entries(LEAD_CHANNEL_META).filter(([channel]) =>
-                activeCountry === 'overseas' || channel === 'email');
+                activeCountry === 'overseas'
+                || activeCountry === 'pending_verification' && ['email', 'x'].includes(channel)
+                || activeCountry === 'domestic' && channel === 'email');
             document.getElementById('lead-pool-title').textContent =
                 `${marketLabel(activeCountry)}客户线索池 · ${activeLeadChannel === 'all' ? '全部渠道' : LEAD_CHANNEL_META[activeLeadChannel].label}`;
             document.getElementById('lead-pool-cards').innerHTML = [
@@ -2295,7 +2303,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 onclick="openLeadChannel('${activeCountry}', '${item.channel}', this)">
                 <span class="lead-pool-card-icon">${item.icon}</span>
                 <span class="lead-pool-card-copy"><strong>${item.label}</strong><small>${item.hint}</small></span>
-                <span class="lead-pool-card-count">${item.channel === 'all' ? new Set(rows.map(row => row.company_id)).size : item.channel === 'email' ? currentEmailProspects.filter(row => row.country_type === activeCountry).length : item.channel === 'discord' ? discordCommunityTotal : counts[item.channel]}</span>
+                <span class="lead-pool-card-count">${item.channel === 'all' ? new Set(rows.map(row => row.company_id)).size : item.channel === 'email' && activeCountry !== 'pending_verification' ? currentEmailProspects.filter(row => row.country_type === activeCountry).length : item.channel === 'discord' ? discordCommunityTotal : counts[item.channel]}</span>
             </button>`).join('');
         }
         function highlightMarketChannel(country, channel) {
@@ -2355,10 +2363,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             fetchStats();
         }
         function switchPipelineChannel(country, channel, elem) {
-            if (!['domestic', 'overseas'].includes(country) ||
-                !['all', 'x'].includes(channel) ||
-                (channel === 'x' && country !== 'overseas')) return;
-            switchPipelineMarket(country, document.getElementById(`${country}-nav`));
+            if (!['domestic', 'overseas', 'pending_verification'].includes(country)
+                || !['all', 'email', 'x'].includes(channel)
+                || country === 'domestic' && channel !== 'all'
+                || country === 'overseas' && channel === 'email') return;
+            switchPipelineMarket(country, document.getElementById(
+                country === 'pending_verification' ? 'pending-verification-nav' : `${country}-nav`
+            ));
             activeLeadChannel = channel;
             renderLeadPoolNavigation();
             renderTable();
@@ -2366,6 +2377,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             fetchStats();
         }
         function openLeadChannel(country, channel, elem) {
+            if (country === 'pending_verification' && ['email', 'x'].includes(channel))
+                return switchPipelineChannel(country, channel, elem);
             if (channel === 'email') return switchEmailPoolMarket(country, elem);
             if (channel === 'discord' && country === 'overseas') return switchOverseasDiscord(elem);
             switchPipelineChannel(country, channel, elem);
@@ -3378,6 +3391,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     return false;
                 }
                 if (activeLeadChannel === 'x' && !leadMatchesChannel(item, 'x')) return false;
+                if (activeLeadChannel === 'email' && !leadMatchesChannel(item, 'email')) return false;
                 
                 // 公司来源筛选 (支持正选'仅看'与反选'排除/不看'，且支持多选集合)
                 if (selectedSources.size > 0) {
