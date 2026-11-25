@@ -2490,13 +2490,16 @@ Aibubu Team</textarea>
                 const result = await response.json();
                 if (!response.ok || !result.success) throw Error(result.error || '读取预览失败');
                 feishuMailImportPreview = result;
-                summary.textContent = `表内 ${result.total_rows} 行；可导入联系人 ${result.eligible_contacts}；新建公司 ${result.new_companies}；匹配已有公司 ${result.matched_companies}；需跳过/人工核对 ${result.conflict_count}。已有公司只补 CRM 空字段，不覆盖已有信息。`;
-                if (result.conflicts?.length) {
-                    conflicts.innerHTML = `<details><summary>查看冲突明细（最多显示100条）</summary><div class="table-container"><table class="email-table"><thead><tr><th>飞书行</th><th>公司</th><th>邮箱</th><th>处理</th></tr></thead><tbody>${result.conflicts.map(row=>`<tr><td>${Number(row.row)||'-'}</td><td>${escapeHtml(row.company||'-')}</td><td>${escapeHtml(row.email||'-')}</td><td>${escapeHtml(row.reason||'需核对')}</td></tr>`).join('')}</tbody></table></div></details>`;
+                const sync=result.status_sync||{};
+                const statusChanges=(sync.create_sent||0)+(sync.create_unsubscribed||0)+(sync.update_sent||0)+(sync.update_unsubscribed||0);
+                summary.textContent = `表内 ${result.total_rows} 行；可导入联系人 ${result.eligible_contacts}；新建公司 ${result.new_companies}；匹配已有公司 ${result.matched_companies}；需跳过/人工核对 ${result.conflict_count}。邮件状态更新 ${statusChanges}；销售触达补记 ${sync.outreach_updates||0}；保护已有状态 ${sync.preserved||0}；状态归属冲突 ${sync.conflict_count||0}。历史触达时间未知时记录同步时间，不代表本次发送。`;
+                const allConflicts=[...(result.conflicts||[]),...(sync.conflicts||[])];
+                if (allConflicts.length) {
+                    conflicts.innerHTML = `<details><summary>查看导入与状态冲突明细</summary><div class="table-container"><table class="email-table"><thead><tr><th>飞书行</th><th>公司</th><th>邮箱</th><th>处理</th></tr></thead><tbody>${allConflicts.map(row=>`<tr><td>${Number(row.row)||'-'}</td><td>${escapeHtml(row.company||'-')}</td><td>${escapeHtml(row.email||'-')}</td><td>${escapeHtml(row.reason||'需核对')}</td></tr>`).join('')}</tbody></table></div></details>`;
                 }
                 applyButton.hidden = false;
-                applyButton.disabled = result.eligible_contacts === 0;
-                status.textContent = result.eligible_contacts ? '预览完成，尚未写入 CRM。' : '没有可导入联系人。';
+                applyButton.disabled = !result.eligible_contacts && !statusChanges && !sync.outreach_updates;
+                status.textContent = !applyButton.disabled ? '预览完成，尚未写入 CRM。' : '没有需要导入或更新的记录。';
             } catch (error) {
                 feishuMailImportPreview = null;
                 summary.textContent = '';
@@ -2504,9 +2507,9 @@ Aibubu Team</textarea>
             }
         }
         async function applyFeishuMailImport() {
-            if (!feishuMailImportPreview?.eligible_contacts) return;
+            if (!feishuMailImportPreview) return;
             const preview = feishuMailImportPreview;
-            if (!confirm(`确认导入 ${preview.eligible_contacts} 位联系人、新建 ${preview.new_companies} 家公司？已有公司只补空字段，冲突项跳过；此操作不会发送邮件。`)) return;
+            if (!confirm(`确认导入 ${preview.eligible_contacts} 位联系人、新建 ${preview.new_companies} 家公司并同步预览中的触达状态？已有公司只补空字段，冲突项跳过，已有销售阶段不回退；此操作不会发送邮件。`)) return;
             const button = document.getElementById('feishu-mail-import-apply');
             button.disabled = true;
             document.getElementById('feishu-mail-import-status').textContent = '正在导入…';
@@ -2521,7 +2524,7 @@ Aibubu Team</textarea>
                 const result = await response.json();
                 if (!response.ok || !result.success) throw Error(result.error || '导入失败');
                 document.getElementById('feishu-mail-import-summary').textContent =
-                    `导入完成：新建公司 ${result.created_companies} 家；补充公司信息 ${result.updated_companies} 家；新建联系人 ${result.created_contacts} 位；冲突/重复跳过 ${result.conflicts} 条；沿用“已推送/退订”状态并防止重复触达 ${result.suppressed_existing_statuses} 位。`;
+                    `同步完成：新建公司 ${result.created_companies} 家；补充公司信息 ${result.updated_companies} 家；新建联系人 ${result.created_contacts} 位；冲突/重复跳过 ${result.conflicts} 条；邮件状态新增/更新 ${(result.created_sent_statuses||0)+(result.created_unsubscribed_statuses||0)+(result.updated_sent_statuses||0)+(result.updated_unsubscribed_statuses||0)}；销售触达补记 ${result.synced_outreach_records||0}；保护已有状态 ${result.preserved_statuses||0}；状态冲突 ${result.status_conflicts||0}。`;
                 document.getElementById('feishu-mail-import-status').textContent = '导入已完成，不会自动发送邮件。';
                 document.getElementById('feishu-mail-import-conflicts').innerHTML = '';
                 feishuMailImportPreview = null;
