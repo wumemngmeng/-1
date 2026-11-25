@@ -362,6 +362,49 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             color: #fff;
             font-weight: 600;
         }
+        .nav-section-label {
+            padding: 18px 14px 6px;
+            color: #64748b;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: .12em;
+            text-transform: uppercase;
+        }
+        .nav-sublist {
+            display: grid;
+            gap: 3px;
+            margin: -1px 0 7px 22px;
+            padding-left: 10px;
+            border-left: 1px solid #334155;
+        }
+        .nav-subitem {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            width: 100%;
+            padding: 7px 10px;
+            border: 0;
+            border-radius: 5px;
+            background: transparent;
+            color: #94a3b8;
+            cursor: pointer;
+            font: inherit;
+            font-size: 12px;
+            text-align: left;
+        }
+        .nav-subitem:hover { background: rgba(255,255,255,.05); color: #fff; }
+        .nav-subitem.active { background: rgba(59,130,246,.22); color: #bfdbfe; }
+        .nav-subcount {
+            min-width: 24px;
+            padding: 1px 5px;
+            border-radius: 999px;
+            background: #1e293b;
+            color: #94a3b8;
+            font-size: 10px;
+            text-align: center;
+        }
+        .nav-subitem.active .nav-subcount { background: #2563eb; color: #fff; }
         .sidebar-footer {
             padding: 16px;
             border-top: 1px solid var(--border);
@@ -1119,6 +1162,66 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .touch-funnel-stage small { display: block; color: var(--text-muted); line-height: 1.6; }
         @media(max-width:1100px) { .touch-funnel-row { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
         @media(max-width:600px) { .touch-funnel-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+        .lead-pool-switcher {
+            margin: 0 0 18px;
+            padding: 16px;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            background: linear-gradient(135deg, rgba(30,41,59,.96), rgba(15,23,42,.96));
+        }
+        .lead-pool-switcher-head {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+        .lead-pool-switcher-head h3 { font-size: 15px; }
+        .lead-pool-switcher-head p { color: var(--text-muted); font-size: 12px; }
+        .lead-pool-cards {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 10px;
+        }
+        .lead-pool-card {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-height: 72px;
+            padding: 12px 14px;
+            border: 1px solid #334155;
+            border-radius: 9px;
+            background: rgba(15,23,42,.72);
+            color: var(--text-main);
+            cursor: pointer;
+            text-align: left;
+            transition: border-color .15s ease, background .15s ease, transform .15s ease;
+        }
+        .lead-pool-card:hover { border-color: #60a5fa; transform: translateY(-1px); }
+        .lead-pool-card.active {
+            border-color: #60a5fa;
+            background: rgba(37,99,235,.22);
+            box-shadow: 0 0 0 1px rgba(96,165,250,.18);
+        }
+        .lead-pool-card-icon {
+            display: grid;
+            place-items: center;
+            width: 34px;
+            height: 34px;
+            border-radius: 9px;
+            background: #1e3a8a;
+            font-size: 17px;
+        }
+        .lead-pool-card-copy { min-width: 0; }
+        .lead-pool-card-copy strong { display: block; font-size: 13px; }
+        .lead-pool-card-copy small { display: block; margin-top: 3px; color: var(--text-muted); font-size: 11px; }
+        .lead-pool-card-count { margin-left: auto; color: #bfdbfe; font-size: 22px; font-weight: 700; }
+        @media(max-width:900px) { .lead-pool-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+        @media(max-width:600px) {
+            .lead-pool-cards { grid-template-columns: 1fr; }
+            .lead-pool-switcher-head { display: block; }
+            .lead-pool-switcher-head p { margin-top: 5px; }
+        }
         .daily-funnel { margin: 0 0 24px; padding: 20px; border: 1px solid #334155; border-radius: 12px; background: #111827; overflow-x: auto; }
         .daily-funnel h3 { margin: 0 0 8px; font-size: 16px; }
         .daily-funnel p { color: var(--text-muted); font-size: 12px; }
@@ -1287,32 +1390,52 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 </div>
             </div>
             <ul class="nav-list">
+                <li class="nav-section-label">客户线索池</li>
                 <li class="nav-item" id="overseas-nav" onclick="switchPipelineMarket('overseas', this)">
-                    <span>🌐</span> <span>海外客户</span>
+                    <span>🌐</span> <span>海外客户线索池</span>
+                </li>
+                <li class="nav-sublist" id="overseas-pool-nav">
+                    <button class="nav-subitem" data-market="overseas" data-channel="email" onclick="switchEmailPoolMarket('overseas', this)">
+                        <span>✉️ 邮件组线索</span><span class="nav-subcount" id="overseas-email-count">0</span>
+                    </button>
+                    <button class="nav-subitem" data-market="overseas" data-channel="x" onclick="switchPipelineChannel('overseas', 'x', this)">
+                        <span>𝕏 X 线索</span><span class="nav-subcount" id="overseas-x-count">0</span>
+                    </button>
+                    <button class="nav-subitem" data-market="overseas" data-channel="discord" onclick="switchOverseasDiscord(this)">
+                        <span>💬 Discord 线索</span><span class="nav-subcount" id="overseas-discord-count">0</span>
+                    </button>
                 </li>
                 <li class="nav-item active" id="domestic-nav" onclick="switchPipelineMarket('domestic', this)">
-                    <span>⚡</span> <span>国内客户</span>
+                    <span>⚡</span> <span>国内客户线索池</span>
+                </li>
+                <li class="nav-sublist" id="domestic-pool-nav">
+                    <button class="nav-subitem" data-market="domestic" data-channel="email" onclick="switchEmailPoolMarket('domestic', this)">
+                        <span>✉️ 邮件组线索</span><span class="nav-subcount" id="domestic-email-count">0</span>
+                    </button>
+                    <button class="nav-subitem" data-market="domestic" data-channel="x" onclick="switchPipelineChannel('domestic', 'x', this)">
+                        <span>𝕏 X 线索</span><span class="nav-subcount" id="domestic-x-count">0</span>
+                    </button>
                 </li>
                 <li class="nav-item" id="pending-verification-nav" onclick="switchPipelineMarket('pending_verification', this)">
                     <span>🔎</span> <span>待核验线索</span>
                 </li>
-                <li class="nav-item" id="email-pool-nav" onclick="switchNav('email-pool', this)">
-                    <span>✉️</span> <span>邮件线索池</span>
+                <li class="nav-section-label">系统管理</li>
+                <li class="nav-item" id="config-nav" onclick="switchConfig('email-settings', this)">
+                    <span>⚙️</span> <span>配置</span>
                 </li>
-                <li class="nav-item" id="email-settings-nav" onclick="switchNav('email-settings', this)">
-                    <span>⚙️</span> <span>邮件发送配置</span>
-                </li>
-                <li class="nav-item" id="permissions-nav" onclick="switchNav('permissions', this)">
-                    <span>🛡️</span> <span>组织与权限管理</span>
+                <li class="nav-sublist" id="config-nav-sub">
+                    <button class="nav-subitem" id="config-email-settings-nav" onclick="switchConfig('email-settings', this)">
+                        <span>✉️ 邮件发送配置</span>
+                    </button>
+                    <button class="nav-subitem" id="config-strategy-nav" onclick="switchConfig('strategy', this)">
+                        <span>📝 筛选策略</span>
+                    </button>
+                    <button class="nav-subitem" id="permissions-nav" onclick="switchConfig('permissions', this)">
+                        <span>🛡️ 组织与权限管理</span>
+                    </button>
                 </li>
                 <li class="nav-item" id="funnel-nav" onclick="switchNav('funnel', this)">
                     <span>📊</span> <span>跟进漏斗与数据</span>
-                </li>
-                <li class="nav-item" onclick="switchNav('strategy', this)">
-                    <span>📝</span> <span>筛选策略存档</span>
-                </li>
-                <li class="nav-item" onclick="switchNav('discord', this)">
-                    <span>💬</span> <span>Discord 社群看板</span>
                 </li>
             </ul>
         </div>
@@ -1348,6 +1471,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <button class="btn-export" onclick="exportData()">📥 导出当前筛选结果 CSV</button>
                 </div>
             </header>
+            <section id="lead-pool-switcher" class="lead-pool-switcher" aria-label="线索渠道池">
+                <div class="lead-pool-switcher-head">
+                    <h3 id="lead-pool-title">国内客户线索池 · 全部渠道</h3>
+                    <p>先按市场分池，再按来源渠道进入对应的跟进队列</p>
+                </div>
+                <div id="lead-pool-cards" class="lead-pool-cards"></div>
+            </section>
 
             <div class="stats-grid">
                 <div class="stat-card">
@@ -1406,8 +1536,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <div id="view-email-pool" class="view-section">
             <header>
                 <div>
-                    <h2 class="page-title">邮件线索池</h2>
-                    <div class="email-status">与国内、海外客户池独立并列，自动读取有效邮箱。已发送客户显示“已推送”；待核验市场线索只展示、不可发送。</div>
+                    <h2 class="page-title" id="email-pool-title">邮件组线索</h2>
+                    <div class="email-status" id="email-pool-description">自动读取当前市场的有效邮箱。已发送客户显示“已推送”，不会修改原客户资料或销售阶段。</div>
                 </div>
                 <div id="email-provider-status" class="email-status">正在检查 Resend 配置…</div>
             </header>
@@ -2039,6 +2169,8 @@ Aibubu Team</textarea>
         
         // 筛选状态
         let activeCountry = 'domestic';
+        let activeLeadChannel = 'all';
+        let activeEmailMarket = null;
         const marketFilters = {};
         const pipelineFilterIds = ['tier-filter', 'type-filter', 'due-filter',
             'industry-filter', 'spend-filter', 'stage-filter', 'exclusion-filter'];
@@ -2056,6 +2188,55 @@ Aibubu Team</textarea>
         }
         function isEmailSendable(row) {
             return row.status === 'pending' && row.country_type !== 'pending_verification';
+        }
+        const LEAD_CHANNEL_META = {
+            email: {label:'邮件组线索', icon:'✉️', hint:'已录入工作邮箱，可进入邮件触达队列'},
+            x: {label:'X 线索', icon:'𝕏', hint:'有公开 X / Twitter 主页或 X 核验来源'},
+            discord: {label:'Discord 线索', icon:'💬', hint:'进入海外 Discord 社群观察看板'}
+        };
+        function leadMatchesChannel(row, channel) {
+            const source = String(row.lead_source || '').toLowerCase();
+            if (channel === 'email') return Boolean(String(row.email || '').trim());
+            if (channel === 'x') return Boolean(String(row.x_url || '').trim()) || /\\bx\\b/.test(source) || source.includes('twitter');
+            if (channel === 'discord') return source.includes('discord') || String(row.discovery_url || '').toLowerCase().includes('discord');
+            return true;
+        }
+        function leadChannelCounts(rows) {
+            return Object.fromEntries(Object.keys(LEAD_CHANNEL_META).map(channel => [
+                channel, new Set(rows.filter(row => leadMatchesChannel(row, channel)).map(row => row.company_id)).size
+            ]));
+        }
+        function renderLeadPoolNavigation() {
+            ['domestic', 'overseas'].forEach(market => {
+                const counts = leadChannelCounts(currentData.filter(row => row.country_type === market));
+                Object.keys(LEAD_CHANNEL_META).forEach(channel => {
+                    const count = document.getElementById(`${market}-${channel}-count`);
+                    if (count) count.textContent = counts[channel];
+                });
+            });
+            document.getElementById('lead-pool-switcher').hidden = activeCountry === 'pending_verification';
+            const rows = marketRows();
+            const counts = leadChannelCounts(rows);
+            const channels = Object.entries(LEAD_CHANNEL_META).filter(([channel]) =>
+                activeCountry === 'overseas' || channel !== 'discord');
+            document.getElementById('lead-pool-title').textContent =
+                `${marketLabel(activeCountry)}客户线索池 · ${activeLeadChannel === 'all' ? '全部渠道' : LEAD_CHANNEL_META[activeLeadChannel].label}`;
+            document.getElementById('lead-pool-cards').innerHTML = [
+                {channel:'all', label:'全部线索', icon:'✦', hint:'查看当前市场的全部线索'},
+                ...channels.map(([channel, meta]) => ({channel, ...meta}))
+            ].map(item => `<button class="lead-pool-card ${activeLeadChannel === item.channel ? 'active' : ''}"
+                onclick="openLeadChannel('${activeCountry}', '${item.channel}', this)">
+                <span class="lead-pool-card-icon">${item.icon}</span>
+                <span class="lead-pool-card-copy"><strong>${item.label}</strong><small>${item.hint}</small></span>
+                <span class="lead-pool-card-count">${item.channel === 'all' ? new Set(rows.map(row => row.company_id)).size : counts[item.channel]}</span>
+            </button>`).join('');
+        }
+        function highlightMarketChannel(country, channel) {
+            document.getElementById(`${country}-nav`).classList.add('active');
+            document.querySelectorAll('.nav-subitem[data-market]').forEach(button => {
+                button.classList.toggle('active',
+                    button.dataset.market === country && button.dataset.channel === channel);
+            });
         }
 
         function refreshMarketOptions() {
@@ -2080,6 +2261,7 @@ Aibubu Team</textarea>
                 sourceMode:activeSourceMode, touch:activeTouch
             };
             activeCountry = country;
+            activeLeadChannel = 'all';
             document.getElementById('country-filter').value = country;
             document.getElementById('pipeline-title').textContent =
                 {domestic:'国内客户', overseas:'海外客户', pending_verification:'待核验线索'}[country];
@@ -2102,7 +2284,47 @@ Aibubu Team</textarea>
                 renderTable();
             }
             switchNav('pipeline', elem);
+            renderLeadPoolNavigation();
             fetchStats();
+        }
+        function switchPipelineChannel(country, channel, elem) {
+            if (!['domestic', 'overseas'].includes(country) ||
+                !['all', 'x'].includes(channel)) return;
+            switchPipelineMarket(country, document.getElementById(`${country}-nav`));
+            activeLeadChannel = channel;
+            renderLeadPoolNavigation();
+            renderTable();
+            highlightMarketChannel(country, channel);
+            fetchStats();
+        }
+        function openLeadChannel(country, channel, elem) {
+            if (channel === 'email') return switchEmailPoolMarket(country, elem);
+            if (channel === 'discord' && country === 'overseas') return switchOverseasDiscord(elem);
+            switchPipelineChannel(country, channel, elem);
+        }
+        function switchEmailPoolMarket(country, elem) {
+            if (!['domestic', 'overseas'].includes(country)) return;
+            switchPipelineMarket(country, document.getElementById(`${country}-nav`));
+            activeLeadChannel = 'email';
+            activeEmailMarket = country;
+            packageSelectedIds.clear();
+            document.getElementById('email-package-preview').textContent = '';
+            const filter = document.getElementById('email-market-filter');
+            filter.value = country;
+            filter.disabled = true;
+            document.getElementById('email-pool-title').textContent = `${marketLabel(country)}客户 · 邮件组线索`;
+            document.getElementById('email-pool-description').textContent =
+                `仅展示${marketLabel(country)}客户中的有效邮箱，可在此创建线索包和执行邮件触达。历史发送记录和回复监控保留全局视图。`;
+            switchNav('email-pool', document.querySelector(`.nav-subitem[data-market="${country}"][data-channel="email"]`));
+            highlightMarketChannel(country, 'email');
+            renderEmailRecipients();
+            renderPackageCandidates();
+        }
+        function switchOverseasDiscord(elem) {
+            switchPipelineMarket('overseas', document.getElementById('overseas-nav'));
+            activeLeadChannel = 'discord';
+            switchNav('discord', document.querySelector('.nav-subitem[data-market="overseas"][data-channel="discord"]'));
+            highlightMarketChannel('overseas', 'discord');
         }
         let selectedSources = new Set(); // 多选公司来源渠道集合
         let activeSourceMode = 'include'; // 'include' (仅看所选) 或 'exclude' (排除所选/反选)
@@ -2194,8 +2416,8 @@ Aibubu Team</textarea>
 
         // 导航切换
         function switchNav(navId, elem) {
-            document.querySelectorAll('.nav-list .nav-item').forEach(el => el.classList.remove('active'));
-            elem.classList.add('active');
+            document.querySelectorAll('.nav-list .nav-item, .nav-list .nav-subitem').forEach(el => el.classList.remove('active'));
+            if (elem) elem.classList.add('active');
             
             document.querySelectorAll('.view-section').forEach(el => el.classList.remove('active'));
             document.getElementById('view-' + navId).classList.add('active');
@@ -2212,6 +2434,12 @@ Aibubu Team</textarea>
             } else if (navId === 'discord') {
                 fetchDiscordCommunities();
             }
+        }
+        function switchConfig(navId, elem) {
+            switchNav(navId, elem);
+            document.getElementById('config-nav').classList.add('active');
+            const ids = {'email-settings':'config-email-settings-nav', strategy:'config-strategy-nav', permissions:'permissions-nav'};
+            if (ids[navId]) document.getElementById(ids[navId]).classList.add('active');
         }
 
         let currentEmailProspects = [];
@@ -2289,7 +2517,7 @@ Aibubu Team</textarea>
             if(!body) return;
             const from=document.getElementById('package-date-from').value;
             const to=document.getElementById('package-date-to').value;
-            const rows=currentEmailProspects.filter(row=>isEmailSendable(row)&&
+            const rows=currentEmailProspects.filter(row=>(!activeEmailMarket||row.country_type===activeEmailMarket)&&isEmailSendable(row)&&
                 (!from||String(row.lead_created_at||'').slice(0,10)>=from)&&
                 (!to||String(row.lead_created_at||'').slice(0,10)<=to));
             const eligible=new Set(rows.map(row=>row.lead_id));
@@ -2303,7 +2531,7 @@ Aibubu Team</textarea>
         }
         function togglePackageCandidates(checked) {
             const from=document.getElementById('package-date-from').value, to=document.getElementById('package-date-to').value;
-            currentEmailProspects.filter(row=>isEmailSendable(row)&&(!from||String(row.lead_created_at||'').slice(0,10)>=from)&&(!to||String(row.lead_created_at||'').slice(0,10)<=to)).forEach(row=>checked?packageSelectedIds.add(row.lead_id):packageSelectedIds.delete(row.lead_id));
+            currentEmailProspects.filter(row=>(!activeEmailMarket||row.country_type===activeEmailMarket)&&isEmailSendable(row)&&(!from||String(row.lead_created_at||'').slice(0,10)>=from)&&(!to||String(row.lead_created_at||'').slice(0,10)<=to)).forEach(row=>checked?packageSelectedIds.add(row.lead_id):packageSelectedIds.delete(row.lead_id));
             renderPackageCandidates();
         }
         async function createEmailPackage() {
@@ -2390,7 +2618,7 @@ Aibubu Team</textarea>
             if(a.sender_id) select.value=String(a.sender_id);
         }
         function renderEmailRecipients() {
-            const market=document.getElementById('email-market-filter').value;
+            const market=activeEmailMarket||document.getElementById('email-market-filter').value;
             const status=document.getElementById('email-status-filter').value;
             const query=document.getElementById('email-search').value.trim().toLowerCase();
             const rows=currentEmailProspects.filter(row=>(!market||row.country_type===market)&&(!status||row.status===status)&&
@@ -2740,6 +2968,7 @@ Aibubu Team</textarea>
             const res = await fetch('/api/pipeline');
             currentData = await res.json();
             refreshMarketOptions();
+            renderLeadPoolNavigation();
             renderTable();
             renderFunnelView();
             await fetchStats();
@@ -2955,6 +3184,7 @@ Aibubu Team</textarea>
                 if (activeCountry !== 'all' && item.country_type !== activeCountry) {
                     return false;
                 }
+                if (activeLeadChannel === 'x' && !leadMatchesChannel(item, 'x')) return false;
                 
                 // 公司来源筛选 (支持正选'仅看'与反选'排除/不看'，且支持多选集合)
                 if (selectedSources.size > 0) {
