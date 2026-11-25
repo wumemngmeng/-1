@@ -255,6 +255,7 @@ CREATE TABLE IF NOT EXISTS leads (
     verified_at TEXT,
     verification_status TEXT DEFAULT 'pending_review',
     fit_score INTEGER DEFAULT 0,
+    market_classification TEXT CHECK(market_classification IN ('verified', 'pending_verification')),
     wechat_same_as_phone_confirmed INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -512,6 +513,7 @@ def init_db(db_path: str = DB_PATH):
         "verified_at": "TEXT",
         "verification_status": "TEXT DEFAULT 'pending_review'",
         "fit_score": "INTEGER DEFAULT 0",
+        "market_classification": "TEXT CHECK(market_classification IN ('verified', 'pending_verification'))",
         "wechat_same_as_phone_confirmed": "INTEGER DEFAULT 0",
     }
     for field, definition in lead_migrations.items():
@@ -937,7 +939,8 @@ class DatabaseManager:
                 c.name as company_name,
                 c.estimated_monthly_spend, c.spend_basis, c.discovery_url,
                 c.customer_type, c.models_used, c.qualification_evidence, c.owner, c.company_follow_up_date, c.prospect_status, c.audience_scale, c.exclusion_reason, c.previous_prospect_status, c.created_at as first_discovered,
-                CASE WHEN c.market_classification='pending_verification' THEN 'pending_verification' ELSE c.country_type END AS country_type,
+                CASE WHEN l.market_classification='pending_verification' OR c.market_classification='pending_verification'
+                     THEN 'pending_verification' ELSE c.country_type END AS country_type,
                 c.industry,
                 c.scale,
                 c.website,
@@ -1011,7 +1014,7 @@ class DatabaseManager:
         """
         params = []
         if country_type:
-            query += " AND (CASE WHEN c.market_classification='pending_verification' THEN 'pending_verification' ELSE c.country_type END) = ?"
+            query += " AND (CASE WHEN l.market_classification='pending_verification' OR c.market_classification='pending_verification' THEN 'pending_verification' ELSE c.country_type END) = ?"
             params.append(country_type)
         if status:
             query += " AND coalesce(o.status, 'pending') = ?"
