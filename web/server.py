@@ -4441,21 +4441,59 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"success": False, "error": str(error)}, status=400)
 
     def handle_feishu_mail_sync(self):
-        from core.feishu_import import FeishuImportError, FeishuMailSheetImporter
+        from core.feishu_import import (
+            FeishuImportError, FeishuMailSheetImporter, FeishuXStatusSync,
+        )
 
         try:
             importer = FeishuMailSheetImporter(self.db)
+            mail_result = importer.apply("Vercel Feishu Sync")
+            x_result = FeishuXStatusSync(self.db).apply("Vercel Feishu Sync")
             self.send_json({
                 "success": True,
-                **importer.apply("Vercel Feishu Sync"),
+                **mail_result,
+                "mail_sync": mail_result,
+                "x_sync": x_result,
             })
         except FeishuImportError as error:
             self.send_json({"success": False, "error": str(error)}, status=400)
         except Exception:
             self.send_json({
                 "success": False,
-                "error": "飞书邮件表自动同步失败，请检查服务日志",
+                "error": "飞书邮件表或 X 推送监控自动同步失败，请检查服务日志",
             }, status=502)
+
+    def handle_feishu_x_sync(self, path):
+        user = self._require_user(("admin",))
+        if not user:
+            return
+        from core.feishu_import import FeishuImportError, FeishuXStatusSync
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if not 0 < length <= 10000:
+                raise ValueError("请求内容为空或过大")
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("无效请求")
+            sync = FeishuXStatusSync(self.db)
+            if path == "/api/feishu-x-sync/preview":
+                result = sync.preview()
+            elif path == "/api/feishu-x-sync/apply":
+                if data.get("confirmation") != "SYNC FEISHU X STATUSES" or not data.get("preview_fingerprint"):
+                    raise ValueError("请先预览并确认同步 X 推送状态")
+                result = sync.apply(
+                    user.get("display_name") or user["username"],
+                    expected_fingerprint=data["preview_fingerprint"],
+                )
+            else:
+                self.send_json({"success": False, "error": "接口不存在"}, status=404)
+                return
+            self.send_json({"success": True, **{
+                key: value for key, value in result.items()
+                if key not in {"actions", "state_actions"}
+            }})
+        except (FeishuImportError, ValueError, TypeError, json.JSONDecodeError) as error:
+            self.send_json({"success": False, "error": str(error)}, status=400)
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -4712,6 +4750,9 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
             return
         if path.startswith("/api/feishu-mail-import/"):
             self.handle_feishu_mail_import(path, "POST")
+            return
+        if path.startswith("/api/feishu-x-sync/"):
+            self.handle_feishu_x_sync(path)
             return
         if path.startswith("/api/email-"):
             self.handle_email_queue(path, "POST")
