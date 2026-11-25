@@ -55,12 +55,14 @@ class NotesTests(unittest.TestCase):
         self.assertIn('id="feishu-mail-sync"', html)
         self.assertIn("/api/feishu-latest-sync/preview", html)
         self.assertIn("/api/feishu-latest-sync/apply", html)
-        self.assertIn("待核验邮箱（不可发送）", html)
+        self.assertIn("✉️ 邮件组线索", html)
+        self.assertIn("𝕏 X 线索", html)
         self.assertIn("/api/feishu-latest-sync/preview", html)
         self.assertIn("/api/feishu-latest-sync/apply", html)
         self.assertIn("同步最新数据", html)
         self.assertIn("Discord 社群及 X 推送状态", html)
-        self.assertIn("待核验邮箱（不可发送）", html)
+        self.assertIn("✉️ 邮件组线索", html)
+        self.assertIn("𝕏 X 线索", html)
         self.assertNotIn('id="feishu-mail-import-preview"', html)
         self.assertNotIn('id="feishu-mail-import-apply"', html)
         self.assertIn('id="email-status-filter"', html)
@@ -379,7 +381,10 @@ vm.runInContext(`
   const check=(condition,message)=>{if(!condition)throw Error(message);};
   currentData=[
     {company_id:1,country_type:'domestic',email:'cn@example.com'},
-    {company_id:2,country_type:'overseas',x_url:'https://x.com/founder'}
+    {company_id:2,country_type:'overseas',x_url:'https://x.com/founder'},
+    {company_id:3,country_type:'pending_verification',x_url:'https://x.com/pending'},
+    {company_id:4,country_type:'pending_verification',email:'pending@example.com'},
+    {company_id:5,country_type:'pending_verification'}
   ];
   fetchStats=()=>{};
   renderTable=()=>{visibleData=marketRows();};
@@ -387,7 +392,9 @@ vm.runInContext(`
   switchNav=(nav)=>{globalThis.destination=nav;};
   check(leadMatchesChannel({lead_source:'公开 X 主页'},'x'),'X source classification failed');
   check(!leadMatchesChannel({lead_source:'example.com'},'x'),'false X source match');
-  check(leadChannelCounts([...currentData,currentData[0]]).email===1,'duplicate company count');
+  check(leadChannelCounts([
+    ...currentData.filter(row=>row.country_type==='domestic'),currentData[0]
+  ]).email===1,'duplicate company count');
   currentEmailProspects=[
     {lead_id:1,country_type:'domestic',company_name:'国内示例',email:'cn@example.com',status:'pending'},
     {lead_id:2,country_type:'overseas',company_name:'海外示例',email:'global@example.com',status:'pending'},
@@ -415,7 +422,19 @@ vm.runInContext(`
   switchPipelineChannel('domestic','x');
   check(activeCountry==='domestic'&&activeLeadChannel==='all','domestic X route was allowed');
   switchPipelineMarket('pending_verification',document.getElementById('pending-verification-nav'));
-  check(activeLeadChannel==='all'&&document.getElementById('lead-pool-switcher').hidden,'pending market preservation');
+  check(activeLeadChannel==='all'&&!document.getElementById('lead-pool-switcher').hidden,
+    'pending market switcher hidden');
+  check(document.getElementById('pending_verification-x-count').textContent===1,
+    'pending X attribution');
+  check(document.getElementById('pending_verification-email-count').textContent===2,
+    'pending non-X attribution');
+  switchPipelineChannel('pending_verification','x');
+  check(destination==='pipeline'&&activeLeadChannel==='x','pending X route');
+  check(leadMatchesChannel(currentData[2],'x')&&!leadMatchesChannel(currentData[3],'x'),
+    'pending X attribution mixed');
+  switchPipelineChannel('pending_verification','email');
+  check(leadMatchesChannel(currentData[3],'email')&&leadMatchesChannel(currentData[4],'email')
+    &&!leadMatchesChannel(currentData[2],'email'),'pending email attribution mixed');
 `,context);
 """
         result = subprocess.run(
@@ -443,14 +462,19 @@ vm.runInContext(SCRIPT,ctx);
 vm.runInContext(`currentEmailProspects=[
  {lead_id:1,country_type:'domestic'}, {lead_id:2,country_type:'overseas'},
  {lead_id:3,country_type:'pending_verification'}]; activeCountry='pending_verification';
- currentData=[];activeLeadChannel='email';`,ctx);
+ currentData=[
+  {company_id:3,country_type:'pending_verification',x_url:'https://x.com/pending'},
+  {company_id:4,country_type:'pending_verification',email:'pending@example.com'},
+  {company_id:5,country_type:'pending_verification'}
+ ];activeLeadChannel='email';`,ctx);
 const countResult=vm.runInContext('emailContactCounts()',ctx);
 if(countResult.domestic!==1 || countResult.overseas!==1 ||
    countResult.pending_verification!==1) throw Error('email contact counts must use email contacts');
 vm.runInContext('renderLeadPoolNavigation()',ctx);
 if(elements['domestic-email-count'].textContent!==1 ||
    elements['overseas-email-count'].textContent!==1 ||
-   elements['pending_verification-email-count'].textContent!==1) throw Error('email count must count contacts');
+   elements['pending_verification-email-count'].textContent!==2 ||
+   elements['pending_verification-x-count'].textContent!==1) throw Error('pending channel attribution');
 """
         result = subprocess.run(["node", "-e", harness.replace("SCRIPT", json.dumps(script))],
                                 capture_output=True, text=True, timeout=30)
@@ -462,6 +486,14 @@ if(elements['domestic-email-count'].textContent!==1 ||
         self.assertIn('id="domestic-nav"', html)
         self.assertIn('id="overseas-nav"', html)
         self.assertIn('id="pending-verification-nav"', html)
+        self.assertIn('<li class="nav-item active" id="overseas-nav"', html)
+        self.assertIn('<li class="nav-item" id="domestic-nav"', html)
+        self.assertIn("let activeCountry = 'overseas';", html)
+        self.assertIn('id="pipeline-title">海外客户</h2>', html)
+        self.assertIn('id="lead-pool-title">海外客户线索池 · 全部渠道</h3>', html)
+        self.assertIn('id="pending_verification-x-count"', html)
+        self.assertIn("switchPipelineChannel('pending_verification', 'email'", html)
+        self.assertIn("switchPipelineChannel('pending_verification', 'x'", html)
         self.assertIn("pending_verification:'待核验'", html)
         self.assertIn("row.country_type !== 'pending_verification'", html)
         self.assertLess(html.index('id="overseas-nav"'), html.index('id="domestic-nav"'))
@@ -512,6 +544,7 @@ vm.runInContext(SCRIPT,context);
       {company_id:1,country_type:'domestic',source_channel:'国内渠道',industry:'国内行业'},
       {company_id:2,country_type:'overseas',source_channel:'海外渠道',industry:'海外行业'}
     ];
+    activeCountry='domestic';
     renderTable=()=>{visibleData=marketRows();};
     renderLeadSourceCapsules=()=>{};
     const realFetchStats=fetchStats;
