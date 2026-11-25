@@ -667,29 +667,91 @@ class FeishuXStatusSync:
                 "source_status": str(row.get("推送状态") or "").strip(),
                 "source_date": str(row.get("推送日期") or "").strip(),
                 "x_account": str(row.get("X账号") or "").strip(),
+                "channel": str(row.get("渠道") or "").strip(),
             })
         return records
 
     @staticmethod
-    def normalize_x_identity(value):
+    def normalize_identity(value, channel="x_dm"):
         raw = str(value or "").strip()
         if not raw:
             return ""
         if "://" not in raw:
-            raw = ("https://" + raw if re.match(r"^(www\.)?(x|twitter)\.com/", raw, re.I)
-                   else "https://x.com/" + raw.lstrip("@"))
+            if re.match(r"^(www\.)?(x|twitter|linkedin)\.com/", raw, re.I):
+                raw = "https://" + raw
+            else:
+                host = "linkedin.com/in/" if channel == "linkedin_inmail" else "x.com/"
+                raw = "https://" + host + raw.lstrip("@")
         try:
             parsed = urlsplit(raw)
             host = (parsed.hostname or "").casefold().removeprefix("www.")
         except ValueError:
             return ""
+        allowed_hosts = (
+            {"linkedin.com"} if channel == "linkedin_inmail"
+            else {"x.com", "twitter.com"}
+        )
         if (parsed.scheme not in {"https", "http"} or parsed.username or parsed.password
-                or host not in {"x.com", "twitter.com"}):
+                or host not in allowed_hosts):
             return ""
-        handle = parsed.path.strip("/").split("/", 1)[0].casefold()
+        path = parsed.path.strip("/").split("/")
+        if channel == "linkedin_inmail":
+            if len(path) < 2 or path[0].casefold() not in {"in", "pub"}:
+                return ""
+            handle = "/".join(path[:2]).casefold()
+            return handle if re.fullmatch(r"(in|pub)/[a-z0-9-]{2,100}", handle) else ""
+        handle = path[0].casefold() if path else ""
         if not re.fullmatch(r"[a-z0-9_]{1,15}", handle):
             return ""
         return "" if handle in {"home", "explore", "search", "i", "intent", "messages", "settings"} else handle
+
+    @staticmethod
+    def normalize_x_identity(value):
+        return FeishuXStatusSync.normalize_identity(value, "x_dm")
+
+    @staticmethod
+    def company_matches(source, company):
+        source_name = normalize_company_name(source.get("company_name"))
+        target_name = normalize_company_name(company.get("company_name"))
+        source_domain = normalize_domain(source.get("website"))
+        target_domain = normalize_domain(company.get("website"))
+        shared_hosts = {"calendly.com", "linktr.ee", "youtube.com", "youtu.be",
+                        "notion.site", "linkedin.com", "x.com", "twitter.com"}
+        same_name = bool(source_name and source_name == target_name)
+        same_domain = bool(source_domain and target_domain
+                           and source_domain not in shared_hosts
+                           and target_domain not in shared_hosts
+                           and source_domain == target_domain)
+        conflicting_domain = bool(source_domain and target_domain
+                                  and source_domain not in shared_hosts
+                                  and target_domain not in shared_hosts
+                                  and source_domain != target_domain)
+        return (same_name or same_domain) and not conflicting_domain
+
+    @staticmethod
+    def importable_company_name(value):
+        text = str(value or "").strip()
+        if not text:
+            return False
+        folded = text.casefold()
+        if normalize_company_name(text) in {
+            "freelance", "independent", "personalbrand", "creator", "individual",
+        }:
+            return False
+        return not any(marker.casefold() in folded for marker in (
+            "未具名", "个人品牌", "某DTC", "某健康", "某8位数", "某9位数",
+            "旗下3个", "旗下多个", "旗下DTC", "anonymous", "unidentified",
+            "unknown brand",
+        ))
+
+    @staticmethod
+    def verified_website_candidate(value):
+        raw = str(value or "").strip()
+        domain = normalize_domain(raw)
+        return bool(domain and domain not in {
+            "calendly.com", "linktr.ee", "youtube.com", "youtu.be",
+            "linkedin.com", "x.com", "twitter.com", "notion.site",
+        })
 
     def plan(self, records, cursor=None):
         conn = self.db.connection() if hasattr(self.db, "connection") else None
@@ -700,24 +762,36 @@ class FeishuXStatusSync:
             conn = get_connection(self.db.db_path)
         try:
             cursor = cursor or conn.cursor()
+            companies = [dict(row) for row in cursor.execute(
+                "SELECT id AS company_id,name AS company_name,website FROM companies"
+            ).fetchall()]
+            all_leads = [dict(row) for row in cursor.execute(
+                "SELECT id AS lead_id,company_id,contact_name,x_url,linkedin_url FROM leads"
+            ).fetchall()]
             leads = defaultdict(list)
             for row in cursor.execute(
-                """SELECT l.id AS lead_id,l.company_id,l.x_url,c.name AS company_name,
-                          c.website,country_type
+                """SELECT l.id AS lead_id,l.company_id,l.x_url,l.linkedin_url,
+                          l.contact_name,c.name AS company_name,c.website,country_type
                    FROM leads l JOIN companies c ON c.id=l.company_id
-                   WHERE trim(coalesce(l.x_url,''))<>''"""
+                   WHERE trim(coalesce(l.x_url,''))<>'' OR trim(coalesce(l.linkedin_url,''))<>''"""
             ).fetchall():
-                identity = self.normalize_x_identity(row["x_url"])
-                if identity:
-                    leads[identity].append(dict(row))
+                lead = dict(row)
+                x_identity = self.normalize_identity(lead.get("x_url"), "x_dm")
+                linkedin_identity = self.normalize_identity(
+                    lead.get("linkedin_url"), "linkedin_inmail"
+                )
+                if x_identity:
+                    leads[("x_dm", x_identity)].append(lead)
+                if linkedin_identity:
+                    leads[("linkedin_inmail", linkedin_identity)].append(lead)
             latest = {}
             for row in cursor.execute(
                 """SELECT r.* FROM outreach_records r
-                   WHERE r.channel='x_dm' AND r.id=(
+                   WHERE r.channel IN ('x_dm','linkedin_inmail') AND r.id=(
                        SELECT max(r2.id) FROM outreach_records r2
-                       WHERE r2.lead_id=r.lead_id AND r2.channel='x_dm')"""
+                       WHERE r2.lead_id=r.lead_id AND r2.channel=r.channel)"""
             ).fetchall():
-                latest[row["lead_id"]] = dict(row)
+                latest[(row["lead_id"], row["channel"])] = dict(row)
             latest_any = {}
             for row in cursor.execute(
                 """SELECT r.* FROM outreach_records r
@@ -739,14 +813,22 @@ class FeishuXStatusSync:
             if conn:
                 conn.close()
 
-        conflicts, actions, state_actions, counts = [], [], [], defaultdict(int)
+        conflicts, actions, state_actions, imports, counts = [], [], [], [], defaultdict(int)
         grouped = defaultdict(list)
         for record in records:
             status = str(record.get("source_status") or "").strip()
-            identity = self.normalize_x_identity(
-                record.get("x_url") or record.get("x_account")
+            source_channel = (
+                "linkedin_inmail"
+                if "linkedin" in str(record.get("channel") or "").casefold()
+                or "linkedin.com/" in str(record.get("x_url") or "").casefold()
+                else "x_dm"
             )
-            account = self.normalize_x_identity(record.get("x_account"))
+            identity = self.normalize_identity(
+                record.get("x_url") or record.get("x_account"), source_channel
+            )
+            account = self.normalize_identity(
+                record.get("x_account"), source_channel
+            ) if record.get("x_account") else identity
             if record.get("x_url") and record.get("x_account") and identity != account:
                 conflicts.append({"row": record.get("sheet_row"),
                                   "company": record.get("company_name") or "",
@@ -765,9 +847,9 @@ class FeishuXStatusSync:
                                   "reason": "缺少有效 X 链接/账号，未同步"})
                 counts["malformed"] += 1
                 continue
-            grouped[identity].append(record)
+            grouped[(source_channel, identity)].append(record)
 
-        for identity, source_rows in grouped.items():
+        for (source_channel, identity), source_rows in grouped.items():
             statuses = {row.get("source_status", "").strip() for row in source_rows}
             source_companies = {
                 normalize_company_name(row.get("company_name")) for row in source_rows
@@ -781,23 +863,53 @@ class FeishuXStatusSync:
                     or len(source_domains) > 1 or len(source_dates) > 1):
                 conflicts.append({"row": source_rows[0].get("sheet_row"),
                                   "company": source_rows[0].get("company_name") or "",
-                                  "reason": "同一 X 账号在飞书表出现多个状态或公司归属，未同步"})
+                                  "reason": "同一社媒账号在飞书表出现多个状态或公司归属，未同步"})
                 counts["conflicts"] += 1
                 continue
-            matches = leads.get(identity, [])
+            matches = leads.get((source_channel, identity), [])
+            source = source_rows[0]
             if not matches:
+                company_matches = [company for company in companies
+                                   if self.company_matches(source, company)]
+                if (self.importable_company_name(source.get("company_name"))
+                        and source.get("contact_name")
+                        and len(company_matches) <= 1):
+                    company = company_matches[0] if company_matches else None
+                    same_name_leads = [lead for lead in all_leads
+                                       if company and lead["company_id"] == company["company_id"]
+                                       and normalize_company_name(lead["contact_name"])
+                                       == normalize_company_name(source["contact_name"])]
+                    field = "linkedin_url" if source_channel == "linkedin_inmail" else "x_url"
+                    if len(same_name_leads) <= 1 and not any(
+                        str(lead.get(field) or "").strip() for lead in same_name_leads
+                    ):
+                        imports.append({
+                            "source": source, "channel": source_channel, "identity": identity,
+                            "company_id": company["company_id"] if company else None,
+                            "lead_id": same_name_leads[0]["lead_id"] if same_name_leads else None,
+                        })
+                        counts["importable"] += len(source_rows)
+                        continue
                 conflicts.append({"row": source_rows[0].get("sheet_row"),
                                   "company": source_rows[0].get("company_name") or "",
-                                  "reason": "CRM 中未找到该 X 账号"})
+                                  "reason": "CRM 中未找到唯一可归属的社媒联系人"})
                 counts["unmatched"] += 1
                 continue
             if len(matches) != 1:
-                conflicts.append({"row": source_rows[0].get("sheet_row"),
-                                  "company": source_rows[0].get("company_name") or "",
-                                  "reason": "X 账号命中多个 CRM 线索"})
-                counts["conflicts"] += 1
-                continue
-            source = source_rows[0]
+                narrowed = [lead for lead in matches if self.company_matches(source, lead)]
+                if len(narrowed) > 1:
+                    named = [lead for lead in narrowed
+                             if normalize_company_name(lead.get("contact_name"))
+                             == normalize_company_name(source.get("contact_name"))]
+                    if len(named) == 1:
+                        narrowed = named
+                if len(narrowed) != 1:
+                    conflicts.append({"row": source_rows[0].get("sheet_row"),
+                                      "company": source_rows[0].get("company_name") or "",
+                                      "reason": "X 账号命中多个 CRM 线索"})
+                    counts["conflicts"] += 1
+                    continue
+                matches = narrowed
             lead = matches[0]
             source_company = normalize_company_name(source.get("company_name"))
             crm_company = normalize_company_name(lead.get("company_name"))
@@ -823,18 +935,18 @@ class FeishuXStatusSync:
             desired = self.STATUS_MAP[source["source_status"].strip()]
             counts["matched"] += len(source_rows)
             state = {
-                "identity": identity, "lead_id": lead["lead_id"],
+                "identity": f"{source_channel}:{identity}", "lead_id": lead["lead_id"],
                 "source_status": source["source_status"].strip(),
                 "source_date": source.get("source_date") or "",
                 "sheet_row": source.get("sheet_row"),
             }
-            previous_state = source_states.get(identity)
+            previous_state = source_states.get(state["identity"])
             if not previous_state or any(previous_state.get(key) != value for key, value in state.items()):
                 state_actions.append(state)
-            current = latest.get(lead["lead_id"])
+            current = latest.get((lead["lead_id"], source_channel))
             current_status = current.get("status") if current else "pending"
             active_any = latest_any.get(lead["lead_id"])
-            if active_any and active_any.get("channel") != "x_dm" and (
+            if active_any and active_any.get("channel") != source_channel and (
                 active_any.get("status") in self.ADVANCED_STAGES | {"lost"}
             ):
                 counts["preserved"] += 1
@@ -856,6 +968,7 @@ class FeishuXStatusSync:
                 continue
             action = {
                 "lead_id": lead["lead_id"], "previous_id": current.get("id") if current else None,
+                "channel": source_channel,
                 "previous_status": current_status, "status": desired,
                 "source_status": source["source_status"].strip(),
                 "source_date": source.get("source_date") or "",
@@ -867,6 +980,7 @@ class FeishuXStatusSync:
             counts[f"update_{desired}" if current else f"create_{desired}"] += 1
         result = {
             "total_rows": len(records), "matched_actions": len(actions),
+            "importable_rows": counts["importable"], "imports": imports,
             "matched_rows": counts["matched"], "source_updates": len(state_actions),
             "create_sample_sent": counts["create_sample_sent"],
             "create_contacted": counts["create_contacted"],
@@ -900,6 +1014,49 @@ class FeishuXStatusSync:
             plan = self.plan(records, cursor=cursor)
             if expected_fingerprint and expected_fingerprint != plan["fingerprint"]:
                 raise FeishuImportError("飞书表或CRM数据在预览后发生变化，请重新预览再同步")
+            created_companies = created_contacts = linked_contacts = 0
+            for entry in plan["imports"]:
+                source = entry["source"]
+                company_id = entry["company_id"]
+                if not company_id:
+                    cursor.execute(
+                        """INSERT OR IGNORE INTO companies
+                           (name,country_type,market_classification,industry,website,source_channel,notes)
+                           VALUES (?,'overseas','pending_verification','待核验',?,'飞书X推送监控',?)""",
+                        (source["company_name"],
+                         source.get("website") if self.verified_website_candidate(source.get("website")) else "",
+                         "飞书原始公司描述，未经独立核验；市场与身份待核验。"),
+                    )
+                    created_companies += int(cursor.execute(
+                        "SELECT changes() AS count"
+                    ).fetchone()["count"])
+                    company_id = cursor.execute(
+                        "SELECT id FROM companies WHERE name=?", (source["company_name"],)
+                    ).fetchone()["id"]
+                field = "linkedin_url" if entry["channel"] == "linkedin_inmail" else "x_url"
+                url = ("https://www.linkedin.com/" + entry["identity"]
+                       if field == "linkedin_url" else "https://x.com/" + entry["identity"])
+                if entry["lead_id"]:
+                    cursor.execute(
+                        f"""UPDATE leads SET {field}=?,updated_at=CURRENT_TIMESTAMP
+                            WHERE id=? AND trim(coalesce({field},''))=''""",
+                        (url, entry["lead_id"]),
+                    )
+                    linked_contacts += int(cursor.execute(
+                        "SELECT changes() AS count"
+                    ).fetchone()["count"])
+                else:
+                    cursor.execute(
+                        f"""INSERT INTO leads(company_id,contact_name,job_title,{field},
+                           source_method,verification_status,identity_source_url,identity_evidence)
+                           VALUES (?,?,?,?,?,'pending_review',?,?)""",
+                        (company_id, source["contact_name"], source.get("job_title") or "",
+                         url, "飞书X推送监控", url,
+                         "飞书源表联系人记录，未经独立核验；不推断邮箱或其他联系方式。"),
+                    )
+                    created_contacts += 1
+            if plan["imports"]:
+                plan = self.plan(records, cursor=cursor)
             cursor.execute(
                 """CREATE TABLE IF NOT EXISTS feishu_x_states (
                    spreadsheet_token TEXT NOT NULL, sheet_id TEXT NOT NULL,
@@ -909,7 +1066,9 @@ class FeishuXStatusSync:
                    PRIMARY KEY(spreadsheet_token,sheet_id,identity))"""
             )
             result = {key: value for key, value in plan.items()
-                      if key not in {"actions", "state_actions"}}
+                      if key not in {"actions", "state_actions", "imports"}}
+            result.update(created_companies=created_companies, created_contacts=created_contacts,
+                          linked_contacts=linked_contacts)
             result["created_outreach_records"] = 0
             result["updated_outreach_records"] = 0
             for state in plan["state_actions"]:
@@ -926,23 +1085,64 @@ class FeishuXStatusSync:
             for action in plan["actions"]:
                 source_date = action["source_date"] or "未填写"
                 note = (
-                    f"飞书 X 推送监控：源表状态「{action['source_status']}」；"
+                    f"飞书社媒推送监控（{action['channel']}）：源表状态「{action['source_status']}」；"
                     f"源表日期：{source_date}。历史状态同步，记录创建时间为同步时间；"
                     "未触发任何私信或邮件发送。"
                 )
                 cursor.execute(
                     """INSERT INTO outreach_records
                        (lead_id,channel,status,interaction_notes)
-                       SELECT ?,'x_dm',?,?
+                       SELECT ?,?,?,?
                        WHERE coalesce((SELECT max(id) FROM outreach_records
                                        WHERE lead_id=?),0)=?""",
-                    (action["lead_id"], action["status"], note, action["lead_id"],
+                    (action["lead_id"], action["channel"], action["status"], note, action["lead_id"],
                      action["previous_latest_id"]),
                 )
                 changed = int(cursor.execute("SELECT changes() AS count").fetchone()["count"])
                 result["created_outreach_records"] += changed
                 if not changed:
                     raise FeishuImportError("CRM 触达记录在同步时发生变化，请重新预览")
+            cursor.execute(
+                """CREATE TABLE IF NOT EXISTS feishu_x_source_rows (
+                   spreadsheet_token TEXT NOT NULL,sheet_id TEXT NOT NULL,
+                   sheet_row INTEGER NOT NULL,lead_id INTEGER,
+                   source_status TEXT NOT NULL,source_date TEXT NOT NULL,
+                   source_channel TEXT NOT NULL,payload TEXT NOT NULL,
+                   resolution TEXT NOT NULL,synced_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                   PRIMARY KEY(spreadsheet_token,sheet_id,sheet_row))"""
+            )
+            states = {row["identity"]: dict(row) for row in cursor.execute(
+                "SELECT * FROM feishu_x_states WHERE spreadsheet_token=? AND sheet_id=?",
+                (self.spreadsheet_token, self.sheet_id),
+            ).fetchall()}
+            issues = {item["row"]: item["reason"] for item in plan["conflicts"]}
+            rows = []
+            for source in records:
+                channel = ("linkedin_inmail" if "linkedin" in str(source.get("channel") or "").casefold()
+                           or "linkedin.com/" in str(source.get("x_url") or "").casefold()
+                           else "x_dm")
+                identity = self.normalize_identity(
+                    source.get("x_url") or source.get("x_account"), channel
+                )
+                state = states.get(f"{channel}:{identity}")
+                reason = issues.get(source["sheet_row"])
+                lead_id = state["lead_id"] if state and not reason else None
+                rows.append((self.spreadsheet_token, self.sheet_id, source["sheet_row"],
+                             lead_id, source.get("source_status") or "",
+                             source.get("source_date") or "", channel,
+                             json.dumps(source, ensure_ascii=False, sort_keys=True),
+                             reason or "已同步"))
+            cursor.executemany(
+                """INSERT INTO feishu_x_source_rows
+                   (spreadsheet_token,sheet_id,sheet_row,lead_id,source_status,source_date,
+                    source_channel,payload,resolution) VALUES (?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(spreadsheet_token,sheet_id,sheet_row) DO UPDATE SET
+                   lead_id=excluded.lead_id,source_status=excluded.source_status,
+                   source_date=excluded.source_date,source_channel=excluded.source_channel,
+                   payload=excluded.payload,resolution=excluded.resolution,
+                   synced_at=CURRENT_TIMESTAMP""", rows,
+            )
+            result["archived_source_rows"] = len(rows)
             conn.commit()
         except Exception:
             rollback = getattr(conn, "rollback", None)
