@@ -309,7 +309,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             justify-content: space-between;
             flex-shrink: 0;
         }
-        aside > div:first-child { min-height: 0; overflow-y: auto; }
         .brand {
             padding: 20px 18px;
             border-bottom: 1px solid var(--border);
@@ -1333,16 +1332,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .email-status { color:var(--text-muted); font-size:12px; }
         .email-preview { white-space:pre-wrap; background:#0f172a; border:1px solid #334155; border-radius:7px; padding:10px; margin-top:8px; font-size:12px; }
         .email-table input[type=checkbox] { width:auto; }
-        .mail-workspace { display:grid; grid-template-columns:minmax(280px,.72fr) minmax(480px,1.28fr); gap:16px; align-items:start; }
-        .mail-batch-list { display:grid; gap:9px; margin-top:12px; }
-        .mail-batch-card { width:100%; padding:13px; border:1px solid var(--border); border-radius:8px; background:#0f172a; color:var(--text-main); text-align:left; cursor:pointer; }
-        .mail-batch-card:hover, .mail-batch-card.active { border-color:var(--primary); background:rgba(37,99,235,.14); }
-        .mail-batch-card-head { display:flex; justify-content:space-between; gap:12px; margin-bottom:6px; }
-        .mail-batch-card small { display:block; color:var(--text-muted); line-height:1.55; }
-        .mail-batch-detail[hidden] { display:none; }
-        .mail-batch-summary { display:flex; flex-wrap:wrap; gap:8px 18px; margin:10px 0 14px; color:var(--text-muted); font-size:12px; }
-        .mail-batch-empty { padding:32px 16px; color:var(--text-muted); text-align:center; }
-        @media(max-width:980px) { .mail-workspace { grid-template-columns:1fr; } }
         .email-configured { color:#34d399; }
         .email-unconfigured { color:#fbbf24; }
         .email-config-savebar {
@@ -1423,13 +1412,17 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <button class="nav-subitem" data-market="domestic" data-channel="email" onclick="switchEmailPoolMarket('domestic', this)">
                         <span>✉️ 邮件组线索</span><span class="nav-subcount" id="domestic-email-count">0</span>
                     </button>
+                    <button class="nav-subitem" data-market="domestic" data-channel="x" onclick="switchPipelineChannel('domestic', 'x', this)">
+                        <span>𝕏 X 线索</span><span class="nav-subcount" id="domestic-x-count">0</span>
+                    </button>
                 </li>
                 <li class="nav-item" id="pending-verification-nav" onclick="switchPipelineMarket('pending_verification', this)">
                     <span>🔎</span> <span>待核验线索</span>
                 </li>
-                <li class="nav-section-label">邮件运营</li>
-                <li class="nav-item" id="email-send-nav" onclick="switchNav('email-send', this)">
-                    <span>🚀</span> <span>邮件发送</span>
+                <li class="nav-sublist" id="pending-verification-pool-nav">
+                    <button class="nav-subitem" data-market="pending_verification" data-channel="email" onclick="switchEmailPoolMarket('pending_verification', this)">
+                        <span>✉️ 邮件组线索</span><span class="nav-subcount" id="pending_verification-email-count">0</span>
+                    </button>
                 </li>
                 <li class="nav-section-label">系统管理</li>
                 <li class="nav-item" id="config-nav" onclick="switchConfig('email-settings', this)">
@@ -1444,9 +1437,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     </button>
                     <button class="nav-subitem" id="permissions-nav" onclick="switchConfig('permissions', this)">
                         <span>🛡️ 组织与权限管理</span>
-                    </button>
-                    <button class="nav-subitem" id="config-admin-account-nav" onclick="switchConfig('admin-account', this)">
-                        <span>🔐 管理员账号与密码</span>
                     </button>
                 </li>
                 <li class="nav-item" id="funnel-nav" onclick="switchNav('funnel', this)">
@@ -1559,90 +1549,87 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <header>
                 <div>
                     <h2 class="page-title" id="email-pool-title">邮件组线索</h2>
-                    <div class="email-status" id="email-pool-description">这里只管理邮箱线索与发送批次人选，不在此页面执行邮件发送。</div>
+                    <div class="email-status" id="email-pool-description">自动读取当前市场的有效邮箱。已发送客户显示“已推送”，不会修改原客户资料或销售阶段。</div>
                 </div>
+                <div id="email-provider-status" class="email-status">正在检查 Resend 配置…</div>
             </header>
             <section id="feishu-mail-import-panel" class="email-panel" hidden style="margin:16px 0">
-                <h3>飞书数据同步</h3>
-                <p class="email-status">点击后检测飞书邮件表的最新数据并同步到 CRM。已有企业只补充空字段，邮箱去重，已有销售阶段不会回退，也不会发送邮件。</p>
-                <button id="feishu-mail-sync" onclick="syncLatestFeishuMailData()">同步最新数据</button>
+                <h3>同步飞书邮件表到 CRM</h3>
+                <p class="email-status">按公司名称或官网域名匹配企业；已有公司只补空字段。有效邮箱按地址去重，冲突行跳过并列出原因。导入只写 CRM，不会发送邮件。</p>
+                <button id="feishu-mail-import-preview" onclick="previewFeishuMailImport()">检查飞书表并预览</button>
                 <span id="feishu-mail-import-status" class="email-status"></span>
                 <div id="feishu-mail-import-summary" class="email-status" aria-live="polite"></div>
+                <div id="feishu-mail-import-conflicts"></div>
+                <button id="feishu-mail-import-apply" onclick="applyFeishuMailImport()" hidden disabled>确认导入可导入线索</button>
             </section>
+            <div>
+                <section class="email-panel">
+                    <h3>编写、预览并发送</h3>
+                    <label for="email-sender">本批发件邮箱</label><select id="email-sender" onchange="updateMailSenderStatus()"></select>
+                    <div class="email-status">变量：<code>{{name}}</code>、<code>{{company}}</code>、<code>{{email}}</code></div>
+                    <label for="email-subject">邮件标题</label>
+                    <input id="email-subject" value="{{company}} × Aibubu：更高效的 AI 图片与视频工作流">
+                    <label for="email-body">邮件正文</label>
+                    <textarea id="email-body" rows="10">Hi {{name}},
+
+I’m reaching out from Aibubu. We provide an AI workspace and API for creating product images and short videos at scale.
+
+I’d love to learn how {{company}} currently produces visual content and see whether a small test would be useful.
+
+Best,
+Aibubu Team</textarea>
+                    <div class="email-actions">
+                        <button onclick="previewSelectedEmails()">预览所选邮件</button>
+                        <button class="btn-save" id="email-send-btn" onclick="sendSelectedEmails()">一键发送所选</button>
+                        <span id="email-selection-count" class="email-status">已选择 0 人</span>
+                    </div>
+                    <div id="email-preview-list"></div>
+                    <div id="email-send-result" class="email-status"></div>
+                </section>
+            </div>
             <section class="email-panel" style="margin-top:16px">
-                <h3>邮箱线索与批次人选</h3>
-                <p class="email-status">按线索入库日期筛选联系人并保存批次人选。保存不会发送邮件；标题、正文、发件邮箱和发送操作统一在左侧“邮件发送”页面完成。</p>
+                <h3>创建邮件推送包</h3>
+                <p class="email-status">按线索入库日期筛选后，批量选择或逐条勾选联系人。包创建后可按该包预览并发送。</p>
                 <div class="filter-grid">
-                    <label>市场<select id="email-market-filter" onchange="renderEmailRecipients()"><option value="">全部市场</option><option value="domestic">国内</option><option value="overseas">海外</option><option value="pending_verification">待核验</option></select></label>
-                    <label>邮件状态<select id="email-status-filter" onchange="renderEmailRecipients()"><option value="pending">未发送</option><option value="sent">已发送</option><option value="sending">发送中 / 待核实</option><option value="unsubscribed">已退订</option><option value="removed">已移除</option><option value="email_changed">邮箱变更待核实</option><option value="">全部</option></select></label>
-                    <label>公司 / 姓名 / 邮箱<input id="email-search" oninput="renderEmailRecipients()" placeholder="搜索客户"></label>
                     <label>入库日期从<input type="date" id="package-date-from" onchange="renderPackageCandidates()"></label>
                     <label>入库日期至<input type="date" id="package-date-to" onchange="renderPackageCandidates()"></label>
                     <button onclick="togglePackageCandidates(true)">全选当前筛选</button>
                     <button onclick="togglePackageCandidates(false)">取消全选</button>
-                    <button onclick="fetchEmailProspects()">刷新线索</button>
                 </div>
-                <div id="email-recipient-count" class="email-status"></div>
                 <div id="package-candidate-count" class="email-status"></div>
                 <div class="table-container"><table class="email-table">
-                    <thead><tr><th>选择</th><th>入库日期</th><th>企业 / 市场</th><th>联系人</th><th>邮箱</th><th>状态</th><th>最近发送</th><th>最近发件邮箱</th><th>操作</th></tr></thead>
-                    <tbody id="email-prospect-body"></tbody>
+                    <thead><tr><th>选择</th><th>入库日期</th><th>联系人</th><th>公司</th><th>邮箱</th><th>状态</th></tr></thead>
+                    <tbody id="package-candidate-body"></tbody>
                 </table></div>
-                <label for="email-package-title">批次名称</label>
+                <label for="email-package-title">推送包名称</label>
                 <input id="email-package-title" maxlength="120" placeholder="例如：AI 视频工具创始人首轮联系">
                 <div class="email-actions">
-                    <button id="email-package-create" onclick="createEmailPackage()">保存发送批次草稿</button>
-                    <button onclick="switchNav('email-send', document.getElementById('email-send-nav'))">打开邮件发送页面</button>
+                    <button id="email-package-create" onclick="createEmailPackage()">创建推送包（仅保存草稿）</button>
                     <span id="email-package-result" class="email-status"></span>
                 </div>
+                <div id="email-package-list" class="email-status"></div>
+                <div id="email-package-preview"></div>
             </section>
-        </div>
-
-        <div id="view-email-send" class="view-section">
-            <header>
-                <div>
-                    <h2 class="page-title">邮件发送</h2>
-                    <div class="email-status">独立管理发送批次、邮件内容和发送记录。点击批次可查看该次发送涉及的企业与邮箱。</div>
+            <section class="email-panel" style="margin-top:16px">
+                <h3>邮箱客户线索</h3>
+                <div class="filter-grid">
+                    <label>市场<select id="email-market-filter" onchange="renderEmailRecipients()"><option value="">全部市场</option><option value="domestic">国内</option><option value="overseas">海外</option><option value="pending_verification">待核验</option></select></label>
+                    <label>推送状态<select id="email-status-filter" onchange="renderEmailRecipients()"><option value="pending">未推送（可发送）</option><option value="sent">已推送</option><option value="sending">发送中 / 待核实</option><option value="unsubscribed">已退订</option><option value="removed">已移除</option><option value="email_changed">邮箱变更待核实</option><option value="">全部</option></select></label>
+                    <label>公司 / 姓名 / 邮箱<input id="email-search" oninput="renderEmailRecipients()" placeholder="搜索客户"></label>
+                    <button onclick="fetchEmailProspects()">刷新客户及发送状态</button>
                 </div>
-                <div id="email-provider-status" class="email-status">正在检查发件配置…</div>
-            </header>
-            <div class="mail-workspace">
-                <section class="email-panel">
-                    <div style="display:flex;justify-content:space-between;gap:12px;align-items:center">
-                        <h3 style="margin:0">发送批次</h3>
-                        <button onclick="fetchEmailProspects()">刷新</button>
-                    </div>
-                    <div class="filter-grid" style="margin-top:12px">
-                        <label>状态<select id="email-batch-filter" onchange="renderEmailBatches()"><option value="">全部</option><option value="draft">草稿</option><option value="sending">发送中 / 待核实</option><option value="sent">已发送</option></select></label>
-                    </div>
-                    <div id="email-batch-list" class="mail-batch-list"></div>
-                </section>
-                <section class="email-panel">
-                    <div id="email-batch-empty" class="mail-batch-empty">从左侧选择一个发送批次查看详情</div>
-                    <div id="email-batch-detail" class="mail-batch-detail" hidden>
-                        <h3 id="email-batch-title"></h3>
-                        <div id="email-batch-summary" class="mail-batch-summary"></div>
-                        <div id="email-batch-editor">
-                            <label for="email-batch-sender">发件邮箱</label><select id="email-batch-sender" onchange="updateMailSenderStatus()"></select>
-                            <div class="email-status">变量：<code>{{name}}</code>、<code>{{company}}</code>、<code>{{email}}</code></div>
-                            <label for="email-subject">邮件标题</label>
-                            <input id="email-subject">
-                            <label for="email-body">邮件正文</label>
-                            <textarea id="email-body" rows="10"></textarea>
-                            <div class="email-actions">
-                                <button onclick="previewEmailPackage(activeMailBatchId)">预览批次邮件</button>
-                                <button class="btn-save" id="email-send-btn" onclick="sendEmailPackage(activeMailBatchId)">发送当前批次</button>
-                            </div>
-                            <div id="email-package-preview"></div>
-                        </div>
-                        <div class="table-container" style="margin-top:16px"><table class="email-table">
-                            <thead><tr><th>企业</th><th>联系人</th><th>邮箱</th><th>市场</th><th>发送状态</th><th>时间</th></tr></thead>
-                            <tbody id="email-batch-recipient-body"></tbody>
-                        </table></div>
-                    </div>
-                    <div id="email-send-result" class="email-status" role="status" aria-live="polite"></div>
-                </section>
+                <div id="email-recipient-count" class="email-status"></div>
+            </section>
+            <div class="table-container" style="margin-top:16px">
+                <table class="email-table">
+                    <thead><tr>
+                        <th><input type="checkbox" id="email-select-all" onchange="toggleAllEmailProspects(this.checked)"></th>
+                        <th>邮箱</th><th>姓名</th><th>公司 / 市场</th><th>推送状态</th><th>最近发送</th><th>最近发件邮箱</th><th>操作</th>
+                    </tr></thead>
+                    <tbody id="email-prospect-body"></tbody>
+                </table>
             </div>
+            <section class="email-panel" style="margin-top:16px"><h3>独立发送记录（最近 500 条）</h3><div id="email-history"></div></section>
             <section class="email-panel" style="margin-top:16px">
                 <h3>客户邮件回复监控 <span id="email-reply-unread" class="badge"></span></h3>
                 <p class="email-status">每 15 分钟以只读 IMAP 检查收件箱，只记录与 CRM 已发送联系人匹配的人工回复；不会把邮箱邮件标为已读，也不会删除或移动邮件。</p>
@@ -1705,33 +1692,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <label>正文模板<textarea id="mail-auto-body" rows="8"></textarea></label>
                 <button id="mail-save-automation" onclick="saveMailAutomation()">保存自动发送规则（不会立即发送）</button>
                 <div id="mail-automation-result" class="email-status"></div>
-            </section>
-        </div>
-
-        <div id="view-admin-account" class="view-section">
-            <header>
-                <div>
-                    <h2 class="page-title">管理员账号与密码</h2>
-                    <div class="email-status">修改当前管理员自己的登录账号和密码。必须验证当前密码，密码不会回显。</div>
-                </div>
-            </header>
-            <section class="email-panel" style="max-width:680px">
-                <h3>登录凭证</h3>
-                <p class="email-status">修改成功后，其他已登录设备仍会在会话到期前保持登录。如修改了密码，建议立即退出并使用新凭证重新登录。</p>
-                <form id="admin-account-form" onsubmit="saveAdminAccount(event)">
-                    <label for="admin-account-username">管理员登录账号</label>
-                    <input id="admin-account-username" name="username" minlength="3" maxlength="40" autocomplete="username" required>
-                    <label for="admin-account-current-password">当前密码（必填）</label>
-                    <input id="admin-account-current-password" name="current_password" type="password" autocomplete="current-password" required>
-                    <label for="admin-account-new-password">新密码（可留空，仅修改账号）</label>
-                    <input id="admin-account-new-password" name="new_password" type="password" minlength="10" autocomplete="new-password">
-                    <label for="admin-account-confirm-password">确认新密码</label>
-                    <input id="admin-account-confirm-password" type="password" minlength="10" autocomplete="new-password">
-                    <div class="email-actions">
-                        <button class="btn-save" id="admin-account-save" type="submit">保存管理员登录凭证</button>
-                        <span id="admin-account-result" class="email-status" role="status" aria-live="polite"></span>
-                    </div>
-                </form>
             </section>
         </div>
 
@@ -2258,19 +2218,25 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 channel, new Set(rows.filter(row => leadMatchesChannel(row, channel)).map(row => row.company_id)).size
             ]));
         }
+        function emailContactCounts() {
+            return Object.fromEntries(['domestic', 'overseas', 'pending_verification'].map(market => [
+                market, currentEmailProspects.filter(row => row.country_type === market).length
+            ]));
+        }
         function renderLeadPoolNavigation() {
-            ['domestic', 'overseas'].forEach(market => {
+            const emailCounts = emailContactCounts();
+            ['domestic', 'overseas', 'pending_verification'].forEach(market => {
                 const counts = leadChannelCounts(currentData.filter(row => row.country_type === market));
                 Object.keys(LEAD_CHANNEL_META).forEach(channel => {
                     const count = document.getElementById(`${market}-${channel}-count`);
-                    if (count) count.textContent = counts[channel];
+                    if (count) count.textContent = channel === 'email' ? emailCounts[market] : counts[channel];
                 });
             });
             document.getElementById('lead-pool-switcher').hidden = activeCountry === 'pending_verification';
             const rows = marketRows();
             const counts = leadChannelCounts(rows);
             const channels = Object.entries(LEAD_CHANNEL_META).filter(([channel]) =>
-                activeCountry === 'overseas' || channel === 'email');
+                activeCountry === 'overseas' || channel !== 'discord');
             document.getElementById('lead-pool-title').textContent =
                 `${marketLabel(activeCountry)}客户线索池 · ${activeLeadChannel === 'all' ? '全部渠道' : LEAD_CHANNEL_META[activeLeadChannel].label}`;
             document.getElementById('lead-pool-cards').innerHTML = [
@@ -2341,8 +2307,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }
         function switchPipelineChannel(country, channel, elem) {
             if (!['domestic', 'overseas'].includes(country) ||
-                !['all', 'x'].includes(channel) ||
-                (channel === 'x' && country !== 'overseas')) return;
+                !['all', 'x'].includes(channel)) return;
             switchPipelineMarket(country, document.getElementById(`${country}-nav`));
             activeLeadChannel = channel;
             renderLeadPoolNavigation();
@@ -2356,17 +2321,18 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             switchPipelineChannel(country, channel, elem);
         }
         function switchEmailPoolMarket(country, elem) {
-            if (!['domestic', 'overseas'].includes(country)) return;
+            if (!['domestic', 'overseas', 'pending_verification'].includes(country)) return;
             switchPipelineMarket(country, document.getElementById(`${country}-nav`));
             activeLeadChannel = 'email';
             activeEmailMarket = country;
             packageSelectedIds.clear();
+            document.getElementById('email-package-preview').textContent = '';
             const filter = document.getElementById('email-market-filter');
             filter.value = country;
             filter.disabled = true;
             document.getElementById('email-pool-title').textContent = `${marketLabel(country)}客户 · 邮件组线索`;
             document.getElementById('email-pool-description').textContent =
-                `仅展示${marketLabel(country)}客户的邮箱线索。筛选并保存发送批次草稿后，前往独立“邮件发送”页面编写和发送。`;
+                `仅展示${marketLabel(country)}客户中的有效邮箱，可在此创建线索包和执行邮件触达。历史发送记录和回复监控保留全局视图。`;
             switchNav('email-pool', document.querySelector(`.nav-subitem[data-market="${country}"][data-channel="email"]`));
             highlightMarketChannel(country, 'email');
             renderEmailRecipients();
@@ -2462,7 +2428,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('current-user-avatar').innerText = (currentUser.display_name || currentUser.username)[0].toUpperCase();
             document.getElementById('current-user-role').innerText = `● ${ROLE_NAME_MAP[currentUser.role] || currentUser.role}`;
             document.getElementById('permissions-nav').style.display = currentUser.role === 'admin' ? '' : 'none';
-            document.getElementById('config-admin-account-nav').hidden = currentUser.role !== 'admin';
             document.getElementById('tab-register-btn').style.display = currentUser.role === 'admin' ? '' : 'none';
             document.getElementById('feishu-mail-import-panel').hidden = currentUser.role !== 'admin';
             document.getElementById('feishu-social-panel').hidden = currentUser.role !== 'admin';
@@ -2478,11 +2443,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
             if (navId === 'permissions') {
                 fetchUsers();
-            } else if (navId === 'email-pool' || navId === 'email-settings' || navId === 'email-send') {
+            } else if (navId === 'email-pool' || navId === 'email-settings') {
                 fetchEmailProspects();
                 if (navId === 'email-pool' && currentUser?.role === 'admin') loadFeishuMailImportStatus();
-            } else if (navId === 'admin-account') {
-                loadAdminAccount();
             } else if (navId === 'funnel') {
                 renderFunnelView();
             } else if (navId === 'strategy') {
@@ -2492,52 +2455,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             }
         }
         function switchConfig(navId, elem) {
-            if (navId === 'admin-account' && currentUser?.role !== 'admin') return;
             switchNav(navId, elem);
             document.getElementById('config-nav').classList.add('active');
-            const ids = {'email-settings':'config-email-settings-nav', strategy:'config-strategy-nav', permissions:'permissions-nav', 'admin-account':'config-admin-account-nav'};
+            const ids = {'email-settings':'config-email-settings-nav', strategy:'config-strategy-nav', permissions:'permissions-nav'};
             if (ids[navId]) document.getElementById(ids[navId]).classList.add('active');
-        }
-        function loadAdminAccount() {
-            if(currentUser?.role!=='admin') return;
-            document.getElementById('admin-account-username').value=currentUser.username||'';
-            document.getElementById('admin-account-form').reset();
-            document.getElementById('admin-account-username').value=currentUser.username||'';
-            document.getElementById('admin-account-result').textContent='';
-        }
-        async function saveAdminAccount(event) {
-            event.preventDefault();
-            if(currentUser?.role!=='admin') return;
-            const username=document.getElementById('admin-account-username').value.trim();
-            const currentPassword=document.getElementById('admin-account-current-password').value;
-            const newPassword=document.getElementById('admin-account-new-password').value;
-            const confirmation=document.getElementById('admin-account-confirm-password').value;
-            const output=document.getElementById('admin-account-result');
-            if(newPassword!==confirmation) {
-                output.textContent='两次输入的新密码不一致';
-                return;
-            }
-            const button=document.getElementById('admin-account-save');
-            button.disabled=true;
-            output.textContent='正在验证并保存…';
-            try {
-                const response=await fetch('/api/admin-account',{
-                    method:'POST',headers:{'Content-Type':'application/json'},
-                    body:JSON.stringify({username,current_password:currentPassword,new_password:newPassword})
-                });
-                const result=await response.json();
-                if(!response.ok||!result.success) throw Error(result.error||'保存失败');
-                currentUser.username=result.username;
-                updateCurrentUserUI();
-                document.getElementById('admin-account-current-password').value='';
-                document.getElementById('admin-account-new-password').value='';
-                document.getElementById('admin-account-confirm-password').value='';
-                output.textContent=`管理员账号已更新为 ${result.username}${result.password_changed?'，新密码已生效':''}。`;
-            } catch(error) {
-                output.textContent=error.message||'保存管理员账号失败';
-            } finally {
-                button.disabled=false;
-            }
         }
 
         let currentEmailProspects = [];
@@ -2550,11 +2471,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             const result=await res.json();
             if(!res.ok) return;
             currentEmailProspects=result.rows||[];
+            renderLeadPoolNavigation();
             mailSenders=result.senders||[];
             mailAutomation=result.automation||{};
             mailPackages=result.packages||[];
-            mailDeliveryBatches=result.batches||[];
-            for(const id of ['email-batch-sender','mail-edit-sender']) {
+            for(const id of ['email-sender','mail-edit-sender']) {
                 const input=document.getElementById(id), previous=input.value;
                 input.innerHTML=mailSenders.map(s=>`<option value="${s.id}">${escapeHtml(s.from_email||'默认邮箱（未配置）')}</option>`).join('');
                 if(id==='mail-edit-sender' && currentUser?.role==='admin') input.innerHTML+='<option value="new">新增发件邮箱</option>';
@@ -2564,9 +2485,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             loadMailAutomation();
             updateMailSenderStatus();
             renderEmailRecipients();
-            renderPackageCandidates();
-            renderEmailBatches();
-            if(document.getElementById('view-email-send').classList.contains('active')) fetchEmailReplies();
+            renderEmailPackages();
+            fetchEmailReplies();
+            document.getElementById('email-history').innerHTML=(result.history||[]).map(row=>`<div class="email-preview">${escapeHtml(row.created_at)} UTC · ${escapeHtml(row.sender)} → ${escapeHtml(row.email)}<br>${escapeHtml(row.company_name)} · ${escapeHtml(row.subject)} · 操作人：${escapeHtml(row.sent_by)}</div>`).join('')||'暂无发送记录';
         }
         async function fetchEmailReplies() {
             const target=document.getElementById('email-replies');
@@ -2603,84 +2524,34 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             await fetchEmailReplies();
         }
         let mailPackages = [];
-        let mailDeliveryBatches = [];
-        let activeMailBatchId = null;
-        function allMailBatches() {
-            const drafts=mailPackages.filter(item=>item.status==='draft').map(item=>({...item,kind:'draft'}));
-            return [...drafts,...mailDeliveryBatches.map(item=>({...item,kind:'delivery'}))];
-        }
-        function renderEmailBatches() {
-            const target=document.getElementById('email-batch-list');
+        function renderEmailPackages() {
+            const target=document.getElementById('email-package-list');
             if(!target) return;
-            const status=document.getElementById('email-batch-filter').value;
-            const rows=allMailBatches().filter(item=>!status||item.status===status);
-            target.innerHTML=rows.map(item=>`<button class="mail-batch-card ${String(activeMailBatchId)===String(item.batch_id||item.id)?'active':''}" onclick="openEmailBatch('${item.batch_id||item.id}')">
-                <span class="mail-batch-card-head"><strong>${escapeHtml(item.title)}</strong>${emailBatchBadge(item.status)}</span>
-                <small>${item.recipient_count} 个邮箱 · ${escapeHtml(item.sender||mailSenderLabel(item.sender_id)||'待选择发件邮箱')}</small>
-                <small>${escapeHtml(item.sent_at||item.created_at||'-')} · ${escapeHtml(item.sent_by||item.created_by||'-')}</small>
-            </button>`).join('')||'<div class="mail-batch-empty">当前状态下暂无发送批次</div>';
-            if(activeMailBatchId) openEmailBatch(activeMailBatchId,false);
-        }
-        function emailBatchBadge(status) {
-            const labels={draft:'草稿',sending:'发送中 / 待核实',sent:'已发送'};
-            const style=status==='sent'?'email-push-sent':status==='sending'?'email-push-warning':'email-push-pending';
-            return `<span class="email-push-badge ${style}">${labels[status]||escapeHtml(status)}</span>`;
-        }
-        function mailSenderLabel(id) {
-            return mailSenders.find(item=>String(item.id)===String(id))?.from_email||'';
-        }
-        function findMailBatch(id) {
-            return allMailBatches().find(item=>String(item.batch_id||item.id)===String(id));
-        }
-        function openEmailBatch(id, rerender=true) {
-            const item=findMailBatch(id);
-            if(!item) {
-                activeMailBatchId=null;
-                document.getElementById('email-batch-empty').hidden=false;
-                document.getElementById('email-batch-detail').hidden=true;
-                return;
-            }
-            activeMailBatchId=item.batch_id||item.id;
-            document.getElementById('email-batch-empty').hidden=true;
-            document.getElementById('email-batch-detail').hidden=false;
-            document.getElementById('email-batch-title').textContent=item.title;
-            document.getElementById('email-batch-summary').innerHTML=`
-                <span>状态：${emailBatchBadge(item.status)}</span><span>邮箱数：${item.recipient_count}</span>
-                <span>发件邮箱：${escapeHtml(item.sender||mailSenderLabel(item.sender_id)||'待选择')}</span>
-                <span>操作人：${escapeHtml(item.sent_by||item.created_by||'-')}</span>
-                <span>时间：${escapeHtml(item.sent_at||item.created_at||'-')} UTC</span>
-                <span>主题：${escapeHtml(item.subject||'发送结果待核实')}</span>`;
-            const editable=item.status==='draft';
-            document.getElementById('email-batch-editor').hidden=!editable;
-            if(editable) {
-                document.getElementById('email-batch-sender').value=String(item.sender_id||mailSenders[0]?.id||1);
-                document.getElementById('email-subject').value=item.subject;
-                document.getElementById('email-body').value=item.body;
-                document.getElementById('email-package-preview').textContent='';
-                updateMailSenderStatus();
-            }
-            document.getElementById('email-batch-recipient-body').innerHTML=(item.recipients||[]).map(row=>`<tr>
-                <td>${escapeHtml(row.company_name||'-')}</td><td>${escapeHtml(row.contact_name||'-')}</td>
-                <td>${escapeHtml(row.email||'-')}</td><td>${escapeHtml(marketLabel(row.country_type))}</td>
-                <td>${emailBatchBadge(row.status||'draft')}</td><td>${escapeHtml(row.created_at||'-')}</td>
-            </tr>`).join('')||'<tr><td colspan="6">该批次暂无邮箱</td></tr>';
-            if(rerender) renderEmailBatches();
+            target.innerHTML=mailPackages.length ? mailPackages.map(item=>
+                `<div class="email-preview"><strong>${escapeHtml(item.title)}</strong> · ${item.recipient_count} 人 · ${item.status==='sent'?'已发送':'草稿'} · ${escapeHtml(item.created_at)}<br>${escapeHtml(item.subject)}<br>${item.status==='draft'?`<button onclick="previewEmailPackage(${item.id})">预览此包</button> <button onclick="sendEmailPackage(${item.id})">发送此包</button>`:''}</div>`
+            ).join('') : '暂无推送包草稿';
+            renderPackageCandidates();
         }
         function renderPackageCandidates() {
-            if(!document.getElementById('email-prospect-body')) return;
-            const rows=emailPoolFilteredRows().filter(isEmailSendable);
+            const body=document.getElementById('package-candidate-body');
+            if(!body) return;
+            const from=document.getElementById('package-date-from').value;
+            const to=document.getElementById('package-date-to').value;
+            const rows=currentEmailProspects.filter(row=>(!activeEmailMarket||row.country_type===activeEmailMarket)&&isEmailSendable(row)&&
+                (!from||String(row.lead_created_at||'').slice(0,10)>=from)&&
+                (!to||String(row.lead_created_at||'').slice(0,10)<=to));
             const eligible=new Set(rows.map(row=>row.lead_id));
             packageSelectedIds=new Set([...packageSelectedIds].filter(id=>eligible.has(id)));
             document.getElementById('package-candidate-count').textContent=`筛选到 ${rows.length} 位未发送线索，已选择 ${packageSelectedIds.size} 位`;
-            renderEmailRecipients(false);
+            body.innerHTML=rows.map(row=>`<tr><td><input type="checkbox" ${packageSelectedIds.has(row.lead_id)?'checked':''} onchange="togglePackageLead(${row.lead_id},this.checked)"></td><td>${escapeHtml(String(row.lead_created_at||'').slice(0,10)||'-')}</td><td>${escapeHtml(row.contact_name||'-')}</td><td>${escapeHtml(row.company_name||'-')}</td><td>${escapeHtml(row.email)}</td><td>${emailPushBadge(row.status)}</td></tr>`).join('')||'<tr><td colspan="6">当前日期范围内没有可加入推送包的线索</td></tr>';
         }
         function togglePackageLead(id, checked) {
             if(checked) packageSelectedIds.add(id); else packageSelectedIds.delete(id);
             renderPackageCandidates();
         }
         function togglePackageCandidates(checked) {
-            emailPoolFilteredRows().filter(isEmailSendable).forEach(row=>
-                checked?packageSelectedIds.add(row.lead_id):packageSelectedIds.delete(row.lead_id));
+            const from=document.getElementById('package-date-from').value, to=document.getElementById('package-date-to').value;
+            currentEmailProspects.filter(row=>(!activeEmailMarket||row.country_type===activeEmailMarket)&&isEmailSendable(row)&&(!from||String(row.lead_created_at||'').slice(0,10)>=from)&&(!to||String(row.lead_created_at||'').slice(0,10)<=to)).forEach(row=>checked?packageSelectedIds.add(row.lead_id):packageSelectedIds.delete(row.lead_id));
             renderPackageCandidates();
         }
         async function createEmailPackage() {
@@ -2688,75 +2559,48 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             const title=document.getElementById('email-package-title').value.trim();
             if(!ids.length) {output.textContent='请先在下方线索列表中选择收件人';return;}
             if(!title) {output.textContent='请填写推送包名称';return;}
+            const sender=mailSenders.find(s=>String(s.id)===document.getElementById('email-sender').value);
             const button=document.getElementById('email-package-create');
             button.disabled=true; output.textContent='正在保存草稿包…';
             try {
                 const res=await fetch('/api/email-packages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-                    title,lead_ids:ids,sender_id:Number(mailSenders[0]?.id||1),
+                    title,lead_ids:ids,sender_id:Number(sender?.id||1),
                     date_from:document.getElementById('package-date-from').value,
                     date_to:document.getElementById('package-date-to').value,
-                    subject:'{{company}} × Aibubu：更高效的 AI 图片与视频工作流',
-                    body:'Hi {{name}},\\n\\nI’m reaching out from Aibubu. We provide an AI workspace and API for creating product images and short videos at scale.\\n\\nBest,\\nAibubu Team'
+                    subject:document.getElementById('email-subject').value,
+                    body:document.getElementById('email-body').value
                 })});
                 const result=await res.json();
                 if(!res.ok||!result.success) throw Error(result.error||'创建失败');
                 mailPackages=[result.package,...mailPackages.filter(item=>item.id!==result.package.id)];
                 packageSelectedIds.clear();
-                renderPackageCandidates();
-                output.textContent=`已保存批次“${result.package.title}”，${result.package.recipient_count} 位联系人；未发送邮件。请前往“邮件发送”页面继续。`;
+                renderEmailPackages(); output.textContent=`已保存“${result.package.title}”，${result.package.recipient_count} 位联系人；未发送邮件。`;
             } catch(error) { output.textContent=error.message||'创建推送包失败'; }
             finally { button.disabled=false; }
         }
         async function previewEmailPackage(id) {
-            const item=findMailBatch(id), target=document.getElementById('email-package-preview');
+            const item=mailPackages.find(value=>value.id===id), target=document.getElementById('email-package-preview');
             if(!item) return;
-            const subject=document.getElementById('email-subject').value;
-            const body=document.getElementById('email-body').value;
-            target.innerHTML=item.recipients.map(row=>`<div class="email-preview"><strong>To: ${escapeHtml(row.email)}</strong><br><strong>企业: ${escapeHtml(row.company_name||'-')}</strong><br><strong>Subject: ${escapeHtml(subject.replaceAll('{{company}}',row.company_name||'your team').replaceAll('{{name}}',row.contact_name||'there').replaceAll('{{email}}',row.email||''))}</strong><br><br>${escapeHtml(body.replaceAll('{{company}}',row.company_name||'your team').replaceAll('{{name}}',row.contact_name||'there').replaceAll('{{email}}',row.email||''))}</div>`).join('');
+            target.innerHTML=item.recipients.map(row=>`<div class="email-preview"><strong>To: ${escapeHtml(row.email)}</strong><br><strong>Subject: ${escapeHtml(item.subject.replaceAll('{{company}}',row.company_name||'your team').replaceAll('{{name}}',row.contact_name||'there'))}</strong><br><br>${escapeHtml(item.body.replaceAll('{{company}}',row.company_name||'your team').replaceAll('{{name}}',row.contact_name||'there'))}</div>`).join('');
         }
-        let mailBatchSending = false;
         async function sendEmailPackage(id) {
-            let item=findMailBatch(id);
-            if(!item||item.status!=='draft'||mailBatchSending) return;
-            const output=document.getElementById('email-send-result');
-            mailBatchSending=true;
-            document.getElementById('email-send-btn').disabled=true;
-            try {
-                const save=await fetch('/api/email-packages/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-                    id:item.id,title:item.title,sender_id:Number(document.getElementById('email-batch-sender').value),
-                    subject:document.getElementById('email-subject').value,
-                    body:document.getElementById('email-body').value
-                })});
-                const saved=await save.json();
-                if(!save.ok||!saved.success) throw Error(saved.error||'保存批次邮件失败');
-                mailPackages=mailPackages.map(value=>value.id===item.id?saved.package:value);
-                item=saved.package;
-                await previewEmailPackage(id);
-                if(!confirm(`确认使用 ${mailSenderLabel(item.sender_id)} 发送批次“${item.title}”内的 ${item.recipient_count} 封邮件？已发送及退订邮箱会被拦截。`)) return;
-                output.textContent='正在发送，请勿重复提交…';
-                const res=await fetch('/api/email-packages/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,confirmation:`SEND PACKAGE ${id}`})});
-                const result=await res.json();
-                if(result.batch_id) activeMailBatchId=result.batch_id;
-                await fetchEmailProspects();
-                output.textContent=res.ok?`批次发送完成：${result.sent} 封（邮件服务器已接受，不代表送达或已读）。`:result.error||'发送结果待核实';
-            } catch(error) {
-                output.textContent=error.message==='Failed to fetch'
-                    ? '网络中断，请刷新批次并核对发送结果，勿重复发送。'
-                    : error.message||'发送结果待核实，请刷新并核对。';
-            } finally {
-                mailBatchSending=false;
-                updateMailSenderStatus();
-            }
+            const item=mailPackages.find(value=>value.id===id);
+            if(!item||item.status!=='draft') return;
+            await previewEmailPackage(id);
+            if(!confirm(`确认发送推送包“${item.title}”内的 ${item.recipient_count} 封邮件？`)) return;
+            const res=await fetch('/api/email-packages/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,confirmation:`SEND PACKAGE ${id}`})});
+            const result=await res.json();
+            document.getElementById('email-package-result').textContent=res.ok?`推送包发送完成：${result.sent} 封。`:result.error||'发送失败';
+            await fetchEmailProspects();
         }
         function updateMailSenderStatus() {
-            const select=document.getElementById('email-batch-sender');
-            const settings=mailSenders.find(s=>String(s.id)===String(select?.value))||{};
+            const settings=mailSenders.find(s=>String(s.id)===document.getElementById('email-sender').value)||{};
             emailProviderConfigured=!!settings.configured;
             const provider=document.getElementById('email-provider-status');
             provider.textContent=settings.configured ? `参数齐全 · ${settings.provider==='smtp'?'自有 SMTP':'Resend'} · 本批发件人：${settings.from_email}` : '所选发件邮箱未配置完整，可以预览，不能发送';
             provider.className=settings.configured ? 'email-status email-configured' : 'email-status email-unconfigured';
-            document.getElementById('email-send-btn').disabled=!settings.configured||mailBatchSending;
-            document.getElementById('email-package-preview').textContent='';
+            document.getElementById('email-send-btn').disabled=!settings.configured;
+            document.getElementById('email-preview-list').textContent='';
         }
         function loadMailSender() {
             const settings=mailSenders.find(s=>String(s.id)===document.getElementById('mail-edit-sender').value)||{
@@ -2793,33 +2637,23 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             select.innerHTML=mailSenders.map(s=>`<option value="${s.id}">${escapeHtml(s.from_email||'未配置')}</option>`).join('');
             if(a.sender_id) select.value=String(a.sender_id);
         }
-        function emailPoolFilteredRows() {
+        function renderEmailRecipients() {
             const market=activeEmailMarket||document.getElementById('email-market-filter').value;
             const status=document.getElementById('email-status-filter').value;
             const query=document.getElementById('email-search').value.trim().toLowerCase();
-            const from=document.getElementById('package-date-from').value;
-            const to=document.getElementById('package-date-to').value;
-            return currentEmailProspects.filter(row=>(!market||row.country_type===market)&&(!status||row.status===status)&&
-                (!from||String(row.lead_created_at||'').slice(0,10)>=from)&&
-                (!to||String(row.lead_created_at||'').slice(0,10)<=to)&&
+            const rows=currentEmailProspects.filter(row=>(!market||row.country_type===market)&&(!status||row.status===status)&&
                 (!query||[row.email,row.company_name,row.contact_name].some(value=>String(value||'').toLowerCase().includes(query))));
-        }
-        function renderEmailRecipients(syncSelection=true) {
-            const rows=emailPoolFilteredRows();
-            if(syncSelection) {
-                const eligible=new Set(rows.filter(isEmailSendable).map(row=>row.lead_id));
-                packageSelectedIds=new Set([...packageSelectedIds].filter(id=>eligible.has(id)));
-                document.getElementById('package-candidate-count').textContent=`筛选到 ${eligible.size} 位未发送线索，已选择 ${packageSelectedIds.size} 位`;
-            }
-            document.getElementById('email-recipient-count').textContent=`当前筛选 ${rows.length} 位邮箱联系人。发送操作已移至独立“邮件发送”页面。`;
+            document.getElementById('email-select-all').checked=false;
+            document.getElementById('email-preview-list').textContent='';
+            document.getElementById('email-recipient-count').textContent=`当前筛选 ${rows.length} 位邮箱联系人；重复邮箱发送时会拦截。`;
             document.getElementById('email-prospect-body').innerHTML=rows.map(row=>`<tr>
-                <td><input type="checkbox" ${packageSelectedIds.has(row.lead_id)?'checked':''} ${!isEmailSendable(row)?'disabled':''} onchange="togglePackageLead(${row.lead_id},this.checked)"></td>
-                <td>${escapeHtml(String(row.lead_created_at||'').slice(0,10)||'-')}</td>
-                <td>${escapeHtml(row.company_name||'-')} / ${marketLabel(row.country_type)}</td><td>${escapeHtml(row.contact_name||'-')}</td>
-                <td>${escapeHtml(row.email)}</td><td>${row.country_type==='pending_verification'?'<span class="email-push-badge email-push-warning">市场待核验，不可发送</span>':emailPushBadge(row.status)}</td>
+                <td><input class="email-row-check" type="checkbox" value="${row.lead_id}" ${!isEmailSendable(row)?'disabled':''} onchange="updateEmailSelectionCount()"></td>
+                <td>${escapeHtml(row.email)}</td><td>${escapeHtml(row.contact_name||'-')}</td>
+                <td>${escapeHtml(row.company_name||'-')} / ${marketLabel(row.country_type)}</td><td>${row.country_type==='pending_verification'?'<span class="email-push-badge email-push-warning">市场待核验，不可发送</span>':emailPushBadge(row.status)}</td>
                 <td>${escapeHtml(row.last_sent_at||'-')}</td><td>${escapeHtml(row.last_sender||'-')}</td>
                 <td>${row.queue_id?`<button onclick="setEmailProspectStatus(${row.queue_id}, 'unsubscribed')" ${row.status==='sending'?'disabled':''}>标记退订</button>`:'-'}</td>
-            </tr>`).join('') || '<tr><td colspan="9">当前筛选下没有邮箱联系人</td></tr>';
+            </tr>`).join('') || '<tr><td colspan="8">当前筛选下没有邮箱联系人，无需在客户池操作</td></tr>';
+            updateEmailSelectionCount();
         }
         function emailPushBadge(status) {
             const labels={pending:'未推送',sending:'发送中 / 待核实',sent:'✓ 已推送',unsubscribed:'已退订',removed:'已移除',email_changed:'邮箱变更待核实'};
@@ -2827,13 +2661,56 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 status==='sending'||status==='email_changed'?'email-push-warning':'email-push-blocked';
             return `<span class="email-push-badge ${style}">${labels[status]||escapeHtml(status)}</span>`;
         }
+        function selectedEmailIds() {
+            return [...document.querySelectorAll('.email-row-check:checked')].map(input=>Number(input.value));
+        }
+        function updateEmailSelectionCount() {
+            document.getElementById('email-selection-count').textContent=`已选择 ${selectedEmailIds().length} 人`;
+        }
+        function toggleAllEmailProspects(checked) {
+            document.querySelectorAll('.email-row-check:not(:disabled)').forEach(input=>input.checked=checked);
+            updateEmailSelectionCount();
+        }
         async function setEmailProspectStatus(id, status) {
             const res=await fetch('/api/email-queue/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,status})});
             const result=await res.json();
             if(!res.ok || !result.success) {alert(result.error||'状态更新失败');return;}
             await fetchEmailProspects();
         }
-        let feishuMailSyncing = false;
+        async function previewSelectedEmails() {
+            const ids=selectedEmailIds(), output=document.getElementById('email-preview-list');
+            if(!ids.length) {output.innerHTML='<div class="email-status">请先选择收件人</div>';return;}
+            const payload={lead_ids:ids,sender_id:Number(document.getElementById('email-sender').value),subject:document.getElementById('email-subject').value,body:document.getElementById('email-body').value};
+            const res=await fetch('/api/email-queue/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+            const result=await res.json();
+            if(!res.ok || !result.success) {output.textContent=result.error||'预览失败';return false;}
+            output.innerHTML=result.previews.map(item=>`<div class="email-preview"><strong>From: ${escapeHtml(result.sender||'未配置')}</strong>\n<strong>To: ${escapeHtml(item.email)}</strong>\n<strong>Subject: ${escapeHtml(item.subject)}</strong>\n\n${escapeHtml(item.body)}</div>`).join('');
+            return true;
+        }
+        async function sendSelectedEmails() {
+            const ids=selectedEmailIds();
+            if(!ids.length) {document.getElementById('email-send-result').textContent='请先选择收件人';return;}
+            if(ids.length>50) {document.getElementById('email-send-result').textContent='每批最多发送 50 人';return;}
+            if(!await previewSelectedEmails()) return;
+            const sender=mailSenders.find(s=>String(s.id)===document.getElementById('email-sender').value);
+            if(!sender?.configured) {document.getElementById('email-send-result').textContent='请先配置所选发件邮箱';return;}
+            if(!confirm(`确认使用 ${sender.from_email} 向 ${ids.length} 位收件人逐封发送邮件？请确认已核实为公开商务邮箱，且适合本次触达。已发送或退订邮箱不会重复发送。`)) return;
+            const output=document.getElementById('email-send-result');
+            output.textContent='正在发送，请勿重复点击…';
+            document.getElementById('email-send-btn').disabled=true;
+            try {
+            const res=await fetch('/api/email-queue/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+                lead_ids:ids,sender_id:sender.id,subject:document.getElementById('email-subject').value,body:document.getElementById('email-body').value,
+                confirmation:`SEND ${ids.length}`
+            })});
+            const result=await res.json();
+            output.textContent=res.ok ? `已提交发送：${result.sent}，已保存独立发送记录，未修改客户池` : (result.error||'发送失败');
+            } catch(error) {output.textContent='网络中断，请刷新队列并核对发送状态，勿重复提交';}
+            finally {
+            await fetchEmailProspects();
+            }
+        }
+
         let feishuSocialFingerprint = null;
         async function previewFeishuSocialSync() {
             const output = document.getElementById('feishu-social-result');
@@ -2875,59 +2752,77 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             } finally { button.disabled = false; }
         }
 
+        let feishuMailImportPreview = null;
         async function loadFeishuMailImportStatus() {
             const status = document.getElementById('feishu-mail-import-status');
-            if(feishuMailSyncing || document.getElementById('feishu-mail-import-summary').textContent) return;
             try {
                 const response = await fetch('/api/feishu-mail-import/status', {cache:'no-store'});
                 const result = await response.json();
-                if(feishuMailSyncing || document.getElementById('feishu-mail-import-summary').textContent) return;
                 status.textContent = result.configured
-                    ? '点击检测并同步飞书最新数据'
-                    : '飞书连接尚未配置，请先配置后再同步。';
+                    ? '飞书连接已配置'
+                    : '尚未配置飞书 App ID/Secret；配置后即可读取邮件表。';
             } catch (_) {
-                if(!feishuMailSyncing) status.textContent = '无法检查飞书连接状态';
+                status.textContent = '无法检查飞书连接状态';
             }
         }
-        async function syncLatestFeishuMailData() {
-            if(currentUser?.role!=='admin'||feishuMailSyncing) return;
+        async function previewFeishuMailImport() {
             const status = document.getElementById('feishu-mail-import-status');
             const summary = document.getElementById('feishu-mail-import-summary');
-            const button = document.getElementById('feishu-mail-sync');
-            feishuMailSyncing=true;
-            button.disabled=true;
-            button.textContent='同步中…';
-            status.textContent='正在检测飞书最新数据…';
-            summary.textContent='';
-            let syncCompleted=false;
+            const conflicts = document.getElementById('feishu-mail-import-conflicts');
+            const applyButton = document.getElementById('feishu-mail-import-apply');
+            applyButton.hidden = true;
+            applyButton.disabled = true;
+            conflicts.innerHTML = '';
+            summary.textContent = '正在读取飞书邮件表并核对公司名、官网域名和邮箱…';
             try {
                 const response = await fetch('/api/feishu-mail-import/preview', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
-                const preview = await response.json();
-                if (!response.ok || !preview.success) throw Error(preview.error || '检测飞书最新数据失败');
-                if(!preview.fingerprint) throw Error('数据核验失败，请重新同步');
-                status.textContent='已检测最新数据，正在同步更新…';
-                const applied = await fetch('/api/feishu-mail-import/apply', {
+                const result = await response.json();
+                if (!response.ok || !result.success) throw Error(result.error || '读取预览失败');
+                feishuMailImportPreview = result;
+                const sync=result.status_sync||{};
+                const statusChanges=(sync.create_sent||0)+(sync.create_unsubscribed||0)+(sync.update_sent||0)+(sync.update_unsubscribed||0);
+                summary.textContent = `表内 ${result.total_rows} 行；可导入联系人 ${result.eligible_contacts}；新建公司 ${result.new_companies}；匹配已有公司 ${result.matched_companies}；需跳过/人工核对 ${result.conflict_count}。邮件状态更新 ${statusChanges}；销售触达补记 ${sync.outreach_updates||0}；保护已有状态 ${sync.preserved||0}；状态归属冲突 ${sync.conflict_count||0}。历史触达时间未知时记录同步时间，不代表本次发送。`;
+                const allConflicts=[...(result.conflicts||[]),...(sync.conflicts||[])];
+                if (allConflicts.length) {
+                    conflicts.innerHTML = `<details><summary>查看导入与状态冲突明细</summary><div class="table-container"><table class="email-table"><thead><tr><th>飞书行</th><th>公司</th><th>邮箱</th><th>处理</th></tr></thead><tbody>${allConflicts.map(row=>`<tr><td>${Number(row.row)||'-'}</td><td>${escapeHtml(row.company||'-')}</td><td>${escapeHtml(row.email||'-')}</td><td>${escapeHtml(row.reason||'需核对')}</td></tr>`).join('')}</tbody></table></div></details>`;
+                }
+                applyButton.hidden = false;
+                applyButton.disabled = !result.eligible_contacts && !statusChanges && !sync.outreach_updates;
+                status.textContent = !applyButton.disabled ? '预览完成，尚未写入 CRM。' : '没有需要导入或更新的记录。';
+            } catch (error) {
+                feishuMailImportPreview = null;
+                summary.textContent = '';
+                status.textContent = error.message;
+            }
+        }
+        async function applyFeishuMailImport() {
+            if (!feishuMailImportPreview) return;
+            const preview = feishuMailImportPreview;
+            if (!confirm(`确认导入 ${preview.eligible_contacts} 位联系人、新建 ${preview.new_companies} 家公司并同步预览中的触达状态？已有公司只补空字段，冲突项跳过，已有销售阶段不回退；此操作不会发送邮件。`)) return;
+            const button = document.getElementById('feishu-mail-import-apply');
+            button.disabled = true;
+            document.getElementById('feishu-mail-import-status').textContent = '正在导入…';
+            try {
+                const response = await fetch('/api/feishu-mail-import/apply', {
                     method:'POST', headers:{'Content-Type':'application/json'},
                     body:JSON.stringify({
                         confirmation:'IMPORT FEISHU MAIL SHEET',
                         preview_fingerprint:preview.fingerprint
                     })
                 });
-                const result = await applied.json();
-                if (!applied.ok || !result.success) throw Error(result.error || '同步失败');
-                syncCompleted=true;
-                summary.textContent=`新建企业 ${result.created_companies||0} 家 · 补充企业 ${result.updated_companies||0} 家 · 新增联系人 ${result.created_contacts||0} 位 · 邮件状态更新 ${(result.created_sent_statuses||0)+(result.created_unsubscribed_statuses||0)+(result.updated_sent_statuses||0)+(result.updated_unsubscribed_statuses||0)} 条 · 触达补记 ${result.synced_outreach_records||0} 条 · 跳过冲突 ${result.conflicts||0} 条 · 状态冲突 ${result.status_conflicts||0} 条`;
-                status.textContent=`同步完成 · ${new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date())}（北京时间）`;
+                const result = await response.json();
+                if (!response.ok || !result.success) throw Error(result.error || '导入失败');
+                document.getElementById('feishu-mail-import-summary').textContent =
+                    `同步完成：新建公司 ${result.created_companies} 家；补充公司信息 ${result.updated_companies} 家；新建联系人 ${result.created_contacts} 位；冲突/重复跳过 ${result.conflicts} 条；邮件状态新增/更新 ${(result.created_sent_statuses||0)+(result.created_unsubscribed_statuses||0)+(result.updated_sent_statuses||0)+(result.updated_unsubscribed_statuses||0)}；销售触达补记 ${result.synced_outreach_records||0}；保护已有状态 ${result.preserved_statuses||0}；状态冲突 ${result.status_conflicts||0}。`;
+                document.getElementById('feishu-mail-import-status').textContent = '导入已完成，不会自动发送邮件。';
+                document.getElementById('feishu-mail-import-conflicts').innerHTML = '';
+                feishuMailImportPreview = null;
+                button.hidden = true;
                 await fetchPipeline();
                 await fetchEmailProspects();
             } catch (error) {
-                status.textContent=syncCompleted
-                    ? '同步已完成，列表刷新失败，请刷新线索。'
-                    : `同步未完成：${error.message||'网络异常，请重新检测并核对同步结果'}`;
-            } finally {
-                feishuMailSyncing=false;
+                document.getElementById('feishu-mail-import-status').textContent = error.message;
                 button.disabled = false;
-                button.textContent='同步最新数据';
             }
         }
 
@@ -3984,6 +3879,7 @@ ${escapeHtml(data.email_body_zh)}</div>`;
             document.body.classList.remove('auth-checking', 'auth-pending');
             document.getElementById('auth-modal').style.display = 'none';
             await fetchPipeline();
+            await fetchEmailProspects();
         }
 
         async function initializeApp() {
@@ -4360,8 +4256,7 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
             if method == "GET" and path == "/api/email-recipients":
                 self.send_json({"success": True, "rows": queue.recipients(owner),
                                 "senders": queue.senders(), "history": queue.history(owner),
-                                "automation": queue.automation(), "packages": queue.packages(owner),
-                                "batches": queue.delivery_batches(owner)})
+                                "automation": queue.automation(), "packages": queue.packages(owner)})
                 return
             if path.startswith("/api/email-prospects"):
                 self.send_json({"success": False, "error": "独立邮件名单已停用，请从客户池加入邮件队列"}, status=410)
@@ -4409,10 +4304,6 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                 package = queue.create_package(data, actor, owner)
                 self.send_json({"success": True, "package": package})
                 return
-            if path == "/api/email-packages/update":
-                package = queue.update_package(int(data["id"]), data, owner)
-                self.send_json({"success": True, "package": package})
-                return
             if path == "/api/email-packages/send":
                 package_id = int(data.get("id"))
                 if data.get("confirmation") != f"SEND PACKAGE {package_id}":
@@ -4431,9 +4322,8 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                         "error": "发送结果待核实，队列已锁定以防重复；请核对邮件服务器记录。",
                     }, status=502)
                     return
-                queue.mark_package_sent(package_id, batch)
-                self.send_json({"success": True, "sent": len(messages),
-                                "package_id": package_id, "batch_id": batch})
+                queue.mark_package_sent(package_id)
+                self.send_json({"success": True, "sent": len(messages), "package_id": package_id})
                 return
             if path == "/api/email-queue/add":
                 ids = list(dict.fromkeys(int(value) for value in data.get("lead_ids", [])))
@@ -4989,25 +4879,6 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                 ))
             except Exception as e:
                 self.send_json({"success": False, "error": str(e)}, status=400)
-
-        elif path == "/api/admin-account":
-            user = self._require_user(("admin",))
-            if not user:
-                return
-            try:
-                content_length = int(self.headers.get("Content-Length", 0))
-                if not 0 < content_length <= 10000:
-                    raise ValueError("请求内容为空或过大")
-                data = json.loads(self.rfile.read(content_length).decode("utf-8"))
-                if not isinstance(data, dict):
-                    raise ValueError("无效请求")
-                result = self.db.update_own_admin_credentials(
-                    user["id"], data.get("current_password", ""),
-                    data.get("username", ""), data.get("new_password", ""),
-                )
-                self.send_json(result, status=200 if result.get("success") else 400)
-            except (ValueError, TypeError, json.JSONDecodeError) as error:
-                self.send_json({"success": False, "error": str(error)}, status=400)
 
         elif path == "/api/touch":
             user = self._require_user(("admin", "sales_lead", "sales_rep"))
