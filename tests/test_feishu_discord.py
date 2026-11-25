@@ -8,6 +8,7 @@ from core.database import DatabaseManager, get_connection
 from core.feishu_discord import FeishuDiscordImporter, invite_identity
 from core.feishu_sync import commit_statements
 from core.feishu_import import FeishuMailSheetImporter
+from core.email_queue import EmailQueue
 
 
 class FeishuDiscordTests(unittest.TestCase):
@@ -149,6 +150,46 @@ class FeishuDiscordTests(unittest.TestCase):
         self.assertEqual(conn.execute("SELECT count(*) FROM companies").fetchone()[0], 2)
         self.assertEqual(conn.execute("SELECT count(*) FROM feishu_sync_sources WHERE source_type='mail'").fetchone()[0], 1)
         conn.close()
+    def test_pending_market_source_overrides_existing_lead_without_reclassifying_company(self):
+        company_id = self.db.insert_company({
+            "name": "Typeface", "country_type": "overseas",
+            "website": "https://www.typeface.ai",
+        })
+        lead_id = self.db.insert_lead({
+            "company_id": company_id, "contact_name": "Official team",
+            "email": "support@typeface.ai",
+        })
+        importer = FeishuMailSheetImporter(self.db, environ={})
+        record = {
+            "sheet_row": 213, "contact_name": "Official team",
+            "company_name": "Typeface（官方团队）", "job_title": "Official team",
+            "email": "support@typeface.ai", "website": "https://www.typeface.ai",
+            "market": "pending_verification", "mail_status": "待联系",
+        }
+        with patch.object(importer, "fetch_records", return_value=[record]):
+            preview = importer.preview()
+            self.assertEqual(preview["market_override_updates"][0]["lead_id"], lead_id)
+            result = importer.apply("管理员", preview["fingerprint"])
+        self.assertEqual(result["market_overrides"], 1)
+        queue = EmailQueue(self.db)
+        recipient = next(row for row in queue.recipients() if row["lead_id"] == lead_id)
+        self.assertEqual(recipient["country_type"], "pending_verification")
+        with self.assertRaisesRegex(ValueError, "待核验市场线索不可发送"):
+            queue.prepare([lead_id], "管理员")
+        with self.assertRaisesRegex(ValueError, "待核验市场线索不可加入推送包"):
+            queue.create_package({
+                "title": "Pending verification", "lead_ids": [lead_id],
+                "subject": "Hi", "body": "Hello",
+            }, "管理员")
+        company = get_connection(self.db.db_path)
+        self.assertEqual(company.execute(
+            "SELECT country_type,market_classification FROM companies WHERE id=?",
+            (company_id,),
+        ).fetchone()["market_classification"], "verified")
+        self.assertEqual(next(row for row in self.db.query_pipeline()
+                             if row["lead_id"] == lead_id)["country_type"], "pending_verification")
+        company.close()
+
 
     def test_shared_remote_commit_uses_single_batch(self):
         class FakeRemote:
