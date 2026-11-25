@@ -1402,7 +1402,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             </div>
             <ul class="nav-list">
                 <li class="nav-section-label">客户线索池</li>
-                <li class="nav-item" id="overseas-nav" onclick="switchPipelineMarket('overseas', this)">
+                <li class="nav-item active" id="overseas-nav" onclick="switchPipelineMarket('overseas', this)">
                     <span>🌐</span> <span>海外客户线索池</span>
                 </li>
                 <li class="nav-sublist" id="overseas-pool-nav">
@@ -1416,7 +1416,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         <span>💬 Discord 线索</span><span class="nav-subcount" id="overseas-discord-count">0</span>
                     </button>
                 </li>
-                <li class="nav-item active" id="domestic-nav" onclick="switchPipelineMarket('domestic', this)">
+                <li class="nav-item" id="domestic-nav" onclick="switchPipelineMarket('domestic', this)">
                     <span>⚡</span> <span>国内客户线索池</span>
                 </li>
                 <li class="nav-sublist" id="domestic-pool-nav">
@@ -1428,8 +1428,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <span>🔎</span> <span>待核验线索</span>
                 </li>
                 <li class="nav-sublist" id="pending-verification-pool-nav">
-                    <button class="nav-subitem" data-market="pending_verification" data-channel="email" onclick="switchEmailPoolMarket('pending_verification', this)">
-                        <span>待核验邮箱（不可发送）</span><span class="nav-subcount" id="pending_verification-email-count">0</span>
+                    <button class="nav-subitem" data-market="pending_verification" data-channel="email" onclick="switchPipelineChannel('pending_verification', 'email', this)">
+                        <span>✉️ 邮件组线索</span><span class="nav-subcount" id="pending_verification-email-count">0</span>
+                    </button>
+                    <button class="nav-subitem" data-market="pending_verification" data-channel="x" onclick="switchPipelineChannel('pending_verification', 'x', this)">
+                        <span>𝕏 X 线索</span><span class="nav-subcount" id="pending_verification-x-count">0</span>
                     </button>
                 </li>
                 <li class="nav-section-label">邮件运营</li>
@@ -1481,7 +1484,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <div id="view-pipeline" class="view-section active">
             <header>
                 <div>
-                    <h2 class="page-title" id="pipeline-title">国内客户</h2>
+                    <h2 class="page-title" id="pipeline-title">海外客户</h2>
                     <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">
                         三段解耦流水线: 智能评级 ➔ 真实决策人 ➔ ROI话术直达 (双层精细筛选)
                     </div>
@@ -1493,7 +1496,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             </header>
             <section id="lead-pool-switcher" class="lead-pool-switcher" aria-label="线索渠道池">
                 <div class="lead-pool-switcher-head">
-                    <h3 id="lead-pool-title">国内客户线索池 · 全部渠道</h3>
+                    <h3 id="lead-pool-title">海外客户线索池 · 全部渠道</h3>
                     <p>先按市场分池，再按来源渠道进入对应的跟进队列</p>
                 </div>
                 <div id="lead-pool-cards" class="lead-pool-cards"></div>
@@ -1569,7 +1572,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             </header>
             <section id="feishu-mail-import-panel" class="email-panel" hidden style="margin:16px 0">
                 <h3>飞书数据同步</h3>
-                <p class="email-status">统一同步飞书邮件、Discord 社群及 X 推送状态。按邮箱、企业和邀请链接去重，保留现有发送与社群运营状态，不会发送邮件。同步来源与结果记录在持久化数据库。</p>
+                <p class="email-status">点击后检测飞书邮件表的最新数据并同步到 CRM。已有企业只补充空字段，邮箱去重，已有销售阶段不会回退，也不会发送邮件。</p>
                 <button id="feishu-mail-sync" onclick="syncLatestFeishuMailData()">同步最新数据</button>
                 <span id="feishu-mail-import-status" class="email-status"></span>
                 <div id="feishu-mail-import-summary" class="email-status" aria-live="polite"></div>
@@ -2225,7 +2228,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         let currentLeadSources = [];
         
         // 筛选状态
-        let activeCountry = 'domestic';
+        let activeCountry = 'overseas';
         let activeLeadChannel = 'all';
         let activeEmailMarket = null;
         const marketFilters = {};
@@ -2253,6 +2256,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         };
         function leadMatchesChannel(row, channel) {
             const source = String(row.lead_source || '').toLowerCase();
+            if (row.country_type === 'pending_verification' && ['email', 'x'].includes(channel)) {
+                const hasXHomepage = Boolean(String(row.x_url || '').trim());
+                return channel === 'x' ? hasXHomepage : !hasXHomepage;
+            }
             if (channel === 'email') return Boolean(String(row.email || '').trim());
             if (channel === 'x') return Boolean(String(row.x_url || '').trim()) || /\\bx\\b/.test(source) || source.includes('twitter');
             if (channel === 'discord') return source.includes('discord') || String(row.discovery_url || '').toLowerCase().includes('discord');
@@ -2274,18 +2281,18 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 const counts = leadChannelCounts(currentData.filter(row => row.country_type === market));
                 Object.keys(LEAD_CHANNEL_META).forEach(channel => {
                     const count = document.getElementById(`${market}-${channel}-count`);
-                    if (count && channel !== 'discord') {
-                        count.textContent = channel === 'email'
-                            ? emailCounts[market]
-                            : counts[channel];
-                    }
+                    if (count) count.textContent =
+                        channel === 'email' && market !== 'pending_verification'
+                            ? emailCounts[market] : counts[channel];
                 });
             });
-            document.getElementById('lead-pool-switcher').hidden = activeCountry === 'pending_verification';
+            document.getElementById('lead-pool-switcher').hidden = false;
             const rows = marketRows();
             const counts = leadChannelCounts(rows);
             const channels = Object.entries(LEAD_CHANNEL_META).filter(([channel]) =>
-                activeCountry === 'overseas' || channel === 'email');
+                activeCountry === 'overseas'
+                || activeCountry === 'pending_verification' && ['email', 'x'].includes(channel)
+                || activeCountry === 'domestic' && channel === 'email');
             document.getElementById('lead-pool-title').textContent =
                 `${marketLabel(activeCountry)}客户线索池 · ${activeLeadChannel === 'all' ? '全部渠道' : LEAD_CHANNEL_META[activeLeadChannel].label}`;
             document.getElementById('lead-pool-cards').innerHTML = [
@@ -2295,11 +2302,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 onclick="openLeadChannel('${activeCountry}', '${item.channel}', this)">
                 <span class="lead-pool-card-icon">${item.icon}</span>
                 <span class="lead-pool-card-copy"><strong>${item.label}</strong><small>${item.hint}</small></span>
-                <span class="lead-pool-card-count">${item.channel === 'all' ? new Set(rows.map(row => row.company_id)).size : item.channel === 'email' ? currentEmailProspects.filter(row => row.country_type === activeCountry).length : item.channel === 'discord' ? discordCommunityTotal : counts[item.channel]}</span>
+                <span class="lead-pool-card-count">${item.channel === 'all' ? new Set(rows.map(row => row.company_id)).size : counts[item.channel]}</span>
             </button>`).join('');
         }
         function highlightMarketChannel(country, channel) {
-            document.getElementById(country === 'pending_verification' ? 'pending-verification-nav' : `${country}-nav`).classList.add('active');
+            document.getElementById(`${country}-nav`).classList.add('active');
             document.querySelectorAll('.nav-subitem[data-market]').forEach(button => {
                 button.classList.toggle('active',
                     button.dataset.market === country && button.dataset.channel === channel);
@@ -2355,9 +2362,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             fetchStats();
         }
         function switchPipelineChannel(country, channel, elem) {
-            if (!['domestic', 'overseas'].includes(country) ||
-                !['all', 'x'].includes(channel) ||
-                (channel === 'x' && country !== 'overseas')) return;
+            if (!['domestic', 'overseas', 'pending_verification'].includes(country)
+                || !['all', 'email', 'x'].includes(channel)
+                || country === 'domestic' && channel !== 'all'
+                || country === 'overseas' && channel === 'email') return;
             switchPipelineMarket(country, document.getElementById(`${country}-nav`));
             activeLeadChannel = channel;
             renderLeadPoolNavigation();
@@ -2366,13 +2374,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             fetchStats();
         }
         function openLeadChannel(country, channel, elem) {
+            if (country === 'pending_verification' && ['email', 'x'].includes(channel))
+                return switchPipelineChannel(country, channel, elem);
             if (channel === 'email') return switchEmailPoolMarket(country, elem);
             if (channel === 'discord' && country === 'overseas') return switchOverseasDiscord(elem);
             switchPipelineChannel(country, channel, elem);
         }
         function switchEmailPoolMarket(country, elem) {
             if (!['domestic', 'overseas', 'pending_verification'].includes(country)) return;
-            switchPipelineMarket(country, document.getElementById(country === 'pending_verification' ? 'pending-verification-nav' : `${country}-nav`));
+            switchPipelineMarket(country, document.getElementById(`${country}-nav`));
             activeLeadChannel = 'email';
             activeEmailMarket = country;
             packageSelectedIds.clear();
@@ -2381,7 +2391,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             filter.disabled = true;
             document.getElementById('email-pool-title').textContent = `${marketLabel(country)}客户 · 邮件组线索`;
             document.getElementById('email-pool-description').textContent =
-                `仅展示${marketLabel(country)}客户的邮箱线索。待核验邮箱不会进入可发送批次。保存草稿后，前往独立“邮件发送”页面编写和发送。`;
+                `仅展示${marketLabel(country)}客户的邮箱线索。筛选并保存发送批次草稿后，前往独立“邮件发送”页面编写和发送。`;
             switchNav('email-pool', document.querySelector(`.nav-subitem[data-market="${country}"][data-channel="email"]`));
             highlightMarketChannel(country, 'email');
             renderEmailRecipients();
@@ -2917,29 +2927,25 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             summary.textContent='';
             let syncCompleted=false;
             try {
-                const response = await fetch('/api/feishu-latest-sync/preview', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+                const response = await fetch('/api/feishu-mail-import/preview', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
                 const preview = await response.json();
                 if (!response.ok || !preview.success) throw Error(preview.error || '检测飞书最新数据失败');
                 if(!preview.fingerprint) throw Error('数据核验失败，请重新同步');
-                status.textContent='已完成去重预检，正在同步邮件与 Discord…';
-                const applied = await fetch('/api/feishu-latest-sync/apply', {
+                status.textContent='已检测最新数据，正在同步更新…';
+                const applied = await fetch('/api/feishu-mail-import/apply', {
                     method:'POST', headers:{'Content-Type':'application/json'},
                     body:JSON.stringify({
-                        confirmation:'SYNC FEISHU LATEST DATA',
+                        confirmation:'IMPORT FEISHU MAIL SHEET',
                         preview_fingerprint:preview.fingerprint
                     })
                 });
                 const result = await applied.json();
                 if (!applied.ok || !result.success) throw Error(result.error || '同步失败');
                 syncCompleted=true;
-                const mail=result.mail||{}, discord=result.discord||{}, x=result.x||{};
-                const xOutreach=(x.create_sample_sent||0)+(x.create_contacted||0)+(x.create_lost||0)+
-                    (x.update_sample_sent||0)+(x.update_contacted||0)+(x.update_lost||0);
-                summary.textContent=`邮件：新增企业 ${mail.created_companies||0} 家 · 新增联系人 ${mail.created_contacts||0} 位 · 已存在 ${mail.duplicates||0} 条 · 冲突 ${mail.conflicts||0} 条 · 发送状态保留 ${mail.preserved_statuses||0} 条；Discord：新增 ${discord.create||0} 个 · 去重 ${discord.duplicates||0} 条 · 冲突 ${discord.conflict_count||0} 条；X：更新触达状态 ${xOutreach} 条 · 待核对 ${x.conflict_count||0} 条`;
+                summary.textContent=`新建企业 ${result.created_companies||0} 家 · 补充企业 ${result.updated_companies||0} 家 · 新增联系人 ${result.created_contacts||0} 位 · 邮件状态更新 ${(result.created_sent_statuses||0)+(result.created_unsubscribed_statuses||0)+(result.updated_sent_statuses||0)+(result.updated_unsubscribed_statuses||0)} 条 · 触达补记 ${result.synced_outreach_records||0} 条 · 跳过冲突 ${result.conflicts||0} 条 · 状态冲突 ${result.status_conflicts||0} 条`;
                 status.textContent=`同步完成 · ${new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date())}（北京时间）`;
                 await fetchPipeline();
                 await fetchEmailProspects();
-                await fetchDiscordCommunities();
             } catch (error) {
                 status.textContent=syncCompleted
                     ? '同步已完成，列表刷新失败，请刷新线索。'
@@ -2984,7 +2990,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }
 
         let currentDiscordCommunities = [];
-        let discordCommunityTotal = 0;
         async function fetchDiscordCommunities() {
             const params = new URLSearchParams();
             const language = document.getElementById('discord-language-filter').value;
@@ -2996,12 +3001,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             const res = await fetch('/api/discord-communities?' + params.toString());
             const rows = await res.json();
             currentDiscordCommunities = Array.isArray(rows) ? rows : [];
-            const countResponse = await fetch('/api/discord-communities/count');
-            const countData = await countResponse.json();
-            discordCommunityTotal = Number(countData.total || 0);
-            const discordCount = document.getElementById('overseas-discord-count');
-            if (discordCount) discordCount.textContent = discordCommunityTotal;
-            document.getElementById('discord-total').textContent = discordCommunityTotal;
+            document.getElementById('discord-total').textContent = currentDiscordCommunities.length;
             document.getElementById('discord-joined').textContent =
                 currentDiscordCommunities.filter(row => row.join_status === '已加入').length;
             document.getElementById('discord-high-fit').textContent =
@@ -3024,7 +3024,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <p><strong>用户画像：</strong>${escapeHtml(row.audience || '待补充')}</p>
                     <p><strong>推荐频道：</strong>${escapeHtml(row.recommended_channels || '进群后查看规则与频道')}</p>
                     <p><strong>观察重点：</strong>${escapeHtml(row.notes || '待补充')}</p>
-                    ${row.feishu_source ? `<details><summary>飞书原始来源 · 第 ${Number(row.feishu_source.sheet_row)} 行</summary><p style="white-space:pre-wrap">${escapeHtml(row.feishu_source.verification || '')}<br>${escapeHtml(row.feishu_source.description || '')}<br>${escapeHtml(row.feishu_source.notes || '')}</p></details>` : ''}
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:auto">
                         <small style="color:var(--text-muted)">同步：${escapeHtml(row.updated_at)}</small>
                         <button class="btn-pitch" onclick="editDiscordCommunity(${Number(row.id)})">更新属性</button>
@@ -3378,6 +3377,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     return false;
                 }
                 if (activeLeadChannel === 'x' && !leadMatchesChannel(item, 'x')) return false;
+                if (activeLeadChannel === 'email' && !leadMatchesChannel(item, 'email')) return false;
                 
                 // 公司来源筛选 (支持正选'仅看'与反选'排除/不看'，且支持多选集合)
                 if (selectedSources.size > 0) {
@@ -4011,7 +4011,6 @@ ${escapeHtml(data.email_body_zh)}</div>`;
             document.body.classList.remove('auth-checking', 'auth-pending');
             document.getElementById('auth-modal').style.display = 'none';
             await fetchPipeline();
-            await fetchDiscordCommunities();
             await fetchEmailProspects();
         }
 
@@ -4542,7 +4541,7 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
         user = self._require_user(("admin",))
         if not user:
             return
-        from core.feishu_import import FeishuImportError, FeishuMailSheetImporter, FeishuXStatusSync
+        from core.feishu_import import FeishuImportError, FeishuMailSheetImporter
 
         importer = FeishuMailSheetImporter(self.db)
         if method == "GET" and path == "/api/feishu-mail-import/status":
@@ -4570,7 +4569,7 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                 plan = importer.preview()
                 self.send_json({
                     "success": True,
-                    **{key: value for key, value in plan.items() if key not in {"entries", "source_audit"}},
+                    **{key: value for key, value in plan.items() if key != "entries"},
                 })
                 return
             if data.get("confirmation") != "IMPORT FEISHU MAIL SHEET":
@@ -4587,142 +4586,6 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"success": False, "error": str(error)}, status=400)
         except (ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
             self.send_json({"success": False, "error": str(error)}, status=400)
-
-    def handle_feishu_mail_resolution(self):
-        user = self._require_user(("admin",))
-        if not user:
-            return
-        from core.database import get_connection
-        from core.feishu_import import FeishuMailSheetImporter, normalize_domain, normalize_company_name
-        try:
-            length = int(self.headers.get("Content-Length", 0))
-            if not 0 < length <= 10000:
-                raise ValueError("请求内容为空或过大")
-            data = json.loads(self.rfile.read(length).decode("utf-8"))
-            if data.get("confirmation") != "LINK FEISHU MAIL CONTACT":
-                raise ValueError("关联确认不匹配")
-            email = str(data.get("email") or "").strip().casefold()
-            company_id = int(data.get("company_id"))
-            importer = FeishuMailSheetImporter(self.db)
-            record = next((row for row in importer.fetch_records()
-                           if row["email"] == email), None)
-            if not record:
-                raise ValueError("该邮箱不在当前飞书邮件表中")
-            conn = get_connection(self.db.db_path)
-            try:
-                companies = conn.execute(
-                    "SELECT id,name,website FROM companies WHERE id=?", (company_id,)
-                ).fetchall()
-                if len(companies) != 1:
-                    raise ValueError("目标公司不存在")
-                company = dict(companies[0])
-                source_domain = normalize_domain(record.get("website"))
-                source_name = normalize_company_name(record["company_name"])
-                target_name = normalize_company_name(company["name"])
-                approved_typeface_alias = (
-                    email == "support@typeface.ai"
-                    and source_name == "typeface官方团队"
-                    and target_name == "typeface"
-                    and source_domain == "typeface.ai"
-                    and normalize_domain(company["website"]) == "typeface.ai"
-                )
-                if ((source_name != target_name and not approved_typeface_alias)
-                        or not source_domain or source_domain != normalize_domain(company["website"])):
-                    raise ValueError("公司名称或官网域名与飞书记录不匹配")
-                conn.execute(
-                    """INSERT INTO feishu_mail_company_resolutions
-                       (spreadsheet_token,sheet_id,email,company_id,source_name,source_domain,approved_by)
-                       VALUES (?,?,?,?,?,?,?)
-                       ON CONFLICT(spreadsheet_token,sheet_id,email) DO UPDATE SET
-                         company_id=excluded.company_id,source_name=excluded.source_name,
-                         source_domain=excluded.source_domain,approved_by=excluded.approved_by,
-                         updated_at=CURRENT_TIMESTAMP""",
-                    (importer.spreadsheet_token, importer.sheet_id, email, company_id,
-                     record["company_name"], source_domain,
-                     user.get("display_name") or user["username"]),
-                )
-                conn.commit()
-            finally:
-                conn.close()
-            self.send_json({"success": True, "email": email, "company": company["name"]})
-        except (ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
-            self.send_json({"success": False, "error": str(error)}, status=400)
-
-    def handle_feishu_latest_sync(self, path):
-        user = self._require_user(("admin",))
-        if not user:
-            return
-        from core.feishu_import import FeishuImportError, FeishuMailSheetImporter, FeishuXStatusSync
-        from core.feishu_discord import FeishuDiscordImporter, fingerprint
-        completed = {}
-        try:
-            if path not in {"/api/feishu-latest-sync/preview", "/api/feishu-latest-sync/apply"}:
-                self.send_json({"success": False, "error": "接口不存在"}, status=404)
-                return
-            length = int(self.headers.get("Content-Length", 0))
-            if not 0 < length <= 10000:
-                raise ValueError("请求内容为空或过大")
-            data = json.loads(self.rfile.read(length).decode("utf-8"))
-            if not isinstance(data, dict):
-                raise ValueError("无效请求")
-            mail = FeishuMailSheetImporter(self.db)
-            discord = FeishuDiscordImporter(self.db)
-            x_sync = FeishuXStatusSync(self.db)
-            if path.endswith("/preview"):
-                mail_plan = mail.preview()
-                discord_plan = discord.preview()
-                x_plan = x_sync.preview()
-                mail_summary = {key: value for key, value in mail_plan.items()
-                                if key not in {"entries", "source_audit", "fingerprint"}}
-                discord_summary = {key: value for key, value in discord_plan.items()
-                                   if key not in {"entries", "fingerprint", "source_records", "duplicate_rows"}}
-                x_summary = {key: value for key, value in x_plan.items()
-                             if key not in {"actions", "state_actions", "imports", "fingerprint"}}
-                sync_fingerprint = fingerprint({
-                    "mail": mail_plan["fingerprint"],
-                    "discord": discord_plan["fingerprint"],
-                    "x": x_plan["fingerprint"],
-                })
-                self.send_json({
-                    "success": True, "fingerprint": sync_fingerprint,
-                    "mail": mail_summary, "discord": discord_summary, "x": x_summary,
-                })
-                return
-            if data.get("confirmation") != "SYNC FEISHU LATEST DATA":
-                raise ValueError("请先预览飞书邮件和 Discord 数据")
-            expected = str(data.get("preview_fingerprint") or "").strip()
-            if not expected:
-                raise ValueError("请先生成最新数据预览")
-            # Refresh both fingerprints before any writes, so stale previews fail closed.
-            mail_plan = mail.preview()
-            discord_plan = discord.preview()
-            x_plan = x_sync.preview()
-            actual = fingerprint({
-                "mail": mail_plan["fingerprint"],
-                "discord": discord_plan["fingerprint"],
-                "x": x_plan["fingerprint"],
-            })
-            if actual != expected:
-                raise FeishuImportError("飞书表或后台记录已变化，请重新检测")
-            actor = user.get("display_name") or user["username"]
-            mail_result = mail.apply(actor, mail_plan["fingerprint"])
-            completed["mail"] = mail_result
-            discord_result = discord.apply(actor, discord_plan["fingerprint"])
-            completed["discord"] = discord_result
-            x_result = x_sync.apply(actor, x_plan["fingerprint"])
-            completed["x"] = x_result
-            self.send_json({
-                "success": True, "mail": mail_result, "discord": discord_result, "x": x_result,
-            })
-        except FeishuImportError as error:
-            self.send_json({"success": False, "error": str(error),
-                            "partial": bool(completed), "completed": completed}, status=400)
-        except (ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
-            self.send_json({"success": False, "error": str(error),
-                            "partial": bool(completed), "completed": completed}, status=400)
-        except Exception:
-            self.send_json({"success": False, "error": "同步未完成，可安全重新预检；已完成来源不会重复导入",
-                            "partial": bool(completed), "completed": completed}, status=502)
 
     def _cron_secret_authorized(self, parsed):
         secret = os.environ.get("CRON_SECRET", "").strip()
@@ -4783,31 +4646,23 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
         from core.feishu_import import (
             FeishuImportError, FeishuMailSheetImporter, FeishuXStatusSync,
         )
-        from core.feishu_discord import FeishuDiscordImporter
 
-        completed = {}
         try:
             importer = FeishuMailSheetImporter(self.db)
             mail_result = importer.apply("Vercel Feishu Sync")
-            completed["mail_sync"] = mail_result
-            discord_result = FeishuDiscordImporter(self.db).apply("Vercel Feishu Sync")
-            completed["discord_sync"] = discord_result
             x_result = FeishuXStatusSync(self.db).apply("Vercel Feishu Sync")
             self.send_json({
                 "success": True,
                 **mail_result,
                 "mail_sync": mail_result,
                 "x_sync": x_result,
-                "discord_sync": discord_result,
             })
         except FeishuImportError as error:
-            self.send_json({"success": False, "error": str(error),
-                            "partial": bool(completed), "completed": completed}, status=400)
+            self.send_json({"success": False, "error": str(error)}, status=400)
         except Exception:
             self.send_json({
                 "success": False,
-                "error": "飞书数据自动同步未完成，可安全重试",
-                "partial": bool(completed), "completed": completed,
+                "error": "飞书邮件表或 X 推送监控自动同步失败，请检查服务日志",
             }, status=502)
 
     def handle_feishu_x_sync(self, path):
@@ -4878,15 +4733,6 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
             return
         if path.startswith("/api/feishu-mail-import/"):
             self.handle_feishu_mail_import(path, "GET")
-            return
-        if path.startswith("/api/feishu-latest-sync/"):
-            user = self._require_user(("admin",))
-            if not user:
-                return
-            from core.feishu_import import FeishuMailSheetImporter
-            importer = FeishuMailSheetImporter(self.db)
-            self.send_json({"success": True, "configured": importer.configured(),
-                            "sources": ["邮件", "Discord社区", "X推送监控"]})
             return
 
         if path == "/" or path == "/index.html":
@@ -5034,12 +4880,6 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
             except (ValueError, TypeError) as error:
                 self.send_json({"success": False, "error": str(error)}, status=400)
 
-        elif path == "/api/discord-communities/count":
-            user = self._require_user()
-            if not user:
-                return
-            self.send_json({"total": self.db.discord_community_count()})
-
         elif path == "/api/discord-communities":
             user = self._require_user()
             if not user:
@@ -5111,13 +4951,7 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_email_replies(path, "POST")
             return
         if path.startswith("/api/feishu-mail-import/"):
-            if path == "/api/feishu-mail-import/resolution":
-                self.handle_feishu_mail_resolution()
-                return
             self.handle_feishu_mail_import(path, "POST")
-            return
-        if path.startswith("/api/feishu-latest-sync/"):
-            self.handle_feishu_latest_sync(path)
             return
         if path.startswith("/api/feishu-x-sync/"):
             self.handle_feishu_x_sync(path)
