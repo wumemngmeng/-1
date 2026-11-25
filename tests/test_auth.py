@@ -282,14 +282,19 @@ class AuthTests(unittest.TestCase):
                     "suppressed_existing_statuses": 1,
                 },
             ) as apply:
-                status, payload, _ = self.request(
-                    "GET",
-                    "/api/feishu-mail-sync/run",
-                    extra_headers={"Authorization": "Bearer cron-test-secret"},
-                )
+                with patch(
+                    "core.feishu_import.FeishuXStatusSync.apply",
+                    return_value={"created_outreach_records": 0},
+                ) as x_apply:
+                    status, payload, _ = self.request(
+                        "GET",
+                        "/api/feishu-mail-sync/run",
+                        extra_headers={"Authorization": "Bearer cron-test-secret"},
+                    )
         self.assertEqual((status, payload["success"]), (200, True))
         self.assertEqual(payload["created_contacts"], 3)
         apply.assert_called_once_with("Vercel Feishu Sync")
+        x_apply.assert_called_once_with("Vercel Feishu Sync")
 
     def test_feishu_mail_sync_accepts_only_verified_github_actions_identity(self):
         result = {
@@ -303,7 +308,10 @@ class AuthTests(unittest.TestCase):
             "web.server.verify_github_actions_oidc", return_value=True
         ) as verify, patch(
             "core.feishu_import.FeishuMailSheetImporter.apply", return_value=result
-        ) as apply:
+        ) as apply, patch(
+            "core.feishu_import.FeishuXStatusSync.apply",
+            return_value={"created_outreach_records": 0},
+        ) as x_apply:
             status, payload, _ = self.request(
                 "GET",
                 "/api/feishu-mail-sync/run",
@@ -312,6 +320,7 @@ class AuthTests(unittest.TestCase):
         self.assertEqual((status, payload["success"]), (200, True))
         verify.assert_called_once_with("signed-github-token")
         apply.assert_called_once_with("Vercel Feishu Sync")
+        x_apply.assert_called_once_with("Vercel Feishu Sync")
 
     def test_email_reply_monitor_requires_verified_scheduler_and_scopes_reads(self):
         self.assertEqual(self.request("GET", "/api/email-reply-monitor/run")[0], 401)

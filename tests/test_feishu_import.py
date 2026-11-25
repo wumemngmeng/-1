@@ -8,6 +8,7 @@ from core.database import DatabaseManager, get_connection
 from core.feishu_import import (
     FeishuImportError,
     FeishuMailSheetImporter,
+    FeishuXStatusSync,
     normalize_company_name,
     normalize_domain,
     parse_sheet_rows,
@@ -303,6 +304,168 @@ class FeishuImportTests(unittest.TestCase):
         self.assertEqual(rows[0]["email"], "jamie@northwind.example")
         self.assertIn("/sheets/v2/spreadsheets/", requests[1].full_url)
         self.assertEqual(requests[1].get_header("Authorization"), "Bearer test-token")
+
+    def make_x_lead(self, name="Acme", handle="alex"):
+        company_id = self.db.insert_company({
+            "name": name, "country_type": "overseas",
+            "website": f"https://{handle}.example",
+        })
+        lead_id = self.db.insert_lead({
+            "company_id": company_id, "contact_name": "Alex",
+            "job_title": "Founder", "x_url": f"https://x.com/{handle}",
+        })
+        return company_id, lead_id
+
+    @staticmethod
+    def x_record(**values):
+        record = {
+            "sheet_row": 2, "contact_name": "Alex", "company_name": "Acme",
+            "job_title": "Founder", "x_url": "https://x.com/alex",
+            "website": "https://alex.example", "x_account": "alex",
+            "source_status": "已推送未回复", "source_date": "2026-11-02",
+        }
+        record.update(values)
+        return record
+
+    def test_x_sync_maps_statuses_to_x_dm_and_is_idempotent_without_sending(self):
+        self.make_x_lead()
+        sync = FeishuXStatusSync(self.db, environ={})
+        records = [self.x_record()]
+        with patch.object(sync, "fetch_records", return_value=records):
+            first = sync.apply()
+            second = sync.apply()
+        conn = get_connection(self.db.db_path)
+        outreach = conn.execute(
+            "SELECT * FROM outreach_records WHERE channel='x_dm'"
+        ).fetchone()
+        queue_count = conn.execute("SELECT count(*) FROM mail_queue").fetchone()[0]
+        conn.close()
+        self.assertEqual(first["created_outreach_records"], 1)
+        self.assertEqual(first["create_sample_sent"], 1)
+        self.assertEqual(second["created_outreach_records"], 0)
+        self.assertEqual(second["unchanged"], 1)
+        self.assertEqual(outreach["status"], "sample_sent")
+        self.assertIn("2026-11-02", outreach["interaction_notes"])
+        self.assertIn("未触发任何私信或邮件发送", outreach["interaction_notes"])
+        self.assertEqual(queue_count, 0)
+
+    def test_x_sync_replies_advance_but_never_downgrade_advanced_stages(self):
+        _, lead_id = self.make_x_lead()
+        sync = FeishuXStatusSync(self.db, environ={})
+        replied = [self.x_record(source_status="已回复")]
+        with patch.object(sync, "fetch_records", return_value=replied):
+            result = sync.apply()
+        self.assertEqual(result["create_contacted"], 1)
+        self.db.record_outreach({
+            "lead_id": lead_id, "channel": "x_dm", "status": "negotiation",
+        })
+        with patch.object(sync, "fetch_records", return_value=[
+            self.x_record(source_status="已推送未回复")
+        ]):
+            result = sync.apply()
+        self.assertEqual(result["preserved"], 1)
+        self.assertEqual(result["created_outreach_records"], 0)
+
+    def test_x_sync_explicit_suppression_is_lost_and_conflicts_are_reported(self):
+        self.make_x_lead()
+        sync = FeishuXStatusSync(self.db, environ={})
+        with patch.object(sync, "fetch_records", return_value=[
+            self.x_record(source_status="无法触达(私信关闭)")
+        ]):
+            result = sync.apply()
+        conn = get_connection(self.db.db_path)
+        self.assertEqual(conn.execute(
+            "SELECT status FROM outreach_records WHERE channel='x_dm'"
+        ).fetchone()["status"], "lost")
+        conn.close()
+        self.assertEqual(result["create_lost"], 1)
+
+        conflicts = sync.plan([
+            self.x_record(source_status="待处理", sheet_row=4),
+            self.x_record(source_status="已回复", sheet_row=5),
+            self.x_record(x_url="https://x.com/unknown", x_account="unknown",
+                          source_status="ByCrux", sheet_row=6),
+        ])
+        self.assertEqual(conflicts["conflict_count"], 1)
+        self.assertEqual(conflicts["malformed"], 1)
+        self.assertTrue(any("多个状态" in item["reason"]
+                            for item in conflicts["conflicts"]))
+        self.assertTrue(any("未知 X 推送状态" in item["reason"]
+                            for item in conflicts["conflicts"]))
+
+    def test_x_sync_preserves_other_channel_advanced_stage_and_detects_company_mismatch(self):
+        _, lead_id = self.make_x_lead(name="Unrelated Company")
+        self.db.record_outreach({
+            "lead_id": lead_id, "channel": "cold_email", "status": "won",
+        })
+        sync = FeishuXStatusSync(self.db, environ={})
+        with patch.object(sync, "fetch_records", return_value=[self.x_record()]):
+            result = sync.apply()
+        self.assertEqual(result["preserved"], 1)
+        self.assertEqual(result["created_outreach_records"], 0)
+
+        self.make_x_lead(name="Another", handle="other")
+        bad = self.x_record(company_name="Wrong Company", x_url="https://x.com/other",
+                            x_account="other", website="https://wrong.example")
+        result = sync.plan([bad])
+        self.assertEqual(result["conflict_count"], 1)
+        self.assertIn("公司名/官网域名不一致", result["conflicts"][0]["reason"])
+
+    def test_x_raw_non_touch_states_and_dates_are_preserved_without_fake_outreach(self):
+        self.make_x_lead()
+        sync = FeishuXStatusSync(self.db, environ={})
+        records = [self.x_record(source_status="已起草")]
+        with patch.object(sync, "fetch_records", return_value=records):
+            preview = sync.preview()
+            result = sync.apply(expected_fingerprint=preview["fingerprint"])
+            again = sync.apply()
+        self.assertEqual(result["source_updates"], 1)
+        self.assertEqual(result["created_outreach_records"], 0)
+        self.assertEqual(again["source_updates"], 0)
+        conn = get_connection(self.db.db_path)
+        state = conn.execute("SELECT * FROM feishu_x_states").fetchone()
+        self.assertEqual(state["source_status"], "已起草")
+        self.assertEqual(state["source_date"], "2026-11-02")
+        self.assertEqual(conn.execute("SELECT count(*) FROM outreach_records").fetchone()[0], 0)
+        conn.close()
+        records[0]["source_status"] = "已回复"
+        with patch.object(sync, "fetch_records", return_value=records):
+            with self.assertRaisesRegex(FeishuImportError, "发生变化"):
+                sync.apply(expected_fingerprint=preview["fingerprint"])
+
+    def test_x_duplicate_crm_identity_mismatch_and_unknown_handle_fail_closed(self):
+        company_id, _ = self.make_x_lead()
+        self.db.insert_lead({
+            "company_id": company_id, "contact_name": "Other",
+            "x_url": "https://twitter.com/ALEX",
+        })
+        sync = FeishuXStatusSync(self.db, environ={})
+        result = sync.plan([self.x_record()])
+        self.assertEqual(result["conflict_count"], 1)
+        self.assertEqual(result["actions"], [])
+        result = sync.plan([self.x_record(x_account="someoneelse")])
+        self.assertEqual(result["malformed"], 1)
+        self.assertEqual(sync.normalize_x_identity("https://x.com/home"), "")
+        self.assertEqual(sync.normalize_x_identity("https://x.com/alex/status/123"), "alex")
+        self.assertEqual(sync.normalize_x_identity("twitter.com/AlEx?lang=en"), "alex")
+
+    def test_x_status_changes_append_history_instead_of_overwriting_notes(self):
+        _, lead_id = self.make_x_lead()
+        self.db.record_outreach({
+            "lead_id": lead_id, "channel": "x_dm", "status": "sample_sent",
+            "interaction_notes": "Original sales note",
+        })
+        sync = FeishuXStatusSync(self.db, environ={})
+        with patch.object(sync, "fetch_records", return_value=[
+            self.x_record(source_status="已回复")
+        ]):
+            sync.apply()
+        conn = get_connection(self.db.db_path)
+        rows = conn.execute("SELECT * FROM outreach_records ORDER BY id").fetchall()
+        conn.close()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["interaction_notes"], "Original sales note")
+        self.assertEqual(rows[-1]["status"], "contacted")
 
 
 if __name__ == "__main__":
