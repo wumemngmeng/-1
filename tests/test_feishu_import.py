@@ -440,7 +440,7 @@ class FeishuImportTests(unittest.TestCase):
             "x_url": "https://twitter.com/ALEX",
         })
         sync = FeishuXStatusSync(self.db, environ={})
-        result = sync.plan([self.x_record()])
+        result = sync.plan([self.x_record(contact_name="")])
         self.assertEqual(result["conflict_count"], 1)
         self.assertEqual(result["actions"], [])
         result = sync.plan([self.x_record(x_account="someoneelse")])
@@ -466,6 +466,79 @@ class FeishuImportTests(unittest.TestCase):
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0]["interaction_notes"], "Original sales note")
         self.assertEqual(rows[-1]["status"], "contacted")
+
+    def test_x_sync_imports_identifiable_missing_contact_and_archives_all_source_rows(self):
+        self.db.insert_company({
+            "name": "Northwind Studio", "country_type": "overseas",
+            "website": "https://northwind.example",
+        })
+        sync = FeishuXStatusSync(self.db, environ={})
+        records = [
+            self.x_record(
+                company_name="Northwind Studio", contact_name="Casey",
+                x_url="https://x.com/casey_northwind", x_account="casey_northwind",
+                website="https://northwind.example",
+                source_status="已回复", sheet_row=10,
+            ),
+            self.x_record(
+                company_name="Anonymous DTC brand", contact_name="Casey",
+                x_url="https://x.com/unknownbrand", x_account="unknownbrand",
+                source_status="已推送未回复", sheet_row=11,
+            ),
+        ]
+        with patch.object(sync, "fetch_records", return_value=records):
+            plan = sync.preview()
+            first = sync.apply(expected_fingerprint=plan["fingerprint"])
+            second = sync.apply()
+        conn = get_connection(self.db.db_path)
+        lead = conn.execute(
+            "SELECT * FROM leads WHERE x_url='https://x.com/casey_northwind'"
+        ).fetchone()
+        outreach = conn.execute(
+            "SELECT * FROM outreach_records WHERE lead_id=? AND channel='x_dm'",
+            (lead["id"],),
+        ).fetchone()
+        archived = conn.execute(
+            "SELECT count(*) FROM feishu_x_source_rows"
+        ).fetchone()[0]
+        mail_queue = conn.execute("SELECT count(*) FROM mail_queue").fetchone()[0]
+        conn.close()
+        self.assertEqual(plan["importable_rows"], 1)
+        self.assertEqual(first["created_contacts"], 1)
+        self.assertEqual(first["created_outreach_records"], 1)
+        self.assertEqual(first["archived_source_rows"], 2)
+        self.assertEqual(second["created_contacts"], 0)
+        self.assertEqual(second["created_outreach_records"], 0)
+        self.assertEqual(second["archived_source_rows"], 2)
+        self.assertEqual(lead["verification_status"], "pending_review")
+        self.assertEqual(outreach["status"], "contacted")
+        self.assertEqual(archived, 2)
+        self.assertEqual(mail_queue, 0)
+
+    def test_linkedin_channel_status_is_not_written_as_x_dm(self):
+        company_id = self.db.insert_company({
+            "name": "Linkedin Co", "country_type": "overseas",
+            "website": "https://linkedinco.example",
+        })
+        self.db.insert_lead({
+            "company_id": company_id, "contact_name": "Sam",
+            "linkedin_url": "https://www.linkedin.com/in/sam-linkedin",
+        })
+        sync = FeishuXStatusSync(self.db, environ={})
+        record = self.x_record(
+            contact_name="Sam", company_name="Linkedin Co",
+            x_url="https://www.linkedin.com/in/sam-linkedin",
+            x_account="linkedin.com/in/sam-linkedin", channel="LinkedIn",
+            website="https://linkedinco.example", source_status="已回复",
+        )
+        with patch.object(sync, "fetch_records", return_value=[record]):
+            result = sync.apply()
+        conn = get_connection(self.db.db_path)
+        row = conn.execute("SELECT channel,status FROM outreach_records").fetchone()
+        conn.close()
+        self.assertEqual(result["create_contacted"], 1)
+        self.assertEqual(row["channel"], "linkedin_inmail")
+        self.assertEqual(row["status"], "contacted")
 
 
 if __name__ == "__main__":
