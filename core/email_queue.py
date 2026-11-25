@@ -540,7 +540,8 @@ class EmailQueue:
                 """SELECT l.id AS lead_id,l.email,l.contact_name,
                 l.created_at AS lead_created_at,
                 c.id AS company_id,c.name AS company_name,
-                CASE WHEN c.market_classification='pending_verification'
+                CASE WHEN l.market_classification='pending_verification'
+                          OR c.market_classification='pending_verification'
                      THEN 'pending_verification' ELSE c.country_type END AS country_type
                 FROM leads l JOIN companies c ON c.id=l.company_id
                 WHERE (? IS NULL OR c.owner=?) ORDER BY l.id DESC""", (owner, owner)
