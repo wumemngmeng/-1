@@ -9,7 +9,7 @@ from cryptography.fernet import Fernet
 
 from core.database import DatabaseManager
 from core.email_queue import EmailQueue
-from core.email_reply_monitor import EmailReplyMonitor, default_imap_host
+from core.email_reply_monitor import EmailReplyMonitor, default_imap_host, looks_automated
 
 
 class FakeImap:
@@ -79,6 +79,10 @@ class EmailReplyMonitorTests(unittest.TestCase):
 
     def test_default_alibaba_imap_host(self):
         self.assertEqual(default_imap_host("smtp.qiye.aliyun.com"), "imap.qiye.aliyun.com")
+        self.assertTrue(looks_automated(
+            "Re: hello", "Thanks for getting in touch! Our team will get back to you."
+        ))
+        self.assertFalse(looks_automated("Re: hello", "Can we schedule a demo next week?"))
 
     def test_poll_is_readonly_filters_automation_and_is_idempotent(self):
         FakeImap.messages = {101: self.message(), 102: self.message(auto=True)}

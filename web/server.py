@@ -2250,7 +2250,7 @@ Aibubu Team</textarea>
                 target.textContent=result.error||'读取邮件回复失败';
                 return;
             }
-            const unread=(result.rows||[]).filter(row=>!row.is_read).length;
+            const unread=result.status?.unread||0;
             document.getElementById('email-reply-unread').textContent=unread?`${unread} 条未读`:'';
             const senderState=(result.status?.senders||[])[0];
             document.getElementById('email-reply-monitor-status').textContent=senderState
@@ -2258,6 +2258,7 @@ Aibubu Team</textarea>
                 : '监控任务尚未首次运行';
             target.innerHTML=(result.rows||[]).map(row=>`<div class="email-preview" style="${row.is_read?'opacity:.72':'border-color:var(--primary);'}">
                 <strong>${escapeHtml(row.company_name||'-')} · ${escapeHtml(row.contact_name||row.from_email)}</strong>
+                ${row.reply_type==='automated'?'<span class="email-status">自动确认</span>':'<span class="email-status">客户回复</span>'}
                 <span class="email-status">${escapeHtml(row.received_at)} UTC</span><br>
                 From: ${escapeHtml(row.from_email)}<br>
                 Subject: ${escapeHtml(row.subject||'(无主题)')}<br>
