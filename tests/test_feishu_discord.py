@@ -150,7 +150,7 @@ class FeishuDiscordTests(unittest.TestCase):
         self.assertEqual(conn.execute("SELECT count(*) FROM companies").fetchone()[0], 2)
         self.assertEqual(conn.execute("SELECT count(*) FROM feishu_sync_sources WHERE source_type='mail'").fetchone()[0], 1)
         conn.close()
-    def test_pending_market_source_overrides_existing_lead_without_reclassifying_company(self):
+    def test_unknown_market_source_keeps_existing_lead_in_overseas_pool(self):
         company_id = self.db.insert_company({
             "name": "Typeface", "country_type": "overseas",
             "website": "https://www.typeface.ai",
@@ -168,26 +168,19 @@ class FeishuDiscordTests(unittest.TestCase):
         }
         with patch.object(importer, "fetch_records", return_value=[record]):
             preview = importer.preview()
-            self.assertEqual(preview["market_override_updates"][0]["lead_id"], lead_id)
+            self.assertNotIn("market_override_updates", preview)
             result = importer.apply("管理员", preview["fingerprint"])
-        self.assertEqual(result["market_overrides"], 1)
+        self.assertEqual(result["market_overrides"], 0)
         queue = EmailQueue(self.db)
         recipient = next(row for row in queue.recipients() if row["lead_id"] == lead_id)
-        self.assertEqual(recipient["country_type"], "pending_verification")
-        with self.assertRaisesRegex(ValueError, "待核验市场线索不可发送"):
-            queue.prepare([lead_id], "管理员")
-        with self.assertRaisesRegex(ValueError, "待核验市场线索不可加入推送包"):
-            queue.create_package({
-                "title": "Pending verification", "lead_ids": [lead_id],
-                "subject": "Hi", "body": "Hello",
-            }, "管理员")
+        self.assertEqual(recipient["country_type"], "overseas")
         company = get_connection(self.db.db_path)
         self.assertEqual(company.execute(
             "SELECT country_type,market_classification FROM companies WHERE id=?",
             (company_id,),
         ).fetchone()["market_classification"], "verified")
         self.assertEqual(next(row for row in self.db.query_pipeline()
-                             if row["lead_id"] == lead_id)["country_type"], "pending_verification")
+                             if row["lead_id"] == lead_id)["country_type"], "overseas")
         company.close()
 
 

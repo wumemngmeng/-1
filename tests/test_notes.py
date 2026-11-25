@@ -32,7 +32,7 @@ class NotesTests(unittest.TestCase):
         self.assertIn('id="view-email-settings"', html)
         self.assertNotIn('<span>✉️</span> <span>邮件线索池</span>', html)
         self.assertIn('onclick="switchEmailPoolMarket(\'domestic\', this)"', html)
-        self.assertIn('onclick="switchEmailPoolMarket(\'overseas\', this)"', html)
+        self.assertIn("onclick=\"switchPipelineChannel('overseas', 'email', this)\"", html)
         self.assertIn('<span>✉️ 邮件发送配置</span>', html)
         self.assertIn('<span>📝 筛选策略</span>', html)
         self.assertIn('<span>🛡️ 组织与权限管理</span>', html)
@@ -382,23 +382,21 @@ vm.runInContext(`
   currentData=[
     {company_id:1,country_type:'domestic',email:'cn@example.com'},
     {company_id:2,country_type:'overseas',x_url:'https://x.com/founder'},
-    {company_id:3,country_type:'pending_verification',x_url:'https://x.com/pending'},
-    {company_id:4,country_type:'pending_verification',email:'pending@example.com'},
-    {company_id:5,country_type:'pending_verification'}
+    {company_id:3,country_type:'overseas',email:'global@example.com'},
+    {company_id:4,country_type:'overseas'}
   ];
   fetchStats=()=>{};
   renderTable=()=>{visibleData=marketRows();};
   renderSourceCapsules=()=>{};
   switchNav=(nav)=>{globalThis.destination=nav;};
-  check(leadMatchesChannel({lead_source:'公开 X 主页'},'x'),'X source classification failed');
-  check(!leadMatchesChannel({lead_source:'example.com'},'x'),'false X source match');
+  check(leadMatchesChannel({x_url:'https://x.com/founder'},'x'),'X homepage classification failed');
+  check(!leadMatchesChannel({lead_source:'公开 X 主页'},'x'),'source-only X classification leaked');
   check(leadChannelCounts([
     ...currentData.filter(row=>row.country_type==='domestic'),currentData[0]
   ]).email===1,'duplicate company count');
   currentEmailProspects=[
     {lead_id:1,country_type:'domestic',company_name:'国内示例',email:'cn@example.com',status:'pending'},
-    {lead_id:2,country_type:'overseas',company_name:'海外示例',email:'global@example.com',status:'pending'},
-    {lead_id:3,country_type:'pending_verification',email:'pending@example.com',status:'pending'}
+    {lead_id:2,country_type:'overseas',company_name:'海外示例',email:'global@example.com',status:'pending'}
   ];
   packageSelectedIds.add(2);
   switchEmailPoolMarket('domestic');
@@ -408,33 +406,22 @@ vm.runInContext(`
   check(domestic.includes('cn@example.com')&&!domestic.includes('global@example.com'),'email markets leaked');
   togglePackageCandidates(true);
   check(packageSelectedIds.size===1&&packageSelectedIds.has(1),'cross-market package selection');
-  switchEmailPoolMarket('overseas');
-  check(packageSelectedIds.size===0,'previous selection survived market switch');
-  togglePackageCandidates(true);
-  check(packageSelectedIds.size===1&&packageSelectedIds.has(2),'overseas package scope');
   switchOverseasDiscord();
   check(destination==='discord'&&activeCountry==='overseas','discord market route');
   switchPipelineChannel('overseas','x');
   check(destination==='pipeline'&&activeCountry==='overseas'&&activeLeadChannel==='x','X market route');
+  check(leadMatchesChannel(currentData[1],'x')&&!leadMatchesChannel(currentData[2],'x'),
+    'overseas X attribution mixed');
+  switchPipelineChannel('overseas','email');
+  check(destination==='pipeline'&&activeCountry==='overseas'&&activeLeadChannel==='email',
+    'overseas email route');
+  check(leadMatchesChannel(currentData[2],'email')&&leadMatchesChannel(currentData[3],'email')
+    &&!leadMatchesChannel(currentData[1],'email'),'overseas email attribution mixed');
   switchPipelineMarket('domestic',document.getElementById('domestic-nav'));
   check(!document.getElementById('lead-pool-cards').innerHTML.includes('X 线索'),'domestic X card exposed');
   check(!document.getElementById('lead-pool-cards').innerHTML.includes('Discord'),'domestic Discord card exposed');
   switchPipelineChannel('domestic','x');
   check(activeCountry==='domestic'&&activeLeadChannel==='all','domestic X route was allowed');
-  switchPipelineMarket('pending_verification',document.getElementById('pending-verification-nav'));
-  check(activeLeadChannel==='all'&&!document.getElementById('lead-pool-switcher').hidden,
-    'pending market switcher hidden');
-  check(document.getElementById('pending_verification-x-count').textContent===1,
-    'pending X attribution');
-  check(document.getElementById('pending_verification-email-count').textContent===2,
-    'pending non-X attribution');
-  switchPipelineChannel('pending_verification','x');
-  check(destination==='pipeline'&&activeLeadChannel==='x','pending X route');
-  check(leadMatchesChannel(currentData[2],'x')&&!leadMatchesChannel(currentData[3],'x'),
-    'pending X attribution mixed');
-  switchPipelineChannel('pending_verification','email');
-  check(leadMatchesChannel(currentData[3],'email')&&leadMatchesChannel(currentData[4],'email')
-    &&!leadMatchesChannel(currentData[2],'email'),'pending email attribution mixed');
 `,context);
 """
         result = subprocess.run(
@@ -444,7 +431,7 @@ vm.runInContext(`
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js required")
-    def test_email_navigation_counts_contacts_and_pending_market(self):
+    def test_email_navigation_counts_domestic_contacts_and_overseas_channels(self):
         script = html_template().split("<script>", 1)[1].split("</script>", 1)[0]
         script = script.split("// 初始化加载", 1)[0]
         harness = r"""
@@ -454,27 +441,25 @@ const document={addEventListener(){},getElementById(id){return elements[id]||={t
   addEventListener(){},classList:{add(){},remove(){},toggle(){}},innerHTML:''};},querySelectorAll(){return [];}};
 const ctx=vm.createContext({document,currentData:[],currentEmailProspects:[
  {lead_id:1,country_type:'domestic'}, {lead_id:2,country_type:'overseas'},
- {lead_id:3,country_type:'pending_verification'}],currentDiscordCommunities:[],
- discordCommunityTotal:0,activeCountry:'pending_verification',activeLeadChannel:'email',
- LEAD_CHANNEL_META:{email:{label:'邮件',icon:'✉',hint:'邮箱'},discord:{label:'Discord',icon:'D',hint:'社群'}},
- leadMatchesChannel:()=>false,marketLabel:x=>x,marketRows:()=>[],Object,Set});
+ {lead_id:3,country_type:'overseas'}],currentDiscordCommunities:[],
+ discordCommunityTotal:0,activeCountry:'overseas',activeLeadChannel:'email',
+ Object,Set});
 vm.runInContext(SCRIPT,ctx);
 vm.runInContext(`currentEmailProspects=[
  {lead_id:1,country_type:'domestic'}, {lead_id:2,country_type:'overseas'},
- {lead_id:3,country_type:'pending_verification'}]; activeCountry='pending_verification';
+ {lead_id:3,country_type:'overseas'}]; activeCountry='overseas';
  currentData=[
-  {company_id:3,country_type:'pending_verification',x_url:'https://x.com/pending'},
-  {company_id:4,country_type:'pending_verification',email:'pending@example.com'},
-  {company_id:5,country_type:'pending_verification'}
+  {company_id:3,country_type:'overseas',x_url:'https://x.com/founder'},
+  {company_id:4,country_type:'overseas',email:'global@example.com'},
+  {company_id:5,country_type:'overseas'}
  ];activeLeadChannel='email';`,ctx);
 const countResult=vm.runInContext('emailContactCounts()',ctx);
-if(countResult.domestic!==1 || countResult.overseas!==1 ||
-   countResult.pending_verification!==1) throw Error('email contact counts must use email contacts');
+if(countResult.domestic!==1 || countResult.overseas!==2)
+  throw Error('email contact counts must use email contacts');
 vm.runInContext('renderLeadPoolNavigation()',ctx);
 if(elements['domestic-email-count'].textContent!==1 ||
-   elements['overseas-email-count'].textContent!==1 ||
-   elements['pending_verification-email-count'].textContent!==2 ||
-   elements['pending_verification-x-count'].textContent!==1) throw Error('pending channel attribution');
+   elements['overseas-email-count'].textContent!==2 ||
+   elements['overseas-x-count'].textContent!==1) throw Error('overseas channel attribution');
 """
         result = subprocess.run(["node", "-e", harness.replace("SCRIPT", json.dumps(script))],
                                 capture_output=True, text=True, timeout=30)
@@ -485,17 +470,16 @@ if(elements['domestic-email-count'].textContent!==1 ||
         html = html_template()
         self.assertIn('id="domestic-nav"', html)
         self.assertIn('id="overseas-nav"', html)
-        self.assertIn('id="pending-verification-nav"', html)
+        self.assertNotIn('id="pending-verification-nav"', html)
         self.assertIn('<li class="nav-item active" id="overseas-nav"', html)
         self.assertIn('<li class="nav-item" id="domestic-nav"', html)
         self.assertIn("let activeCountry = 'overseas';", html)
         self.assertIn('id="pipeline-title">海外客户</h2>', html)
         self.assertIn('id="lead-pool-title">海外客户线索池 · 全部渠道</h3>', html)
-        self.assertIn('id="pending_verification-x-count"', html)
-        self.assertIn("switchPipelineChannel('pending_verification', 'email'", html)
-        self.assertIn("switchPipelineChannel('pending_verification', 'x'", html)
-        self.assertIn("pending_verification:'待核验'", html)
-        self.assertIn("row.country_type !== 'pending_verification'", html)
+        self.assertNotIn('id="pending_verification-x-count"', html)
+        self.assertNotIn("pending_verification:'待核验'", html)
+        self.assertIn("if (channel === 'email') return !hasXHomepage;", html)
+        self.assertIn("if (channel === 'x') return hasXHomepage;", html)
         self.assertLess(html.index('id="overseas-nav"'), html.index('id="domestic-nav"'))
         self.assertIn('>推送话术</th>', html)
         self.assertIn('class="company-note-summary"', html)

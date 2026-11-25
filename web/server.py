@@ -1406,7 +1406,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <span>🌐</span> <span>海外客户线索池</span>
                 </li>
                 <li class="nav-sublist" id="overseas-pool-nav">
-                    <button class="nav-subitem" data-market="overseas" data-channel="email" onclick="switchEmailPoolMarket('overseas', this)">
+                    <button class="nav-subitem" data-market="overseas" data-channel="email" onclick="switchPipelineChannel('overseas', 'email', this)">
                         <span>✉️ 邮件组线索</span><span class="nav-subcount" id="overseas-email-count">0</span>
                     </button>
                     <button class="nav-subitem" data-market="overseas" data-channel="x" onclick="switchPipelineChannel('overseas', 'x', this)">
@@ -1422,17 +1422,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <li class="nav-sublist" id="domestic-pool-nav">
                     <button class="nav-subitem" data-market="domestic" data-channel="email" onclick="switchEmailPoolMarket('domestic', this)">
                         <span>✉️ 邮件组线索</span><span class="nav-subcount" id="domestic-email-count">0</span>
-                    </button>
-                </li>
-                <li class="nav-item" id="pending-verification-nav" onclick="switchPipelineMarket('pending_verification', this)">
-                    <span>🔎</span> <span>待核验线索</span>
-                </li>
-                <li class="nav-sublist" id="pending-verification-pool-nav">
-                    <button class="nav-subitem" data-market="pending_verification" data-channel="email" onclick="switchPipelineChannel('pending_verification', 'email', this)">
-                        <span>✉️ 邮件组线索</span><span class="nav-subcount" id="pending_verification-email-count">0</span>
-                    </button>
-                    <button class="nav-subitem" data-market="pending_verification" data-channel="x" onclick="switchPipelineChannel('pending_verification', 'x', this)">
-                        <span>𝕏 X 线索</span><span class="nav-subcount" id="pending_verification-x-count">0</span>
                     </button>
                 </li>
                 <li class="nav-section-label">邮件运营</li>
@@ -1533,7 +1522,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
             <div class="controls-panel compact-filters">
                 <div class="filter-toolbar"><strong>筛选企业</strong><div class="filter-toolbar-actions"><label class="filter-field" title=""><span>名单</span><select id="exclusion-filter" onchange="renderTable()"><option value="active">待开发 / 跟进中</option><option value="excluded">已剔除</option><option value="all">全部（含已剔除）</option></select></label><button onclick="resetFilters()">重置筛选</button></div></div>
-                <div class="filter-grid"><label class="filter-field" title=""><span>市场区域</span><select id="country-filter" onchange="activeCountry=this.value;renderTable()"><option value="all">全部地区</option><option value="domestic">国内</option><option value="overseas">国外</option><option value="pending_verification">待核验</option></select></label><label class="filter-field" title="沿用现有综合预估等级，非核实后的企业规模"><span>企业级别（预估）</span><select id="tier-filter" onchange="activeTier=this.value;renderTable()"><option value="all">全部级别</option><option value="S">S级 · 超大规模</option><option value="A">A级 · 大型企业</option><option value="B">B级 · 成长企业</option><option value="C">C级 · 小微 / 潜力企业</option></select></label><label class="filter-field" title=""><span>公司来源</span><select id="source-filter" onchange="selectedSources.clear();if(this.value!=='all')selectedSources.add(this.value);activeSourceMode='include';renderTable()"><option value="all">全部来源</option></select></label><label class="filter-field" title=""><span>触达动作</span><select id="stage-filter" onchange="activeTouch='all';activeStage=this.value;renderTable()"><option value="all">全部动作</option><option value="pending">待触达</option><option value="sample_sent">已推送未回复</option><option value="contacted">已建连</option><option value="negotiation">有意向</option><option value="team_trial">已注册</option><option value="won">已充值</option><option value="lost">不触达</option></select></label><label class="filter-field" title=""><span>客户类型</span><select id="type-filter" onchange="renderTable()"><option value="all">全部类型</option><option value="电商商拍客户">电商商拍客户</option><option value="API / AI 应用客户">API / AI 应用客户</option><option value="广告 / 代运营机构">广告 / 代运营机构</option><option value="unknown">待分类</option></select></label><label class="filter-field" title=""><span>跟进情况</span><select id="due-filter" onchange="renderTable()"><option value="all">全部情况</option><option value="due">今天到期 / 已逾期</option><option value="unclaimed">未领取</option></select></label><label class="filter-field" title=""><span>行业</span><select id="industry-filter" onchange="renderTable()"><option value="all">全部行业</option></select></label><label class="filter-field" title=""><span>每月预计消耗</span><select id="spend-filter" onchange="renderTable()"><option value="all">全部消耗</option><option value="unknown">待评估</option><option value="small">5,000 元以下</option><option value="medium">5,000–2万元（不含）</option><option value="large">2–5万元（不含）</option><option value="enterprise">5万元及以上</option></select></label></div>
+                <div class="filter-grid"><label class="filter-field" title=""><span>市场区域</span><select id="country-filter" onchange="activeCountry=this.value;renderTable()"><option value="all">全部地区</option><option value="domestic">国内</option><option value="overseas">国外</option></select></label><label class="filter-field" title="沿用现有综合预估等级，非核实后的企业规模"><span>企业级别（预估）</span><select id="tier-filter" onchange="activeTier=this.value;renderTable()"><option value="all">全部级别</option><option value="S">S级 · 超大规模</option><option value="A">A级 · 大型企业</option><option value="B">B级 · 成长企业</option><option value="C">C级 · 小微 / 潜力企业</option></select></label><label class="filter-field" title=""><span>公司来源</span><select id="source-filter" onchange="selectedSources.clear();if(this.value!=='all')selectedSources.add(this.value);activeSourceMode='include';renderTable()"><option value="all">全部来源</option></select></label><label class="filter-field" title=""><span>触达动作</span><select id="stage-filter" onchange="activeTouch='all';activeStage=this.value;renderTable()"><option value="all">全部动作</option><option value="pending">待触达</option><option value="sample_sent">已推送未回复</option><option value="contacted">已建连</option><option value="negotiation">有意向</option><option value="team_trial">已注册</option><option value="won">已充值</option><option value="lost">不触达</option></select></label><label class="filter-field" title=""><span>客户类型</span><select id="type-filter" onchange="renderTable()"><option value="all">全部类型</option><option value="电商商拍客户">电商商拍客户</option><option value="API / AI 应用客户">API / AI 应用客户</option><option value="广告 / 代运营机构">广告 / 代运营机构</option><option value="unknown">待分类</option></select></label><label class="filter-field" title=""><span>跟进情况</span><select id="due-filter" onchange="renderTable()"><option value="all">全部情况</option><option value="due">今天到期 / 已逾期</option><option value="unclaimed">未领取</option></select></label><label class="filter-field" title=""><span>行业</span><select id="industry-filter" onchange="renderTable()"><option value="all">全部行业</option></select></label><label class="filter-field" title=""><span>每月预计消耗</span><select id="spend-filter" onchange="renderTable()"><option value="all">全部消耗</option><option value="unknown">待评估</option><option value="small">5,000 元以下</option><option value="medium">5,000–2万元（不含）</option><option value="large">2–5万元（不含）</option><option value="enterprise">5万元及以上</option></select></label></div>
                 <div class="filter-footer"><span>企业级别沿用现有综合预估；消耗单位为人民币 / 月，非已确认预算。</span><span id="filter-count" aria-live="polite">加载中…</span></div>
             </div>
 
@@ -1581,7 +1570,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <h3>邮箱线索与批次人选</h3>
                 <p class="email-status">按线索入库日期筛选联系人并保存批次人选。保存不会发送邮件；标题、正文、发件邮箱和发送操作统一在左侧“邮件发送”页面完成。</p>
                 <div class="filter-grid">
-                    <label>市场<select id="email-market-filter" onchange="renderEmailRecipients()"><option value="">全部市场</option><option value="domestic">国内</option><option value="overseas">海外</option><option value="pending_verification">待核验</option></select></label>
+                    <label>市场<select id="email-market-filter" onchange="renderEmailRecipients()"><option value="">全部市场</option><option value="domestic">国内</option><option value="overseas">海外</option></select></label>
                     <label>邮件状态<select id="email-status-filter" onchange="renderEmailRecipients()"><option value="pending">未发送</option><option value="sent">已发送</option><option value="sending">发送中 / 待核实</option><option value="unsubscribed">已退订</option><option value="removed">已移除</option><option value="email_changed">邮箱变更待核实</option><option value="">全部</option></select></label>
                     <label>公司 / 姓名 / 邮箱<input id="email-search" oninput="renderEmailRecipients()" placeholder="搜索客户"></label>
                     <label>入库日期从<input type="date" id="package-date-from" onchange="renderPackageCandidates()"></label>
@@ -2239,15 +2228,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             return currentData.filter(row => row.country_type === activeCountry);
         }
 
-        const MARKET_LABELS = {domestic:'国内', overseas:'海外', pending_verification:'待核验'};
+        const MARKET_LABELS = {domestic:'国内', overseas:'海外'};
         function marketLabel(country) {
-            return MARKET_LABELS[country] || '待核验';
+            return MARKET_LABELS[country] || '未知';
         }
         function marketTagClass(country) {
-            return country === 'domestic' ? 'tag-cn' : country === 'overseas' ? 'tag-global' : 'tag-pending';
+            return country === 'domestic' ? 'tag-cn' : 'tag-global';
         }
         function isEmailSendable(row) {
-            return row.status === 'pending' && row.country_type !== 'pending_verification';
+            return row.status === 'pending';
         }
         const LEAD_CHANNEL_META = {
             email: {label:'邮件组线索', icon:'✉️', hint:'已录入工作邮箱，可进入邮件触达队列'},
@@ -2255,13 +2244,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             discord: {label:'Discord 线索', icon:'💬', hint:'进入海外 Discord 社群观察看板'}
         };
         function leadMatchesChannel(row, channel) {
+            const hasXHomepage = Boolean(String(row.x_url || '').trim());
+            if (channel === 'email') return !hasXHomepage;
+            if (channel === 'x') return hasXHomepage;
             const source = String(row.lead_source || '').toLowerCase();
-            if (row.country_type === 'pending_verification' && ['email', 'x'].includes(channel)) {
-                const hasXHomepage = Boolean(String(row.x_url || '').trim());
-                return channel === 'x' ? hasXHomepage : !hasXHomepage;
-            }
-            if (channel === 'email') return Boolean(String(row.email || '').trim());
-            if (channel === 'x') return Boolean(String(row.x_url || '').trim()) || /\\bx\\b/.test(source) || source.includes('twitter');
             if (channel === 'discord') return source.includes('discord') || String(row.discovery_url || '').toLowerCase().includes('discord');
             return true;
         }
@@ -2271,18 +2257,18 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             ]));
         }
         function emailContactCounts() {
-            return Object.fromEntries(['domestic', 'overseas', 'pending_verification'].map(market => [
+            return Object.fromEntries(['domestic', 'overseas'].map(market => [
                 market, currentEmailProspects.filter(row => row.country_type === market).length
             ]));
         }
         function renderLeadPoolNavigation() {
             const emailCounts = emailContactCounts();
-            ['domestic', 'overseas', 'pending_verification'].forEach(market => {
+            ['domestic', 'overseas'].forEach(market => {
                 const counts = leadChannelCounts(currentData.filter(row => row.country_type === market));
                 Object.keys(LEAD_CHANNEL_META).forEach(channel => {
                     const count = document.getElementById(`${market}-${channel}-count`);
                     if (count && channel !== 'discord') {
-                        count.textContent = channel === 'email' && market !== 'pending_verification'
+                        count.textContent = channel === 'email' && market === 'domestic'
                             ? emailCounts[market] : counts[channel];
                     }
                 });
@@ -2291,9 +2277,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             const rows = marketRows();
             const counts = leadChannelCounts(rows);
             const channels = Object.entries(LEAD_CHANNEL_META).filter(([channel]) =>
-                activeCountry === 'overseas'
-                || activeCountry === 'pending_verification' && ['email', 'x'].includes(channel)
-                || activeCountry === 'domestic' && channel === 'email');
+                activeCountry === 'overseas' || activeCountry === 'domestic' && channel === 'email');
             document.getElementById('lead-pool-title').textContent =
                 `${marketLabel(activeCountry)}客户线索池 · ${activeLeadChannel === 'all' ? '全部渠道' : LEAD_CHANNEL_META[activeLeadChannel].label}`;
             document.getElementById('lead-pool-cards').innerHTML = [
@@ -2303,11 +2287,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 onclick="openLeadChannel('${activeCountry}', '${item.channel}', this)">
                 <span class="lead-pool-card-icon">${item.icon}</span>
                 <span class="lead-pool-card-copy"><strong>${item.label}</strong><small>${item.hint}</small></span>
-                <span class="lead-pool-card-count">${item.channel === 'all' ? new Set(rows.map(row => row.company_id)).size : item.channel === 'email' && activeCountry !== 'pending_verification' ? currentEmailProspects.filter(row => row.country_type === activeCountry).length : item.channel === 'discord' ? discordCommunityTotal : counts[item.channel]}</span>
+                <span class="lead-pool-card-count">${item.channel === 'all' ? new Set(rows.map(row => row.company_id)).size : item.channel === 'email' && activeCountry === 'domestic' ? currentEmailProspects.filter(row => row.country_type === activeCountry).length : item.channel === 'discord' ? discordCommunityTotal : counts[item.channel]}</span>
             </button>`).join('');
         }
         function highlightMarketChannel(country, channel) {
-            document.getElementById(country === 'pending_verification' ? 'pending-verification-nav' : `${country}-nav`).classList.add('active');
+            document.getElementById(`${country}-nav`).classList.add('active');
             document.querySelectorAll('.nav-subitem[data-market]').forEach(button => {
                 button.classList.toggle('active',
                     button.dataset.market === country && button.dataset.channel === channel);
@@ -2329,7 +2313,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }
 
         function switchPipelineMarket(country, elem) {
-            if (!['domestic', 'overseas', 'pending_verification'].includes(country)) return;
+            if (!['domestic', 'overseas'].includes(country)) return;
             marketFilters[activeCountry] = {
                 values:Object.fromEntries(pipelineFilterIds.map(id => [id, document.getElementById(id).value])),
                 sources:[...selectedSources], leadSources:[...selectedLeadSources],
@@ -2339,7 +2323,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             activeLeadChannel = 'all';
             document.getElementById('country-filter').value = country;
             document.getElementById('pipeline-title').textContent =
-                {domestic:'国内客户', overseas:'海外客户', pending_verification:'待核验线索'}[country];
+                {domestic:'国内客户', overseas:'海外客户'}[country];
             refreshMarketOptions();
             const saved = marketFilters[country];
             resetFilters();
@@ -2363,13 +2347,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             fetchStats();
         }
         function switchPipelineChannel(country, channel, elem) {
-            if (!['domestic', 'overseas', 'pending_verification'].includes(country)
+            if (!['domestic', 'overseas'].includes(country)
                 || !['all', 'email', 'x'].includes(channel)
-                || country === 'domestic' && channel !== 'all'
-                || country === 'overseas' && channel === 'email') return;
-            switchPipelineMarket(country, document.getElementById(
-                country === 'pending_verification' ? 'pending-verification-nav' : `${country}-nav`
-            ));
+                || country === 'domestic' && channel !== 'all') return;
+            switchPipelineMarket(country, document.getElementById(`${country}-nav`));
             activeLeadChannel = channel;
             renderLeadPoolNavigation();
             renderTable();
@@ -2377,15 +2358,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             fetchStats();
         }
         function openLeadChannel(country, channel, elem) {
-            if (country === 'pending_verification' && ['email', 'x'].includes(channel))
-                return switchPipelineChannel(country, channel, elem);
-            if (channel === 'email') return switchEmailPoolMarket(country, elem);
+            if (channel === 'email' && country === 'domestic') return switchEmailPoolMarket(country, elem);
             if (channel === 'discord' && country === 'overseas') return switchOverseasDiscord(elem);
             switchPipelineChannel(country, channel, elem);
         }
         function switchEmailPoolMarket(country, elem) {
-            if (!['domestic', 'overseas', 'pending_verification'].includes(country)) return;
-            switchPipelineMarket(country, document.getElementById(country === 'pending_verification' ? 'pending-verification-nav' : `${country}-nav`));
+            if (!['domestic', 'overseas'].includes(country)) return;
+            switchPipelineMarket(country, document.getElementById(`${country}-nav`));
             activeLeadChannel = 'email';
             activeEmailMarket = country;
             packageSelectedIds.clear();
@@ -2394,7 +2373,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             filter.disabled = true;
             document.getElementById('email-pool-title').textContent = `${marketLabel(country)}客户 · 邮件组线索`;
             document.getElementById('email-pool-description').textContent =
-                `仅展示${marketLabel(country)}客户的邮箱线索。待核验邮箱不会进入可发送批次。保存草稿后，前往独立“邮件发送”页面编写和发送。`;
+                `仅展示${marketLabel(country)}客户的邮箱线索。保存草稿后，前往独立“邮件发送”页面编写和发送。`;
             switchNav('email-pool', document.querySelector(`.nav-subitem[data-market="${country}"][data-channel="email"]`));
             highlightMarketChannel(country, 'email');
             renderEmailRecipients();
@@ -2845,7 +2824,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <td><input type="checkbox" ${packageSelectedIds.has(row.lead_id)?'checked':''} ${!isEmailSendable(row)?'disabled':''} onchange="togglePackageLead(${row.lead_id},this.checked)"></td>
                 <td>${escapeHtml(String(row.lead_created_at||'').slice(0,10)||'-')}</td>
                 <td>${escapeHtml(row.company_name||'-')} / ${marketLabel(row.country_type)}</td><td>${escapeHtml(row.contact_name||'-')}</td>
-                <td>${escapeHtml(row.email)}</td><td>${row.country_type==='pending_verification'?'<span class="email-push-badge email-push-warning">市场待核验，不可发送</span>':emailPushBadge(row.status)}</td>
+                <td>${escapeHtml(row.email)}</td><td>${emailPushBadge(row.status)}</td>
                 <td>${escapeHtml(row.last_sent_at||'-')}</td><td>${escapeHtml(row.last_sender||'-')}</td>
                 <td>${row.queue_id?`<button onclick="setEmailProspectStatus(${row.queue_id}, 'unsubscribed')" ${row.status==='sending'?'disabled':''}>标记退订</button>`:'-'}</td>
             </tr>`).join('') || '<tr><td colspan="9">当前筛选下没有邮箱联系人</td></tr>';
@@ -4926,7 +4905,7 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
             owner = self._owner_filter(user)
             params = urllib.parse.parse_qs(parsed.query)
             country = params.get("country", [None])[0]
-            if country not in (None, "domestic", "overseas", "pending_verification"):
+            if country not in (None, "domestic", "overseas"):
                 self.send_json({"success": False, "error": "无效的市场区域"}, status=400)
                 return
             if owner is None and country is None:
@@ -4989,6 +4968,9 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                 return
             params = urllib.parse.parse_qs(parsed.query)
             country = params.get("country", [None])[0]
+            if country not in (None, "domestic", "overseas"):
+                self.send_json({"success": False, "error": "无效的市场区域"}, status=400)
+                return
             status = params.get("status", [None])[0]
             source = params.get("source", [None])[0]
             tier = params.get("tier", [None])[0]
