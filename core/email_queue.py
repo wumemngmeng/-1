@@ -14,6 +14,19 @@ def sender_domain(email):
     return email.rsplit("@", 1)[-1].lower() if EMAIL_RE.fullmatch(email) else ""
 
 
+def default_imap_host(smtp_host):
+    host = str(smtp_host or "").strip().lower()
+    known = {
+        "smtp.qiye.aliyun.com": "imap.qiye.aliyun.com",
+        "smtp.exmail.qq.com": "imap.exmail.qq.com",
+        "smtp.qq.com": "imap.qq.com",
+        "smtp.163.com": "imap.163.com",
+    }
+    if host in known:
+        return known[host]
+    return f"imap.{host[5:]}" if host.startswith("smtp.") else ""
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS mail_settings (
     id INTEGER PRIMARY KEY CHECK(id = 1),
@@ -74,6 +87,32 @@ CREATE TABLE IF NOT EXISTS mail_queue_sends (
     sent_by TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS mail_replies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sender_id INTEGER NOT NULL DEFAULT 1,
+    imap_uid INTEGER NOT NULL,
+    queue_id INTEGER NOT NULL REFERENCES mail_queue(id),
+    company_id INTEGER NOT NULL REFERENCES companies(id),
+    lead_id INTEGER NOT NULL REFERENCES leads(id),
+    from_email TEXT NOT NULL,
+    subject TEXT NOT NULL DEFAULT '',
+    snippet TEXT NOT NULL DEFAULT '',
+    message_id TEXT NOT NULL DEFAULT '',
+    in_reply_to TEXT NOT NULL DEFAULT '',
+    received_at TIMESTAMP NOT NULL,
+    is_read INTEGER NOT NULL DEFAULT 0 CHECK(is_read IN (0,1)),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(sender_id, imap_uid)
+);
+CREATE INDEX IF NOT EXISTS idx_mail_replies_received
+ON mail_replies(received_at DESC);
+CREATE TABLE IF NOT EXISTS mail_reply_monitor_state (
+    sender_id INTEGER PRIMARY KEY,
+    last_uid INTEGER NOT NULL DEFAULT 0,
+    last_checked_at TIMESTAMP,
+    last_success_at TIMESTAMP,
+    last_error TEXT NOT NULL DEFAULT ''
+);
 """
 
 
@@ -104,6 +143,10 @@ class EmailQueue:
         values.setdefault("smtp_port", 465)
         values.setdefault("smtp_security", "ssl")
         values.setdefault("smtp_username", "")
+        values.setdefault("imap_host", default_imap_host(values["smtp_host"]))
+        values.setdefault("imap_port", 993)
+        values.setdefault("imap_security", "ssl")
+        values.setdefault("imap_username", values["smtp_username"])
         key = os.environ.get("RESEND_API_KEY", "").strip() if sender_id == 1 else ""
         encrypted = row["encrypted_key"] if row else ""
         encryption_ready = bool(os.environ.get("MAIL_CONFIG_KEY"))
@@ -326,7 +369,8 @@ class EmailQueue:
     def save_settings(self, data, sender_id=1):
         values = {
             field: str(data.get(field) or "").strip()
-            for field in ("from_email", "from_name", "reply_to", "smtp_host", "smtp_username", "smtp_security")
+            for field in ("from_email", "from_name", "reply_to", "smtp_host", "smtp_username", "smtp_security",
+                          "imap_host", "imap_username", "imap_security")
         }
         if not EMAIL_RE.fullmatch(values["from_email"]):
             raise ValueError("请填写有效的发件邮箱")
@@ -349,10 +393,18 @@ class EmailQueue:
             raise ValueError("不支持的邮件服务")
         values["smtp_port"] = int(data.get("smtp_port", 465))
         values["smtp_security"] = values["smtp_security"] or "ssl"
+        values["imap_host"] = values["imap_host"] or default_imap_host(values["smtp_host"])
+        values["imap_username"] = values["imap_username"] or values["smtp_username"]
+        values["imap_security"] = values["imap_security"] or "ssl"
+        values["imap_port"] = int(data.get("imap_port", 993))
         if not 1 <= values["smtp_port"] <= 65535:
             raise ValueError("SMTP端口无效")
         if values["smtp_security"] not in {"ssl", "starttls", "none"}:
             raise ValueError("SMTP加密方式无效")
+        if not 1 <= values["imap_port"] <= 65535:
+            raise ValueError("IMAP端口无效")
+        if values["imap_security"] not in {"ssl", "starttls", "none"}:
+            raise ValueError("IMAP加密方式无效")
         if values["provider"] == "smtp" and (not values["smtp_host"] or not values["smtp_username"]):
             raise ValueError("SMTP模式需要填写服务器和账号")
         secret = data.get("smtp_password") if values["provider"] == "smtp" else data.get("api_key")

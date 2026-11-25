@@ -313,6 +313,30 @@ class AuthTests(unittest.TestCase):
         verify.assert_called_once_with("signed-github-token")
         apply.assert_called_once_with("Vercel Feishu Sync")
 
+    def test_email_reply_monitor_requires_verified_scheduler_and_scopes_reads(self):
+        self.assertEqual(self.request("GET", "/api/email-reply-monitor/run")[0], 401)
+        observer = self.login("viewer_test", "viewer-secure-password")
+        self.assertEqual(self.request("GET", "/api/email-replies", cookie=observer)[0], 403)
+        with patch.dict("os.environ", {"CRON_SECRET": ""}), patch(
+            "web.server.verify_github_actions_oidc", return_value=True
+        ) as verify, patch(
+            "core.email_reply_monitor.EmailReplyMonitor.poll_all",
+            return_value={"senders": 1, "scanned": 3, "matched": 1, "created": 1, "results": []},
+        ):
+            status, payload, _ = self.request(
+                "GET", "/api/email-reply-monitor/run",
+                extra_headers={"Authorization": "Bearer reply-monitor-token"},
+            )
+        self.assertEqual((status, payload["created"]), (200, 1))
+        verify.assert_called_once_with(
+            "reply-monitor-token",
+            audience="aibubu-email-reply-monitor",
+            workflow_ref=(
+                "wumemngmeng/-1/.github/workflows/"
+                "email-reply-monitor.yml@refs/heads/main"
+            ),
+        )
+
     def test_github_actions_oidc_verifier_checks_signature_and_workflow_identity(self):
         from cryptography.hazmat.primitives import hashes
         from cryptography.hazmat.primitives.asymmetric import padding, rsa

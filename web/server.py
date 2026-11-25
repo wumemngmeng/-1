@@ -54,13 +54,20 @@ FEISHU_SYNC_OIDC_AUDIENCE = "aibubu-feishu-sync"
 FEISHU_SYNC_WORKFLOW_REF = (
     "wumemngmeng/-1/.github/workflows/feishu-sync.yml@refs/heads/main"
 )
+EMAIL_REPLY_OIDC_AUDIENCE = "aibubu-email-reply-monitor"
+EMAIL_REPLY_WORKFLOW_REF = (
+    "wumemngmeng/-1/.github/workflows/email-reply-monitor.yml@refs/heads/main"
+)
 
 
 def _decode_base64url(value):
     return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
 
 
-def verify_github_actions_oidc(token, opener=None, now=None):
+def verify_github_actions_oidc(
+    token, opener=None, now=None, audience=FEISHU_SYNC_OIDC_AUDIENCE,
+    workflow_ref=FEISHU_SYNC_WORKFLOW_REF,
+):
     """Verify the scheduled sync caller without storing another shared secret."""
     try:
         from cryptography.hazmat.primitives import hashes
@@ -76,10 +83,10 @@ def verify_github_actions_oidc(token, opener=None, now=None):
         audiences = audience if isinstance(audience, list) else [audience]
         if (
             claims.get("iss") != GITHUB_OIDC_ISSUER
-            or FEISHU_SYNC_OIDC_AUDIENCE not in audiences
+            or audience not in audiences
             or claims.get("repository") != "wumemngmeng/-1"
             or claims.get("ref") != "refs/heads/main"
-            or claims.get("workflow_ref") != FEISHU_SYNC_WORKFLOW_REF
+            or claims.get("workflow_ref") != workflow_ref
             or claims.get("event_name") not in {"schedule", "workflow_dispatch"}
             or int(claims.get("exp") or 0) <= timestamp
             or int(claims.get("nbf") or 0) > timestamp
@@ -88,7 +95,7 @@ def verify_github_actions_oidc(token, opener=None, now=None):
             return False
         request = urllib.request.Request(
             GITHUB_OIDC_JWKS,
-            headers={"Accept": "application/json", "User-Agent": "Aibubu-Feishu-Sync"},
+            headers={"Accept": "application/json", "User-Agent": "Aibubu-Scheduled-Task"},
         )
         with (opener or urllib.request.urlopen)(request, timeout=10) as response:
             keys = json.loads(response.read().decode("utf-8")).get("keys", [])
@@ -1481,6 +1488,13 @@ Aibubu Team</textarea>
                 </table>
             </div>
             <section class="email-panel" style="margin-top:16px"><h3>独立发送记录（最近 500 条）</h3><div id="email-history"></div></section>
+            <section class="email-panel" style="margin-top:16px">
+                <h3>客户邮件回复监控 <span id="email-reply-unread" class="badge"></span></h3>
+                <p class="email-status">每 15 分钟以只读 IMAP 检查收件箱，只记录与 CRM 已发送联系人匹配的人工回复；不会把邮箱邮件标为已读，也不会删除或移动邮件。</p>
+                <button onclick="fetchEmailReplies()">刷新回复</button>
+                <span id="email-reply-monitor-status" class="email-status"></span>
+                <div id="email-replies" style="margin-top:12px"></div>
+            </section>
         </div>
 
         <div id="view-email-settings" class="view-section">
@@ -2224,7 +2238,41 @@ Aibubu Team</textarea>
             updateMailSenderStatus();
             renderEmailRecipients();
             renderEmailPackages();
+            fetchEmailReplies();
             document.getElementById('email-history').innerHTML=(result.history||[]).map(row=>`<div class="email-preview">${escapeHtml(row.created_at)} UTC · ${escapeHtml(row.sender)} → ${escapeHtml(row.email)}<br>${escapeHtml(row.company_name)} · ${escapeHtml(row.subject)} · 操作人：${escapeHtml(row.sent_by)}</div>`).join('')||'暂无发送记录';
+        }
+        async function fetchEmailReplies() {
+            const target=document.getElementById('email-replies');
+            if(!target) return;
+            const response=await fetch('/api/email-replies',{cache:'no-store'});
+            const result=await response.json();
+            if(!response.ok||!result.success) {
+                target.textContent=result.error||'读取邮件回复失败';
+                return;
+            }
+            const unread=(result.rows||[]).filter(row=>!row.is_read).length;
+            document.getElementById('email-reply-unread').textContent=unread?`${unread} 条未读`:'';
+            const senderState=(result.status?.senders||[])[0];
+            document.getElementById('email-reply-monitor-status').textContent=senderState
+                ? `最近检查：${senderState.last_checked_at||'尚未运行'} UTC${senderState.last_error?`；异常：${senderState.last_error}`:''}`
+                : '监控任务尚未首次运行';
+            target.innerHTML=(result.rows||[]).map(row=>`<div class="email-preview" style="${row.is_read?'opacity:.72':'border-color:var(--primary);'}">
+                <strong>${escapeHtml(row.company_name||'-')} · ${escapeHtml(row.contact_name||row.from_email)}</strong>
+                <span class="email-status">${escapeHtml(row.received_at)} UTC</span><br>
+                From: ${escapeHtml(row.from_email)}<br>
+                Subject: ${escapeHtml(row.subject||'(无主题)')}<br>
+                ${escapeHtml(row.snippet||'(无正文摘要)')}
+                ${row.is_read?'':'<br><button onclick="markEmailReplyRead('+row.id+')">标记为已读</button>'}
+            </div>`).join('')||'尚未监测到客户回复';
+        }
+        async function markEmailReplyRead(id) {
+            const response=await fetch('/api/email-replies/read',{
+                method:'POST',headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({ids:[id]})
+            });
+            const result=await response.json();
+            if(!response.ok||!result.success) alert(result.error||'标记失败');
+            await fetchEmailReplies();
         }
         let mailPackages = [];
         function renderEmailPackages() {
@@ -4117,6 +4165,47 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
         token = auth.removeprefix("Bearer ").strip()
         return bool(token and verify_github_actions_oidc(token))
 
+    def _email_reply_monitor_authorized(self, parsed):
+        if self._cron_secret_authorized(parsed):
+            return True
+        auth = self.headers.get("Authorization", "")
+        token = auth.removeprefix("Bearer ").strip()
+        return bool(token and verify_github_actions_oidc(
+            token, audience=EMAIL_REPLY_OIDC_AUDIENCE,
+            workflow_ref=EMAIL_REPLY_WORKFLOW_REF,
+        ))
+
+    def handle_email_replies(self, path, method):
+        user = self._require_user()
+        if not user:
+            return
+        if user["role"] == "observer":
+            self.send_json({"success": False, "error": "观察员不能访问邮件回复"}, status=403)
+            return
+        from core.email_reply_monitor import EmailReplyMonitor
+
+        monitor = EmailReplyMonitor(self.db)
+        owner = self._owner_filter(user)
+        try:
+            if method == "GET" and path == "/api/email-replies":
+                self.send_json({
+                    "success": True,
+                    "rows": monitor.replies(owner),
+                    "status": monitor.status(),
+                })
+                return
+            if method == "POST" and path == "/api/email-replies/read":
+                length = int(self.headers.get("Content-Length", 0))
+                if not 0 < length <= 10000:
+                    raise ValueError("请求内容为空或过大")
+                data = json.loads(self.rfile.read(length).decode("utf-8"))
+                monitor.mark_read(data.get("ids", []), owner)
+                self.send_json({"success": True})
+                return
+            self.send_json({"success": False, "error": "接口不存在"}, status=404)
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
+            self.send_json({"success": False, "error": str(error)}, status=400)
+
     def handle_feishu_mail_sync(self):
         from core.feishu_import import FeishuImportError, FeishuMailSheetImporter
 
@@ -4137,6 +4226,16 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if path == "/api/email-reply-monitor/run":
+            if not self._email_reply_monitor_authorized(parsed):
+                self.send_json({"success": False, "error": "未授权"}, status=401)
+                return
+            try:
+                from core.email_reply_monitor import EmailReplyMonitor
+                self.send_json({"success": True, **EmailReplyMonitor(self.db).poll_all()})
+            except Exception as error:
+                self.send_json({"success": False, "error": str(error)}, status=502)
+            return
         if path == "/api/feishu-mail-sync/run":
             if not self._feishu_sync_authorized(parsed):
                 self.send_json({"success": False, "error": "未授权"}, status=401)
@@ -4151,6 +4250,9 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({"success": True, **run_email_automation(self.db)})
             except Exception as error:
                 self.send_json({"success": False, "error": str(error)}, status=502)
+            return
+        if path == "/api/email-replies":
+            self.handle_email_replies(path, "GET")
             return
         if path.startswith("/api/email-"):
             self.handle_email_queue(path, "GET")
@@ -4371,6 +4473,9 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if path == "/api/email-replies/read":
+            self.handle_email_replies(path, "POST")
+            return
         if path.startswith("/api/feishu-mail-import/"):
             self.handle_feishu_mail_import(path, "POST")
             return

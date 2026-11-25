@@ -63,6 +63,10 @@ class NotesTests(unittest.TestCase):
         self.assertIn("全选当前筛选", html)
         self.assertIn("发送此包", html)
         self.assertIn('id="email-history"', html)
+        self.assertIn('id="email-replies"', html)
+        self.assertIn("/api/email-replies", html)
+        self.assertIn("客户邮件回复监控", html)
+        self.assertIn("不会把邮箱邮件标为已读", html)
         self.assertIn("emailPushBadge(row.status)", html)
         self.assertIn("✓ 已推送", html)
         pool = html.split('id="view-email-pool"', 1)[1].split('id="view-email-settings"', 1)[0]
