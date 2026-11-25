@@ -45,14 +45,14 @@ class FeishuImportTests(unittest.TestCase):
         self.assertEqual(normalize_company_name("Ａcme, Inc."), "acmeinc")
         self.assertEqual(normalize_domain("https://www.Acme.example/path"), "acme.example")
 
-    def test_parses_sheet_headers_and_preserves_market_as_pending(self):
+    def test_parses_unknown_market_as_overseas(self):
         rows = parse_sheet_rows([
             ["姓名", "公司", "职位", "邮箱", "X链接", "官网", "找客理由", "邮箱来源", "状态", "目标市场"],
             ["Jamie", "Northwind", "Founder", "JAMIE@EXAMPLE.COM", "", "https://northwind.example",
              "Public source", "Website", "待联系", "待核验"],
         ])
         self.assertEqual(rows[0]["email"], "jamie@example.com")
-        self.assertEqual(rows[0]["market"], "pending_verification")
+        self.assertEqual(rows[0]["market"], "overseas")
 
     def test_plan_matches_company_by_name_or_domain_and_flags_duplicate_email(self):
         existing_id = self.db.insert_company({
@@ -140,7 +140,7 @@ class FeishuImportTests(unittest.TestCase):
         conn.close()
         self.assertEqual(count, 1)
 
-    def test_apply_keeps_unknown_market_out_of_sendable_overseas(self):
+    def test_apply_classifies_unknown_market_as_verified_overseas(self):
         records = [self.record(market="pending_verification", mail_status="待联系")]
         importer = FeishuMailSheetImporter(self.db, environ={})
         with patch.object(importer, "fetch_records", return_value=records):
@@ -149,7 +149,68 @@ class FeishuImportTests(unittest.TestCase):
         company = conn.execute("SELECT country_type,market_classification FROM companies").fetchone()
         conn.close()
         self.assertEqual(company["country_type"], "overseas")
-        self.assertEqual(company["market_classification"], "pending_verification")
+        self.assertEqual(company["market_classification"], "verified")
+
+    def test_database_startup_migrates_legacy_pending_market_without_outbound_effects(self):
+        company_id = self.db.insert_company({
+            "name": "Legacy Pending", "country_type": "overseas",
+        })
+        lead_id = self.db.insert_lead({
+            "company_id": company_id, "contact_name": "Legacy",
+            "email": "legacy@example.com",
+        })
+        self.db.record_outreach({"lead_id": lead_id, "status": "sample_sent"})
+        conn = get_connection(self.db.db_path)
+        conn.execute(
+            "UPDATE companies SET market_classification='pending_verification' WHERE id=?",
+            (company_id,),
+        )
+        conn.execute(
+            "UPDATE leads SET market_classification='pending_verification' WHERE id=?",
+            (lead_id,),
+        )
+        before = {
+            table: conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+            for table in ("outreach_records", "mail_queue", "mail_queue_sends")
+        }
+        conn.commit()
+        conn.close()
+
+        DatabaseManager(self.db.db_path)
+        conn = get_connection(self.db.db_path)
+        company = conn.execute(
+            "SELECT country_type,market_classification FROM companies WHERE id=?",
+            (company_id,),
+        ).fetchone()
+        lead = conn.execute(
+            "SELECT market_classification FROM leads WHERE id=?", (lead_id,)
+        ).fetchone()
+        after = {
+            table: conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+            for table in ("outreach_records", "mail_queue", "mail_queue_sends")
+        }
+        conn.close()
+        self.assertEqual(dict(company), {
+            "country_type": "overseas", "market_classification": "verified",
+        })
+        self.assertEqual(lead["market_classification"], "verified")
+        self.assertEqual(after, before)
+        self.assertEqual(
+            [row["company_id"] for row in self.db.query_pipeline("overseas")],
+            [company_id],
+        )
+
+        DatabaseManager(self.db.db_path)
+        conn = get_connection(self.db.db_path)
+        self.assertEqual(conn.execute(
+            """SELECT count(*) FROM companies
+               WHERE market_classification='pending_verification'"""
+        ).fetchone()[0], 0)
+        self.assertEqual(conn.execute(
+            """SELECT count(*) FROM leads
+               WHERE market_classification='pending_verification'"""
+        ).fetchone()[0], 0)
+        conn.close()
 
     def test_status_sync_updates_existing_queue_without_creating_send_history(self):
         importer = FeishuMailSheetImporter(self.db, environ={})

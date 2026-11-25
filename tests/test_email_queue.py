@@ -278,27 +278,13 @@ class EmailQueueTests(unittest.TestCase):
             self.queue.prepare([self.lead, duplicate], "Rep", "Rep")
         self.assertEqual(self.queue.rows(), [])
 
-    def test_pending_verification_recipients_cannot_be_prepared_or_packaged(self):
-        company = self.db.insert_company({
-            "name": "Pending Verification", "country_type": "pending_verification"
-        })
-        lead = self.db.insert_lead({
-            "company_id": company, "contact_name": "Pending", "email": "pending@example.com"
-        })
-        with self.assertRaisesRegex(ValueError, "待核验市场线索不可发送"):
-            self.queue.prepare([lead], "Admin")
-        self.assertEqual(self.queue.rows(), [])
-        with patch.dict(os.environ, {"MAIL_CONFIG_KEY": Fernet.generate_key().decode()}):
-            self.queue.save_settings({
-                "provider": "smtp", "from_email": "sales@example.com",
-                "smtp_host": "smtp.example.com", "smtp_username": "sales@example.com",
-                "smtp_password": "app-password",
+    def test_pending_market_cannot_be_reintroduced(self):
+        with self.assertRaisesRegex(ValueError, "国内或海外"):
+            self.db.insert_company({
+                "name": "Pending Verification", "country_type": "pending_verification"
             })
-            with self.assertRaisesRegex(ValueError, "待核验市场线索不可加入推送包"):
-                self.queue.create_package({
-                    "title": "Pending package", "lead_ids": [lead],
-                    "subject": "Hi", "body": "Hello",
-                }, "Admin")
+        with self.assertRaisesRegex(ValueError, "国内或海外"):
+            self.db.update_company(self.company, {"country_type": "pending_verification"})
 
     def test_sending_domain_round_trip_validation_and_legacy_defaults(self):
         config = {"from_email": "sales@mail.example.com", "sending_domain": "MAIL.Example.com"}

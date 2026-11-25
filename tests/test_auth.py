@@ -183,12 +183,14 @@ class AuthTests(unittest.TestCase):
             self.assertEqual(stats["companies_by_tier"], {"B": 1})
             self.assertEqual(stats["yesterday_outreach"], {"sample_sent": 1})
             self.assertTrue(stats["data_last_updated"])
-        pending = self.db.insert_company({"name": "待核验名下客户", "country_type": "pending_verification"})
-        self.db.update_company(pending, {"owner": "测试销售"})
-        status, rows, _ = self.request("GET", "/api/pipeline?country=pending_verification", cookie=rep)
-        self.assertEqual(status, 200)
-        self.assertEqual([row["company_id"] for row in rows], [pending])
-        self.assertEqual(self.request("GET", "/api/stats?country=pending_verification", cookie=rep)[0], 200)
+        self.assertEqual(
+            self.request("GET", "/api/pipeline?country=pending_verification", cookie=rep)[0],
+            400,
+        )
+        self.assertEqual(
+            self.request("GET", "/api/stats?country=pending_verification", cookie=rep)[0],
+            400,
+        )
         self.assertEqual(self.request("GET", "/api/stats?country=invalid", cookie=rep)[0], 400)
 
     def test_pipeline_orders_by_latest_company_lead_or_outreach_update(self):
