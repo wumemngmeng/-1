@@ -61,6 +61,28 @@ def received_at(value):
         return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def looks_automated(subject, snippet):
+    text = f"{subject}\n{snippet}".casefold()
+    phrases = (
+        "we’ve received your message",
+        "we've received your message",
+        "we’ve received your support request",
+        "we've received your support request",
+        "thank you for contacting",
+        "thanks for getting in touch",
+        "our team will get back to you",
+        "working to respond as quickly as possible",
+        "this is an automated",
+        "automatic reply",
+        "auto-reply",
+        "out of office",
+        "不在办公室",
+        "自动回复",
+        "我们已收到您的",
+    )
+    return any(phrase in text for phrase in phrases)
+
+
 class EmailReplyMonitor:
     def __init__(self, db, imap_factory=None):
         self.db = db
@@ -75,10 +97,15 @@ class EmailReplyMonitor:
             rows = conn.execute(
                 "SELECT * FROM mail_reply_monitor_state ORDER BY sender_id"
             ).fetchall()
-            unread = conn.execute(
-                "SELECT count(*) AS total FROM mail_replies WHERE is_read=0"
-            ).fetchone()["total"]
-            return {"senders": [dict(row) for row in rows], "unread": int(unread)}
+            replies = conn.execute(
+                "SELECT subject,snippet,is_read FROM mail_replies"
+            ).fetchall()
+            unread = sum(
+                not row["is_read"]
+                and not looks_automated(row["subject"], row["snippet"])
+                for row in replies
+            )
+            return {"senders": [dict(row) for row in rows], "unread": unread}
         finally:
             conn.close()
 
@@ -95,7 +122,16 @@ class EmailReplyMonitor:
                    ORDER BY r.received_at DESC,r.id DESC LIMIT ?""",
                 (owner, owner, int(limit)),
             ).fetchall()
-            return [dict(row) for row in rows]
+            results = []
+            for row in rows:
+                item = dict(row)
+                item["reply_type"] = (
+                    "automated"
+                    if looks_automated(item["subject"], item["snippet"])
+                    else "human"
+                )
+                results.append(item)
+            return results
         finally:
             conn.close()
 
@@ -212,6 +248,8 @@ class EmailReplyMonitor:
                 ).fetchone()
                 if exists:
                     continue
+                subject = decode_text(message.get("Subject"))
+                snippet = message_snippet(message)
                 conn.execute(
                     """INSERT INTO mail_replies
                        (sender_id,imap_uid,queue_id,company_id,lead_id,from_email,
@@ -219,8 +257,8 @@ class EmailReplyMonitor:
                        VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         sender_id, uid, contact["queue_id"], contact["company_id"],
-                        contact["lead_id"], sender, decode_text(message.get("Subject")),
-                        message_snippet(message), str(message.get("Message-ID") or "").strip(),
+                        contact["lead_id"], sender, subject,
+                        snippet, str(message.get("Message-ID") or "").strip(),
                         str(message.get("In-Reply-To") or "").strip(), received,
                     ),
                 )
