@@ -271,6 +271,9 @@ class FeishuImportTests(unittest.TestCase):
     def test_feishu_client_uses_app_auth_then_reads_sheet_without_exposing_secret(self):
         responses = [
             {"code": 0, "tenant_access_token": "test-token"},
+            {"code": 0, "data": {"sheets": [
+                {"sheet_id": "U8RTY1", "grid_properties": {"row_count": 2}},
+            ]}},
             {"code": 0, "data": {"valueRange": {"values": [
                 ["姓名", "公司", "邮箱", "目标市场"],
                 ["Jamie", "Northwind", "jamie@northwind.example", "海外"],
@@ -302,8 +305,8 @@ class FeishuImportTests(unittest.TestCase):
         )
         rows = importer.fetch_records()
         self.assertEqual(rows[0]["email"], "jamie@northwind.example")
-        self.assertIn("/sheets/v2/spreadsheets/", requests[1].full_url)
-        self.assertEqual(requests[1].get_header("Authorization"), "Bearer test-token")
+        self.assertIn("/sheets/v2/spreadsheets/", requests[2].full_url)
+        self.assertEqual(requests[2].get_header("Authorization"), "Bearer test-token")
 
     def make_x_lead(self, name="Acme", handle="alex"):
         company_id = self.db.insert_company({
@@ -348,6 +351,14 @@ class FeishuImportTests(unittest.TestCase):
         self.assertIn("2026-11-02", outreach["interaction_notes"])
         self.assertIn("未触发任何私信或邮件发送", outreach["interaction_notes"])
         self.assertEqual(queue_count, 0)
+        conn = get_connection(self.db.db_path)
+        run_rows = conn.execute(
+            "SELECT actor,result FROM feishu_sync_runs WHERE source_type='x' ORDER BY rowid"
+        ).fetchall()
+        conn.close()
+        self.assertEqual(len(run_rows), 2)
+        self.assertEqual(run_rows[0]["actor"], "Vercel Feishu Sync")
+        self.assertEqual(json.loads(run_rows[0]["result"])["created_outreach_records"], 1)
 
     def test_x_sync_replies_advance_but_never_downgrade_advanced_stages(self):
         _, lead_id = self.make_x_lead()

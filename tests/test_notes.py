@@ -53,9 +53,14 @@ class NotesTests(unittest.TestCase):
         self.assertIn("/api/email-recipients", html)
         self.assertIn('id="feishu-mail-import-panel"', html)
         self.assertIn('id="feishu-mail-sync"', html)
-        self.assertIn("/api/feishu-mail-import/preview", html)
-        self.assertIn("/api/feishu-mail-import/apply", html)
+        self.assertIn("/api/feishu-latest-sync/preview", html)
+        self.assertIn("/api/feishu-latest-sync/apply", html)
+        self.assertIn("待核验邮箱（不可发送）", html)
+        self.assertIn("/api/feishu-latest-sync/preview", html)
+        self.assertIn("/api/feishu-latest-sync/apply", html)
         self.assertIn("同步最新数据", html)
+        self.assertIn("Discord 社群及 X 推送状态", html)
+        self.assertIn("待核验邮箱（不可发送）", html)
         self.assertNotIn('id="feishu-mail-import-preview"', html)
         self.assertNotIn('id="feishu-mail-import-apply"', html)
         self.assertIn('id="email-status-filter"', html)
@@ -120,11 +125,11 @@ async function run(mode) {
         if(mode==='preview-error') return {ok:false,json:async()=>({error:'读取失败'})};
         return {ok:true,json:async()=>({success:true,
           fingerprint:mode==='missing-fingerprint'?'':'latest-fingerprint',
-          eligible_contacts:0,status_sync:{update_sent:1}})};
+          mail:{},discord:{},x:{}})};
       }
       if(mode==='stale') return {ok:false,json:async()=>({error:'数据已变化，请重新同步'})};
-      return {ok:true,json:async()=>({success:true,created_companies:0,updated_companies:1,
-        created_contacts:0,updated_sent_statuses:1})};
+      return {ok:true,json:async()=>({success:true,mail:{created_companies:0,updated_companies:1,
+        created_contacts:0,updated_sent_statuses:1},discord:{create:69,duplicates:0,conflict_count:0},x:{}})};
     },
     refresh:async()=>{
       refreshes++;
@@ -133,7 +138,7 @@ async function run(mode) {
   });
   vm.runInContext(SCRIPT,context);
   vm.runInContext(`currentUser={role:'admin'};
-    fetchPipeline=refresh;fetchEmailProspects=refresh;`,context);
+    fetchPipeline=refresh;fetchEmailProspects=refresh;fetchDiscordCommunities=refresh;`,context);
   const first=vm.runInContext('syncLatestFeishuMailData()',context);
   assert.equal(elements['feishu-mail-sync'].disabled,true);
   await vm.runInContext('syncLatestFeishuMailData()',context);
@@ -146,17 +151,18 @@ async function run(mode) {
     assert.match(elements['feishu-mail-import-status'].textContent,/同步未完成/);
   } else {
     assert.equal(requests.length,2);
-    assert.equal(requests[1].url,'/api/feishu-mail-import/apply');
+    assert.equal(requests[1].url,'/api/feishu-latest-sync/apply');
     assert.equal(requests[1].data.preview_fingerprint,'latest-fingerprint');
-    assert.equal(requests[1].data.confirmation,'IMPORT FEISHU MAIL SHEET');
+    assert.equal(requests[1].data.confirmation,'SYNC FEISHU LATEST DATA');
     if(mode==='stale') {
       assert.equal(refreshes,0);
       assert.match(elements['feishu-mail-import-status'].textContent,/数据已变化/);
     } else {
-      assert.match(elements['feishu-mail-import-summary'].textContent,/补充企业 1 家/);
-      assert.match(elements['feishu-mail-import-summary'].textContent,/邮件状态更新 1 条/);
+      assert.match(elements['feishu-mail-import-summary'].textContent,/新增企业 0 家/);
+      assert.match(elements['feishu-mail-import-summary'].textContent,/新增 69 个/);
+      assert.match(elements['feishu-mail-import-summary'].textContent,/X：更新触达状态 0 条/);
       assert.match(elements['feishu-mail-import-status'].textContent,/同步.*完成/);
-      assert.equal(refreshes,mode==='refresh-error'?1:2);
+      assert.equal(refreshes,mode==='refresh-error'?1:3);
     }
   }
   const before=requests.length;
@@ -387,14 +393,6 @@ vm.runInContext(`
     {lead_id:2,country_type:'overseas',company_name:'海外示例',email:'global@example.com',status:'pending'},
     {lead_id:3,country_type:'pending_verification',email:'pending@example.com',status:'pending'}
   ];
-  const emailCounts=emailContactCounts();
-  check(emailCounts.domestic===1&&emailCounts.overseas===1&&emailCounts.pending_verification===1,
-    'email navigation must count contacts by market');
-  renderLeadPoolNavigation();
-  check(document.getElementById('domestic-email-count').textContent===1,'domestic email contact count');
-  check(document.getElementById('overseas-email-count').textContent===1,'overseas email contact count');
-  check(document.getElementById('pending_verification-email-count').textContent===1,
-    'pending verification email contact count');
   packageSelectedIds.add(2);
   switchEmailPoolMarket('domestic');
   check(destination==='email-pool' && activeEmailMarket==='domestic','domestic email route');
@@ -418,15 +416,44 @@ vm.runInContext(`
   check(activeCountry==='domestic'&&activeLeadChannel==='all','domestic X route was allowed');
   switchPipelineMarket('pending_verification',document.getElementById('pending-verification-nav'));
   check(activeLeadChannel==='all'&&document.getElementById('lead-pool-switcher').hidden,'pending market preservation');
-  switchEmailPoolMarket('pending_verification');
-  check(destination==='email-pool'&&activeEmailMarket==='pending_verification',
-    'pending verification email route');
 `,context);
 """
         result = subprocess.run(
             ["node", "-e", harness.replace("SCRIPT", json.dumps(script))],
             capture_output=True, text=True, timeout=30,
         )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js required")
+    def test_email_navigation_counts_contacts_and_pending_market(self):
+        script = html_template().split("<script>", 1)[1].split("</script>", 1)[0]
+        script = script.split("// 初始化加载", 1)[0]
+        harness = r"""
+const vm=require('node:vm');
+const elements={};
+const document={addEventListener(){},getElementById(id){return elements[id]||={textContent:'',hidden:false,
+  addEventListener(){},classList:{add(){},remove(){},toggle(){}},innerHTML:''};},querySelectorAll(){return [];}};
+const ctx=vm.createContext({document,currentData:[],currentEmailProspects:[
+ {lead_id:1,country_type:'domestic'}, {lead_id:2,country_type:'overseas'},
+ {lead_id:3,country_type:'pending_verification'}],currentDiscordCommunities:[],
+ discordCommunityTotal:0,activeCountry:'pending_verification',activeLeadChannel:'email',
+ LEAD_CHANNEL_META:{email:{label:'邮件',icon:'✉',hint:'邮箱'},discord:{label:'Discord',icon:'D',hint:'社群'}},
+ leadMatchesChannel:()=>false,marketLabel:x=>x,marketRows:()=>[],Object,Set});
+vm.runInContext(SCRIPT,ctx);
+vm.runInContext(`currentEmailProspects=[
+ {lead_id:1,country_type:'domestic'}, {lead_id:2,country_type:'overseas'},
+ {lead_id:3,country_type:'pending_verification'}]; activeCountry='pending_verification';
+ currentData=[];activeLeadChannel='email';`,ctx);
+const countResult=vm.runInContext('emailContactCounts()',ctx);
+if(countResult.domestic!==1 || countResult.overseas!==1 ||
+   countResult.pending_verification!==1) throw Error('email contact counts must use email contacts');
+vm.runInContext('renderLeadPoolNavigation()',ctx);
+if(elements['domestic-email-count'].textContent!==1 ||
+   elements['overseas-email-count'].textContent!==1 ||
+   elements['pending_verification-email-count'].textContent!==1) throw Error('email count must count contacts');
+"""
+        result = subprocess.run(["node", "-e", harness.replace("SCRIPT", json.dumps(script))],
+                                capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js required")
@@ -437,8 +464,6 @@ vm.runInContext(`
         self.assertIn('id="pending-verification-nav"', html)
         self.assertIn("pending_verification:'待核验'", html)
         self.assertIn("row.country_type !== 'pending_verification'", html)
-        self.assertIn("await fetchEmailProspects();", html)
-        self.assertIn('id="pending_verification-email-count"', html)
         self.assertLess(html.index('id="overseas-nav"'), html.index('id="domestic-nav"'))
         self.assertIn('>推送话术</th>', html)
         self.assertIn('class="company-note-summary"', html)

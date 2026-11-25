@@ -10,6 +10,7 @@ import urllib.request
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
+from core.feishu_sync import commit_statements, run_statement, source_statement, synchronized
 
 
 DEFAULT_SPREADSHEET_TOKEN = "CuTNs47dqhohkTtGH13cQirdnge"
@@ -84,6 +85,7 @@ class FeishuMailSheetImporter:
             "FEISHU_SPREADSHEET_TOKEN", DEFAULT_SPREADSHEET_TOKEN
         ).strip()
         self.sheet_id = self.environ.get("FEISHU_SHEET_ID", DEFAULT_SHEET_ID).strip()
+        self.company_resolutions = {}
 
     def configured(self) -> bool:
         return bool(
@@ -124,19 +126,35 @@ class FeishuMailSheetImporter:
                         or token_result.get("data", {}).get("tenant_access_token"))
         if not tenant_token:
             raise FeishuImportError("飞书应用认证失败，请检查应用凭证")
-        range_name = f"{self.sheet_id}!A1:N1000"
-        encoded_range = urllib.parse.quote(range_name, safe="!:")
-        url = (
-            "https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/"
-            f"{urllib.parse.quote(self.spreadsheet_token, safe='')}/values/{encoded_range}"
-            "?valueRenderOption=ToString"
+        return parse_sheet_rows(self.read_sheet_values(tenant_token, self.sheet_id, "N"))
+
+    def read_sheet_values(self, token, sheet_id, end_column):
+        metadata = self._json_request(
+            f"https://open.feishu.cn/open-apis/sheets/v3/spreadsheets/"
+            f"{urllib.parse.quote(self.spreadsheet_token, safe='')}/sheets/query", token=token,
         )
-        result = self._json_request(url, token=tenant_token)
-        data = result.get("data") or {}
-        values = data.get("valueRange", {}).get("values") or data.get("values")
-        if values is None:
-            raise FeishuImportError("飞书返回的数据格式不符合预期")
-        return parse_sheet_rows(values)
+        sheet = next((item for item in metadata.get("data", {}).get("sheets", [])
+                      if item.get("sheet_id") == sheet_id), None)
+        if not sheet:
+            raise FeishuImportError("找不到已配置的飞书子表")
+        row_count = int(sheet.get("grid_properties", {}).get("row_count") or 0)
+        if not 1 <= row_count <= 50000:
+            raise FeishuImportError("子表行数无效或超出安全读取范围")
+        values = []
+        for start in range(1, row_count + 1, 500):
+            end = min(start + 499, row_count)
+            area = urllib.parse.quote(f"{sheet_id}!A{start}:{end_column}{end}", safe="!:")
+            result = self._json_request(
+                f"https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/"
+                f"{urllib.parse.quote(self.spreadsheet_token, safe='')}/values/{area}"
+                "?valueRenderOption=ToString", token=token,
+            )
+            page = result.get("data", {}).get("valueRange", {}).get("values")
+            if not isinstance(page, list):
+                raise FeishuImportError("飞书返回的数据格式不符合预期")
+            values.extend(page)
+            values.extend([[] for _ in range(end - start + 1 - len(page))])
+        return values
 
     def _existing_companies(self, cursor):
         return [dict(row) for row in cursor.execute(
@@ -167,6 +185,15 @@ class FeishuMailSheetImporter:
             companies = self._existing_companies(cursor)
             existing_leads = self._existing_leads(cursor)
             status_sync = self._status_sync_plan(cursor, records)
+            self.company_resolutions = {
+                    str(row["email"]).strip().casefold(): dict(row)
+                    for row in cursor.execute(
+                        """SELECT email,company_id,source_name,source_domain
+                           FROM feishu_mail_company_resolutions
+                           WHERE spreadsheet_token=? AND sheet_id=?""",
+                        (self.spreadsheet_token, self.sheet_id),
+                    ).fetchall()
+            }
         finally:
             conn.close()
 
@@ -183,7 +210,7 @@ class FeishuMailSheetImporter:
         staged_company_contributions = defaultdict(list)
         staged_company_keys = {}
         staged_emails = {}
-        entries, conflicts = [], []
+        entries, conflicts, duplicates, source_audit = [], [], 0, []
         for record in records:
             row_no = record.get("sheet_row")
             email = str(record.get("email") or "").strip().casefold()
@@ -192,14 +219,44 @@ class FeishuMailSheetImporter:
             if not name or not name_key or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
                 conflicts.append({"row": row_no, "company": name, "email": email,
                                   "reason": "公司名或有效邮箱缺失"})
+                source_audit.append((record, None, "conflict_invalid"))
+                continue
+            if email in existing_leads:
+                linked = existing_leads[email]
+                target_company = next((company for company in companies
+                                       if company["id"] == linked[0]["company_id"]), None)
+                if len(linked) == 1 and target_company and (
+                    name_key == normalize_company_name(target_company["name"])
+                    or (domain and domain == normalize_domain(target_company["website"]))
+                ):
+                    duplicates += 1
+                    source_audit.append((record, linked[0]["id"], "existing_duplicate"))
+                else:
+                    conflicts.append({"row": row_no, "company": name, "email": email,
+                                      "reason": "邮箱已关联其他CRM公司或归属不唯一，跳过避免误合并"})
+                    source_audit.append((record, None, "conflict_email_company_mismatch"))
                 continue
 
-            matched = {company["id"]: company for company in by_name.get(name_key, [])}
-            if domain:
-                matched.update({company["id"]: company for company in by_domain.get(domain, [])})
+            resolution = self.company_resolutions.get(email)
+            if resolution:
+                selected = next((company for company in companies
+                                 if company["id"] == resolution["company_id"]), None)
+                if (not selected or name_key != normalize_company_name(resolution["source_name"])
+                        or normalize_domain(selected["website"]) != resolution["source_domain"]
+                        or (domain and domain != resolution["source_domain"])):
+                    conflicts.append({"row": row_no, "company": name, "email": email,
+                                      "reason": "已保存的企业关联与当前飞书记录不一致"})
+                    source_audit.append((record, None, "conflict_resolution_changed"))
+                    continue
+                matched = {selected["id"]: selected}
+            else:
+                matched = {company["id"]: company for company in by_name.get(name_key, [])}
+                if domain:
+                    matched.update({company["id"]: company for company in by_domain.get(domain, [])})
             if len(matched) > 1:
                 conflicts.append({"row": row_no, "company": name, "email": email,
                                   "reason": "公司名/官网域名命中多个CRM公司，需人工核对"})
+                source_audit.append((record, None, "conflict_company_ambiguous"))
                 continue
 
             if matched:
@@ -225,33 +282,23 @@ class FeishuMailSheetImporter:
                 if staged_key[0] == "new":
                     staged_company_contributions[staged_key[1]].append(record)
 
-            if email in existing_leads:
-                linked_names = sorted({lead["company_name"] for lead in existing_leads[email]})
-                conflicts.append({
-                    "row": row_no, "company": name, "email": email,
-                    "reason": (
-                        "邮箱已关联其他CRM公司，跳过避免误合并"
-                        if linked_names and normalize_company_name(name) not in {
-                            normalize_company_name(value) for value in linked_names
-                        }
-                        else "邮箱已存在于CRM，联系人不重复导入"
-                    ),
-                })
-                continue
             if email in staged_emails:
                 prior = staged_emails[email]
                 prior_key = prior["company_key"]
                 if prior_key != staged_key:
                     conflicts.append({"row": row_no, "company": name, "email": email,
                                       "reason": "同一邮箱在飞书表中关联多个公司，需人工核对"})
+                    source_audit.append((record, None, "conflict_duplicate_email"))
                 else:
                     conflicts.append({"row": row_no, "company": name, "email": email,
                                       "reason": f"表内重复邮箱，已由第 {prior['row']} 行保留"})
+                    source_audit.append((record, None, "duplicate_source_row"))
                 continue
             entry = dict(record)
             entry.update(company_key=staged_key, company=staged_company, action="create_company" if staged_key[0] == "new" else "reuse_company")
             entries.append(entry)
             staged_emails[email] = {"company_key": staged_key, "row": row_no}
+            source_audit.append((record, None, "pending_import"))
 
         new_company_count = len({entry["company_key"] for entry in entries if entry["action"] == "create_company"})
         matched_company_count = len({entry["company_key"] for entry in entries if entry["action"] == "reuse_company"})
@@ -268,7 +315,8 @@ class FeishuMailSheetImporter:
         ]
         fingerprint = hashlib.sha256(json.dumps(
             {"rows": fingerprint_rows, "conflicts": conflicts,
-             "source_statuses": records, "status_sync": status_sync},
+             "source_statuses": records, "status_sync": status_sync,
+             "company_resolutions": self.company_resolutions},
             ensure_ascii=False, sort_keys=True, separators=(",", ":"),
         ).encode("utf-8")).hexdigest()
         return {
@@ -277,10 +325,12 @@ class FeishuMailSheetImporter:
             "new_companies": new_company_count,
             "matched_companies": matched_company_count,
             "conflict_count": len(conflicts),
+            "duplicates": duplicates,
             "conflicts": conflicts[:100],
             "fingerprint": fingerprint,
             "entries": entries,
             "status_sync": status_sync,
+            "source_audit": source_audit,
         }
 
     def preview(self) -> Dict[str, Any]:
@@ -469,6 +519,7 @@ class FeishuMailSheetImporter:
             )
         return result
 
+    @synchronized("mail")
     def apply(self, actor: str, expected_fingerprint: Optional[str] = None) -> Dict[str, int]:
         """Reread the source and apply the current plan idempotently."""
         records = self.fetch_records()
@@ -567,7 +618,28 @@ class FeishuMailSheetImporter:
                     )
                     suppressed += 1
             status_sync = self._sync_outreach_statuses(cursor, records, actor)
-            conn.commit()
+            result = {
+                "created_companies": created_companies,
+                "updated_companies": updated_companies,
+                "created_contacts": created_contacts,
+                "conflicts": plan["conflict_count"], "duplicates": plan["duplicates"],
+                "suppressed_existing_statuses": suppressed, **status_sync,
+            }
+            imported = {entry["email"] for entry in plan["entries"]}
+            current = self._existing_leads(cursor)
+            statements = []
+            for record, target_id, resolution in plan["source_audit"]:
+                email = record.get("email", "")
+                if resolution == "pending_import" and email in imported and len(current[email]) == 1:
+                    target_id = current[email][0]["id"]
+                    resolution = "imported"
+                statements.append(source_statement(
+                    "mail", self.spreadsheet_token, self.sheet_id,
+                    email or f"row-{record['sheet_row']}", record["sheet_row"],
+                    target_id, record, resolution,
+                ))
+            statements.append(run_statement("mail", actor, result))
+            commit_statements(conn, statements)
         except Exception:
             rollback = getattr(conn, "rollback", None)
             if rollback:
@@ -575,14 +647,7 @@ class FeishuMailSheetImporter:
             raise
         finally:
             conn.close()
-        return {
-            "created_companies": created_companies,
-            "updated_companies": updated_companies,
-            "created_contacts": created_contacts,
-            "conflicts": plan["conflict_count"],
-            "suppressed_existing_statuses": suppressed,
-            **status_sync,
-        }
+        return result
 
 
 class FeishuXStatusSync:
@@ -634,16 +699,7 @@ class FeishuXStatusSync:
 
     def fetch_records(self):
         importer, token = self._client()
-        range_name = f"{self.sheet_id}!A1:L1000"
-        encoded_range = urllib.parse.quote(range_name, safe="!:")
-        url = (
-            "https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/"
-            f"{urllib.parse.quote(self.spreadsheet_token, safe='')}/values/{encoded_range}"
-            "?valueRenderOption=ToString"
-        )
-        result = importer._json_request(url, token=token)
-        data = result.get("data") or {}
-        values = data.get("valueRange", {}).get("values") or data.get("values")
+        values = importer.read_sheet_values(token, self.sheet_id, "L")
         if not isinstance(values, list) or not values:
             raise FeishuImportError("飞书 X 推送监控没有可读取的数据")
         headers = [str(value or "").strip() for value in values[0]]
@@ -1001,6 +1057,7 @@ class FeishuXStatusSync:
     def preview(self):
         return self.plan(self.fetch_records())
 
+    @synchronized("x")
     def apply(self, actor="Vercel Feishu Sync", expected_fingerprint=None):
         records = self.fetch_records()
         conn = self.db.connection() if hasattr(self.db, "connection") else None
@@ -1143,6 +1200,7 @@ class FeishuXStatusSync:
                    synced_at=CURRENT_TIMESTAMP""", rows,
             )
             result["archived_source_rows"] = len(rows)
+            cursor.execute(*run_statement("x", actor, result))
             conn.commit()
         except Exception:
             rollback = getattr(conn, "rollback", None)
