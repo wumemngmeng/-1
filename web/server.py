@@ -1499,6 +1499,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             </div>
 
             <section id="pipeline-touch-funnel" class="touch-funnel" aria-label="触达动作转化漏斗"></section>
+            <details id="feishu-social-panel" hidden style="margin:12px 0">
+                <summary>飞书社媒触达状态同步（X / LinkedIn）</summary>
+                <p>每六小时自动同步。原始状态与日期完整保留；草稿不算触达，已有高级阶段不降级，未具名主体或歧义记录不猜测合并。</p>
+                <button onclick="previewFeishuSocialSync()">预览同步与例外</button>
+                <button id="feishu-social-apply" onclick="applyFeishuSocialSync()" hidden>确认同步</button>
+                <pre id="feishu-social-result" style="white-space:pre-wrap;max-height:420px;overflow:auto"></pre>
+            </details>
             <section id="yesterday-outreach-stats" class="yesterday-stats" aria-label="最近5天触达数据"></section>
 
             <div class="controls-panel compact-filters">
@@ -2412,6 +2419,7 @@ Aibubu Team</textarea>
             document.getElementById('permissions-nav').style.display = currentUser.role === 'admin' ? '' : 'none';
             document.getElementById('tab-register-btn').style.display = currentUser.role === 'admin' ? '' : 'none';
             document.getElementById('feishu-mail-import-panel').hidden = currentUser.role !== 'admin';
+            document.getElementById('feishu-social-panel').hidden = currentUser.role !== 'admin';
         }
 
         // 导航切换
@@ -2689,6 +2697,47 @@ Aibubu Team</textarea>
             finally {
             await fetchEmailProspects();
             }
+        }
+
+        let feishuSocialFingerprint = null;
+        async function previewFeishuSocialSync() {
+            const output = document.getElementById('feishu-social-result');
+            output.textContent = '正在读取全部源表状态…';
+            feishuSocialFingerprint = null;
+            document.getElementById('feishu-social-apply').hidden = true;
+            try {
+                const response = await fetch('/api/feishu-x-sync/preview', {
+                    method:'POST',headers:{'Content-Type':'application/json'},body:'{}'
+                });
+                const result = await response.json();
+                if (!response.ok || !result.success) throw new Error(result.error || '预览失败');
+                feishuSocialFingerprint = result.fingerprint;
+                output.textContent = `源表 ${result.total_rows} 行；已匹配 ${result.matched_rows} 行；可补入 ${result.importable_rows || 0} 行；触达阶段待更新 ${result.matched_actions} 项；保护 ${result.preserved} 项。\\n` +
+                    (result.conflicts || []).map(item => `第 ${item.row} 行 ${item.company}：${item.reason}`).join('\\n');
+                document.getElementById('feishu-social-apply').hidden = false;
+            } catch (error) { output.textContent = error.message; }
+        }
+        async function applyFeishuSocialSync() {
+            if (!feishuSocialFingerprint || !confirm('只同步 CRM 历史状态，不发送消息。确认执行？')) return;
+            const button = document.getElementById('feishu-social-apply');
+            button.disabled = true;
+            try {
+                const response = await fetch('/api/feishu-x-sync/apply', {
+                    method:'POST',headers:{'Content-Type':'application/json'},
+                    body:JSON.stringify({confirmation:'SYNC FEISHU X STATUSES',
+                        preview_fingerprint:feishuSocialFingerprint})
+                });
+                const result = await response.json();
+                if (!response.ok || !result.success) throw new Error(result.error || '同步失败');
+                document.getElementById('feishu-social-result').textContent =
+                    `已归档 ${result.archived_source_rows} 行原始状态，新增联系人 ${result.created_contacts || 0}，新增触达历史 ${result.created_outreach_records}；未发送消息。\\n` +
+                    (result.conflicts || []).map(item => `第 ${item.row} 行 ${item.company}：${item.reason}`).join('\\n');
+                feishuSocialFingerprint = null;
+                button.hidden = true;
+                await fetchPipeline();
+            } catch (error) {
+                document.getElementById('feishu-social-result').textContent = error.message;
+            } finally { button.disabled = false; }
         }
 
         let feishuMailImportPreview = null;
@@ -3311,7 +3360,9 @@ Aibubu Team</textarea>
                     <td>
                         <span class="editable-cell" onclick="${canEdit && r.lead_id ? `openEditLeadModal(${rJson})` : `alert('无权限编辑')`}" title="点击修改线索来源渠道">${leadSource}</span>
                     </td>
-                    <td><span class="status-badge ${statusClass}">${STATUS_TEXT_MAP[currentStatus] || currentStatus}</span></td>
+                    <td><span class="status-badge ${statusClass}">${STATUS_TEXT_MAP[currentStatus] || currentStatus}</span>
+                        ${r.feishu_social_status != null ? `<small style="display:block">飞书 ${r.feishu_social_channel === 'linkedin_inmail' ? 'LinkedIn' : 'X'}：${escapeHtml(r.feishu_social_status || '空白')} ${escapeHtml(r.feishu_social_date || '')}</small>` : ''}
+                    </td>
                     <td>
                         ${r.exclusion_reason
                             ? `<span title="${escapeHtml(r.exclusion_reason)}">${escapeHtml(r.exclusion_reason)}</span>`
@@ -4490,7 +4541,7 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                 return
             self.send_json({"success": True, **{
                 key: value for key, value in result.items()
-                if key not in {"actions", "state_actions"}
+                if key not in {"actions", "state_actions", "imports"}
             }})
         except (FeishuImportError, ValueError, TypeError, json.JSONDecodeError) as error:
             self.send_json({"success": False, "error": str(error)}, status=400)

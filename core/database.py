@@ -353,6 +353,14 @@ CREATE INDEX IF NOT EXISTS idx_companies_country ON companies(country_type);
 CREATE INDEX IF NOT EXISTS idx_companies_industry ON companies(industry);
 CREATE INDEX IF NOT EXISTS idx_leads_company ON leads(company_id);
 CREATE INDEX IF NOT EXISTS idx_outreach_status ON outreach_records(status);
+CREATE TABLE IF NOT EXISTS feishu_x_source_rows (
+    spreadsheet_token TEXT NOT NULL, sheet_id TEXT NOT NULL,
+    sheet_row INTEGER NOT NULL, lead_id INTEGER,
+    source_status TEXT NOT NULL, source_date TEXT NOT NULL,
+    source_channel TEXT NOT NULL, payload TEXT NOT NULL,
+    resolution TEXT NOT NULL, synced_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(spreadsheet_token,sheet_id,sheet_row)
+);
 """
 
 def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
@@ -921,6 +929,12 @@ class DatabaseManager:
                 l.email,
                 l.linkedin_url,
                 l.x_url,
+                (SELECT f.source_status FROM feishu_x_source_rows f
+                 WHERE f.lead_id=l.id ORDER BY f.synced_at DESC,f.sheet_row DESC LIMIT 1) AS feishu_social_status,
+                (SELECT f.source_date FROM feishu_x_source_rows f
+                 WHERE f.lead_id=l.id ORDER BY f.synced_at DESC,f.sheet_row DESC LIMIT 1) AS feishu_social_date,
+                (SELECT f.source_channel FROM feishu_x_source_rows f
+                 WHERE f.lead_id=l.id ORDER BY f.synced_at DESC,f.sheet_row DESC LIMIT 1) AS feishu_social_channel,
                 l.source_method as lead_source,
                 l.identity_source_url,
                 l.identity_evidence,
