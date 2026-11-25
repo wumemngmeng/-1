@@ -3,6 +3,7 @@ Database models and schema definitions for Aibubu Outbound Engine.
 Pure SQLite, zero external cloud dependencies, ACID compliant.
 """
 import sqlite3
+import json
 import os
 import hashlib
 import hmac
@@ -361,6 +362,26 @@ CREATE TABLE IF NOT EXISTS feishu_x_source_rows (
     source_channel TEXT NOT NULL, payload TEXT NOT NULL,
     resolution TEXT NOT NULL, synced_at TEXT DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY(spreadsheet_token,sheet_id,sheet_row)
+);
+CREATE TABLE IF NOT EXISTS feishu_sync_sources (
+    source_type TEXT NOT NULL, spreadsheet_token TEXT NOT NULL,
+    sheet_id TEXT NOT NULL, source_key TEXT NOT NULL, sheet_row INTEGER NOT NULL,
+    target_id INTEGER, payload TEXT NOT NULL, resolution TEXT NOT NULL,
+    synced_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(source_type,spreadsheet_token,sheet_id,source_key)
+);
+CREATE TABLE IF NOT EXISTS feishu_sync_runs (
+    id TEXT PRIMARY KEY, source_type TEXT NOT NULL, actor TEXT NOT NULL,
+    result TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS feishu_sync_locks (
+    source_type TEXT PRIMARY KEY, owner TEXT NOT NULL, expires_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS feishu_mail_company_resolutions (
+    spreadsheet_token TEXT NOT NULL, sheet_id TEXT NOT NULL, email TEXT NOT NULL,
+    company_id INTEGER NOT NULL, source_name TEXT NOT NULL, source_domain TEXT NOT NULL,
+    approved_by TEXT NOT NULL, updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(spreadsheet_token,sheet_id,email)
 );
 """
 
@@ -1427,8 +1448,25 @@ class DatabaseManager:
                 params.append(value)
         query += " ORDER BY priority, name COLLATE NOCASE"
         rows = [dict(row) for row in conn.execute(query, params).fetchall()]
+        sources = {}
+        for source in conn.execute(
+            """SELECT target_id,payload,sheet_row,synced_at FROM feishu_sync_sources
+               WHERE source_type='discord' AND target_id IS NOT NULL ORDER BY synced_at"""
+        ).fetchall():
+            sources[source["target_id"]] = {
+                **json.loads(source["payload"]), "synced_at": source["synced_at"],
+            }
+        for row in rows:
+            row["feishu_source"] = sources.get(row["id"])
         conn.close()
         return rows
+
+    def discord_community_count(self):
+        conn = get_connection(self.db_path)
+        try:
+            return conn.execute("SELECT count(*) AS total FROM discord_communities").fetchone()["total"]
+        finally:
+            conn.close()
 
     def save_discord_community(self, data: Dict[str, Any], updated_by: str) -> Dict[str, Any]:
         name = (data.get("name") or "").strip()
