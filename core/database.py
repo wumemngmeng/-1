@@ -527,6 +527,20 @@ def init_db(db_path: str = DB_PATH):
 
     bootstrap_remote_from_sqlite(conn)
 
+    # Pending market was a temporary intake state. All such records now belong
+    # to the overseas customer pool; contact verification remains independent.
+    cursor.execute(
+        """UPDATE companies
+           SET country_type='overseas', market_classification='verified',
+               updated_at=CURRENT_TIMESTAMP
+           WHERE market_classification='pending_verification'"""
+    )
+    cursor.execute(
+        """UPDATE leads
+           SET market_classification='verified', updated_at=CURRENT_TIMESTAMP
+           WHERE market_classification='pending_verification'"""
+    )
+
     # Seed default users
     cursor.execute("SELECT count(*) as count FROM sys_users")
     if cursor.fetchone()['count'] == 0:
@@ -702,15 +716,9 @@ class DatabaseManager:
         conn = get_connection(self.db_path)
         cur = conn.cursor()
         requested_market = data.get('country_type', 'domestic')
-        if requested_market not in {'domestic', 'overseas', 'pending_verification'}:
+        if requested_market not in {'domestic', 'overseas'}:
             conn.close()
-            raise ValueError("市场区域只能是国内、海外或待核验")
-        country_type = 'overseas' if requested_market == 'pending_verification' else requested_market
-        market_classification = (
-            'pending_verification'
-            if requested_market == 'pending_verification'
-            else data.get('market_classification', 'verified')
-        )
+            raise ValueError("市场区域只能是国内或海外")
         cur.execute("""
             INSERT INTO companies (name, country_type, market_classification, industry, scale, website, city_or_region, source_channel, annual_revenue_range, client_tier, notes)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -726,8 +734,8 @@ class DatabaseManager:
                 updated_at=CURRENT_TIMESTAMP
         """, (
             data['name'],
-            country_type,
-            market_classification,
+            requested_market,
+            'verified',
             data.get('industry', '未知赛道'),
             data.get('scale', '50-150人'),
             data.get('website', ''),
@@ -906,7 +914,7 @@ class DatabaseManager:
         conditions = []
         params: List[Any] = []
         if country_type:
-            conditions.append("(CASE WHEN c.market_classification='pending_verification' THEN 'pending_verification' ELSE c.country_type END) = ?")
+            conditions.append("c.country_type = ?")
             params.append(country_type)
         if owner is not None:
             conditions.append("coalesce(c.owner, '') = ?")
@@ -939,8 +947,7 @@ class DatabaseManager:
                 c.name as company_name,
                 c.estimated_monthly_spend, c.spend_basis, c.discovery_url,
                 c.customer_type, c.models_used, c.qualification_evidence, c.owner, c.company_follow_up_date, c.prospect_status, c.audience_scale, c.exclusion_reason, c.previous_prospect_status, c.created_at as first_discovered,
-                CASE WHEN l.market_classification='pending_verification' OR c.market_classification='pending_verification'
-                     THEN 'pending_verification' ELSE c.country_type END AS country_type,
+                c.country_type,
                 c.industry,
                 c.scale,
                 c.website,
@@ -1014,7 +1021,7 @@ class DatabaseManager:
         """
         params = []
         if country_type:
-            query += " AND (CASE WHEN l.market_classification='pending_verification' OR c.market_classification='pending_verification' THEN 'pending_verification' ELSE c.country_type END) = ?"
+            query += " AND c.country_type = ?"
             params.append(country_type)
         if status:
             query += " AND coalesce(o.status, 'pending') = ?"
@@ -1197,7 +1204,7 @@ class DatabaseManager:
 
     def update_company(self, company_id: int, updates: Dict[str, Any]) -> bool:
         allowed = {
-            'name', 'country_type', 'market_classification', 'industry', 'scale', 'website',
+            'name', 'country_type', 'industry', 'scale', 'website',
             'city_or_region', 'source_channel', 'annual_revenue_range',
             'client_tier', 'has_image_heavy_demand', 'notes',
             'company_description', 'description_source',
@@ -1207,6 +1214,8 @@ class DatabaseManager:
         valid_updates = {k: v for k, v in updates.items() if k in allowed}
         if not valid_updates:
             return False
+        if valid_updates.get('country_type') not in (None, 'domestic', 'overseas'):
+            raise ValueError('市场区域只能是国内或海外')
         
         conn = get_connection(self.db_path)
         cur = conn.cursor()
@@ -1277,22 +1286,13 @@ class DatabaseManager:
         cur = conn.cursor()
         stats = {}
         
-        country_filter_co = (
-            " WHERE CASE WHEN market_classification='pending_verification' "
-            "THEN 'pending_verification' ELSE country_type END = ?"
-            if country_type else ""
-        )
+        country_filter_co = " WHERE country_type = ?" if country_type else ""
         country_param_co = (country_type,) if country_type else ()
         
         cur.execute(f"SELECT count(*) as total_companies FROM companies{country_filter_co}", country_param_co)
         stats['total_companies'] = cur.fetchone()['total_companies']
         
-        cur.execute("""
-            SELECT CASE WHEN market_classification='pending_verification'
-                        THEN 'pending_verification' ELSE country_type END AS country_type,
-                   count(*) AS count
-            FROM companies GROUP BY 1
-        """)
+        cur.execute("SELECT country_type, count(*) AS count FROM companies GROUP BY country_type")
         stats['companies_by_region'] = {r['country_type']: r['count'] for r in cur.fetchall()}
 
         if country_type:
@@ -1300,8 +1300,7 @@ class DatabaseManager:
                 SELECT count(l.id) as total_leads 
                 FROM leads l 
                 JOIN companies c ON l.company_id = c.id 
-                WHERE CASE WHEN c.market_classification='pending_verification'
-                           THEN 'pending_verification' ELSE c.country_type END = ?
+                WHERE c.country_type = ?
             """, (country_type,))
         else:
             cur.execute("SELECT count(*) as total_leads FROM leads")
@@ -1318,8 +1317,7 @@ class DatabaseManager:
                 LEFT JOIN (
                     SELECT lead_id, status FROM outreach_records GROUP BY lead_id HAVING id=MAX(id)
                 ) o ON l.id=o.lead_id 
-                WHERE CASE WHEN c.market_classification='pending_verification'
-                           THEN 'pending_verification' ELSE c.country_type END = ?
+                WHERE c.country_type = ?
                 GROUP BY coalesce(o.status, 'pending')
             """, (country_type,))
         else:
@@ -1354,7 +1352,7 @@ class DatabaseManager:
             query += " AND coalesce(c.owner, '') = ?"
             params.append(owner)
         if country_type:
-            query += " AND (CASE WHEN c.market_classification='pending_verification' THEN 'pending_verification' ELSE c.country_type END) = ?"
+            query += " AND c.country_type = ?"
             params.append(country_type)
         query += " GROUP BY r.status"
         cur.execute(query, params)
@@ -1382,7 +1380,7 @@ class DatabaseManager:
             query += " AND coalesce(c.owner, '') = ?"
             params.append(owner)
         if country_type:
-            query += " AND (CASE WHEN c.market_classification='pending_verification' THEN 'pending_verification' ELSE c.country_type END) = ?"
+            query += " AND c.country_type = ?"
             params.append(country_type)
         if client_tier:
             query += " AND coalesce(c.client_tier, 'B') = ?"

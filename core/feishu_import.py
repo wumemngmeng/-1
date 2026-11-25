@@ -43,7 +43,7 @@ def parse_market(value: Any) -> str:
         return "overseas"
     if market in {"国内", "domestic", "中国"}:
         return "domestic"
-    return "pending_verification"
+    return "overseas"
 
 
 def parse_sheet_rows(values: Any) -> List[Dict[str, Any]]:
@@ -211,7 +211,6 @@ class FeishuMailSheetImporter:
         staged_company_keys = {}
         staged_emails = {}
         entries, conflicts, duplicates, source_audit = [], [], 0, []
-        market_override_updates = []
         for record in records:
             row_no = record.get("sheet_row")
             email = str(record.get("email") or "").strip().casefold()
@@ -231,11 +230,6 @@ class FeishuMailSheetImporter:
                     or (domain and domain == normalize_domain(target_company["website"]))
                 ):
                     duplicates += 1
-                    if (record.get("market") == "pending_verification"
-                            and linked[0].get("market_classification") != "pending_verification"):
-                        market_override_updates.append({
-                            "lead_id": linked[0]["id"], "sheet_row": row_no, "email": email,
-                        })
                     source_audit.append((record, linked[0]["id"], "existing_duplicate"))
                 else:
                     conflicts.append({"row": row_no, "company": name, "email": email,
@@ -276,7 +270,8 @@ class FeishuMailSheetImporter:
             if staged_key[0] == "new":
                 staged_company = {
                     "name": name, "website": str(record.get("website") or "").strip(),
-                    "country_type": record.get("market") or "pending_verification",
+                    "country_type": record.get("market")
+                    if record.get("market") in {"domestic", "overseas"} else "overseas",
                 }
                 staged_companies[staged_key[1]] = staged_company
                 staged_company_contributions[staged_key[1]].append(record)
@@ -322,8 +317,7 @@ class FeishuMailSheetImporter:
         fingerprint = hashlib.sha256(json.dumps(
             {"rows": fingerprint_rows, "conflicts": conflicts,
              "source_statuses": records, "status_sync": status_sync,
-             "company_resolutions": self.company_resolutions,
-             "market_override_updates": market_override_updates},
+             "company_resolutions": self.company_resolutions},
             ensure_ascii=False, sort_keys=True, separators=(",", ":"),
         ).encode("utf-8")).hexdigest()
         return {
@@ -338,7 +332,6 @@ class FeishuMailSheetImporter:
             "entries": entries,
             "status_sync": status_sync,
             "source_audit": source_audit,
-            "market_override_updates": market_override_updates,
         }
 
     def preview(self) -> Dict[str, Any]:
@@ -539,7 +532,6 @@ class FeishuMailSheetImporter:
             from core.database import get_connection
             conn = get_connection(self.db.db_path)
         created_companies = created_contacts = updated_companies = suppressed = 0
-        market_overrides = 0
         try:
             cursor = conn.cursor()
             company_ids = {}
@@ -558,19 +550,18 @@ class FeishuMailSheetImporter:
                             str(item.get("notes") or "").strip()
                             for item in contributions if str(item.get("notes") or "").strip()
                         ))
-                        markets = {item.get("market") for item in contributions}
-                        if "pending_verification" in markets or len(markets) != 1:
-                            market_classification = "pending_verification"
-                            market = "overseas"
-                        else:
-                            market_classification = "verified"
-                            market = next(iter(markets))
+                        markets = {
+                            item.get("market") if item.get("market") in {"domestic", "overseas"}
+                            else "overseas"
+                            for item in contributions
+                        }
+                        market = next(iter(markets)) if len(markets) == 1 else "overseas"
                         cursor.execute(
                             """INSERT INTO companies
                                (name,country_type,market_classification,industry,website,source_channel,notes,
                                 discovery_url,company_description,description_source)
                                VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                            (company["name"], market, market_classification, "未知赛道",
+                            (company["name"], market, "verified", "未知赛道",
                              website, "飞书邮件表", notes, website,
                              notes, "飞书邮件表" if notes else ""),
                         )
@@ -609,8 +600,7 @@ class FeishuMailSheetImporter:
                      entry["email"],
                      entry.get("x_url") or "", entry.get("source") or "飞书邮件表",
                      entry.get("x_url") or "", "飞书邮件表公开联系人记录",
-                     "pending_review",
-                     "pending_verification" if entry.get("market") == "pending_verification" else "verified"),
+                     "pending_review", "verified"),
                 )
                 lead_id = cursor.lastrowid
                 created_contacts += 1
@@ -627,20 +617,12 @@ class FeishuMailSheetImporter:
                         (company_id, lead_id, entry["email"], queue_status, actor),
                     )
                     suppressed += 1
-            for override in plan.get("market_override_updates", []):
-                cursor.execute(
-                    """UPDATE leads SET market_classification='pending_verification',
-                       updated_at=CURRENT_TIMESTAMP
-                       WHERE id=? AND market_classification IS NOT 'pending_verification'""",
-                    (override["lead_id"],),
-                )
-                market_overrides += int(cursor.execute("SELECT changes() AS count").fetchone()["count"])
             status_sync = self._sync_outreach_statuses(cursor, records, actor)
             result = {
                 "created_companies": created_companies,
                 "updated_companies": updated_companies,
                 "created_contacts": created_contacts,
-                "market_overrides": market_overrides,
+                "market_overrides": 0,
                 "conflicts": plan["conflict_count"], "duplicates": plan["duplicates"],
                 "suppressed_existing_statuses": suppressed, **status_sync,
             }
@@ -1098,10 +1080,10 @@ class FeishuXStatusSync:
                     cursor.execute(
                         """INSERT OR IGNORE INTO companies
                            (name,country_type,market_classification,industry,website,source_channel,notes)
-                           VALUES (?,'overseas','pending_verification','待核验',?,'飞书X推送监控',?)""",
+                           VALUES (?,'overseas','verified','待核验',?,'飞书X推送监控',?)""",
                         (source["company_name"],
                          source.get("website") if self.verified_website_candidate(source.get("website")) else "",
-                         "飞书原始公司描述，未经独立核验；市场与身份待核验。"),
+                         "飞书原始公司描述；联系人身份未经独立核验。"),
                     )
                     created_companies += int(cursor.execute(
                         "SELECT changes() AS count"
