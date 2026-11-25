@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 
 DEFAULT_SPREADSHEET_TOKEN = "CuTNs47dqhohkTtGH13cQirdnge"
 DEFAULT_SHEET_ID = "U8RTY1"
+DEFAULT_X_SHEET_ID = "bca5fd"
 
 
 class FeishuImportError(ValueError):
@@ -582,3 +583,373 @@ class FeishuMailSheetImporter:
             "suppressed_existing_statuses": suppressed,
             **status_sync,
         }
+
+
+class FeishuXStatusSync:
+    """Reconcile the Feishu X push monitor into X-channel outreach history."""
+
+    STATUS_MAP = {
+        "已推送未回复": "sample_sent",
+        "已回复": "contacted",
+        "暂缓/私信关闭": "lost",
+        "无法触达(私信关闭)": "lost",
+        "暂缓": "lost",
+        "暂缓(不合适)": "lost",
+        "不推送": "lost",
+        "已起草": "pending",
+        "待处理": "pending",
+        "已调研": "pending",
+        "": "pending",
+    }
+    ADVANCED_STAGES = {"contacted", "negotiation", "team_trial", "won"}
+
+    def __init__(self, db, environ=None, opener=None):
+        self.db = db
+        self.environ = os.environ if environ is None else environ
+        self.opener = opener or urllib.request.urlopen
+        self.spreadsheet_token = self.environ.get(
+            "FEISHU_SPREADSHEET_TOKEN", DEFAULT_SPREADSHEET_TOKEN
+        ).strip()
+        self.sheet_id = self.environ.get("FEISHU_X_SHEET_ID", DEFAULT_X_SHEET_ID).strip()
+
+    def _client(self):
+        importer = FeishuMailSheetImporter(
+            self.db, environ=self.environ, opener=self.opener
+        )
+        if not importer.configured():
+            raise FeishuImportError("尚未配置飞书应用凭证，无法同步 X 推送监控")
+        token_result = importer._json_request(
+            "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+            method="POST",
+            payload={
+                "app_id": self.environ.get("FEISHU_APP_ID", "").strip(),
+                "app_secret": self.environ.get("FEISHU_APP_SECRET", "").strip(),
+            },
+        )
+        token = (token_result.get("tenant_access_token")
+                 or token_result.get("data", {}).get("tenant_access_token"))
+        if not token:
+            raise FeishuImportError("飞书应用认证失败，无法同步 X 推送监控")
+        return importer, token
+
+    def fetch_records(self):
+        importer, token = self._client()
+        range_name = f"{self.sheet_id}!A1:L1000"
+        encoded_range = urllib.parse.quote(range_name, safe="!:")
+        url = (
+            "https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/"
+            f"{urllib.parse.quote(self.spreadsheet_token, safe='')}/values/{encoded_range}"
+            "?valueRenderOption=ToString"
+        )
+        result = importer._json_request(url, token=token)
+        data = result.get("data") or {}
+        values = data.get("valueRange", {}).get("values") or data.get("values")
+        if not isinstance(values, list) or not values:
+            raise FeishuImportError("飞书 X 推送监控没有可读取的数据")
+        headers = [str(value or "").strip() for value in values[0]]
+        required = {"公司", "X链接", "推送状态"}
+        if not required.issubset(headers):
+            raise FeishuImportError("X 推送监控表头缺少公司、X链接或推送状态列")
+        records = []
+        for offset, raw in enumerate(values[1:], start=2):
+            cells = list(raw) if isinstance(raw, list) else []
+            row = {header: cells[index] if index < len(cells) else ""
+                   for index, header in enumerate(headers)}
+            if not any(str(value or "").strip() for value in row.values()):
+                continue
+            records.append({
+                "sheet_row": offset,
+                "contact_name": str(row.get("姓名") or "").strip(),
+                "job_title": str(row.get("职位") or "").strip(),
+                "company_name": str(row.get("公司") or "").strip(),
+                "x_url": str(row.get("X链接") or "").strip(),
+                "website": str(row.get("官网") or "").strip(),
+                "source_status": str(row.get("推送状态") or "").strip(),
+                "source_date": str(row.get("推送日期") or "").strip(),
+                "x_account": str(row.get("X账号") or "").strip(),
+            })
+        return records
+
+    @staticmethod
+    def normalize_x_identity(value):
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        if "://" not in raw:
+            raw = ("https://" + raw if re.match(r"^(www\.)?(x|twitter)\.com/", raw, re.I)
+                   else "https://x.com/" + raw.lstrip("@"))
+        try:
+            parsed = urlsplit(raw)
+            host = (parsed.hostname or "").casefold().removeprefix("www.")
+        except ValueError:
+            return ""
+        if (parsed.scheme not in {"https", "http"} or parsed.username or parsed.password
+                or host not in {"x.com", "twitter.com"}):
+            return ""
+        handle = parsed.path.strip("/").split("/", 1)[0].casefold()
+        if not re.fullmatch(r"[a-z0-9_]{1,15}", handle):
+            return ""
+        return "" if handle in {"home", "explore", "search", "i", "intent", "messages", "settings"} else handle
+
+    def plan(self, records, cursor=None):
+        conn = self.db.connection() if hasattr(self.db, "connection") else None
+        if cursor is not None:
+            conn = None
+        elif conn is None:
+            from core.database import get_connection
+            conn = get_connection(self.db.db_path)
+        try:
+            cursor = cursor or conn.cursor()
+            leads = defaultdict(list)
+            for row in cursor.execute(
+                """SELECT l.id AS lead_id,l.company_id,l.x_url,c.name AS company_name,
+                          c.website,country_type
+                   FROM leads l JOIN companies c ON c.id=l.company_id
+                   WHERE trim(coalesce(l.x_url,''))<>''"""
+            ).fetchall():
+                identity = self.normalize_x_identity(row["x_url"])
+                if identity:
+                    leads[identity].append(dict(row))
+            latest = {}
+            for row in cursor.execute(
+                """SELECT r.* FROM outreach_records r
+                   WHERE r.channel='x_dm' AND r.id=(
+                       SELECT max(r2.id) FROM outreach_records r2
+                       WHERE r2.lead_id=r.lead_id AND r2.channel='x_dm')"""
+            ).fetchall():
+                latest[row["lead_id"]] = dict(row)
+            latest_any = {}
+            for row in cursor.execute(
+                """SELECT r.* FROM outreach_records r
+                   WHERE r.id=(SELECT max(r2.id) FROM outreach_records r2
+                               WHERE r2.lead_id=r.lead_id)"""
+            ).fetchall():
+                latest_any[row["lead_id"]] = dict(row)
+            source_states = {}
+            if cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='feishu_x_states'"
+            ).fetchone():
+                for row in cursor.execute(
+                    """SELECT * FROM feishu_x_states
+                       WHERE spreadsheet_token=? AND sheet_id=?""",
+                    (self.spreadsheet_token, self.sheet_id),
+                ).fetchall():
+                    source_states[row["identity"]] = dict(row)
+        finally:
+            if conn:
+                conn.close()
+
+        conflicts, actions, state_actions, counts = [], [], [], defaultdict(int)
+        grouped = defaultdict(list)
+        for record in records:
+            status = str(record.get("source_status") or "").strip()
+            identity = self.normalize_x_identity(
+                record.get("x_url") or record.get("x_account")
+            )
+            account = self.normalize_x_identity(record.get("x_account"))
+            if record.get("x_url") and record.get("x_account") and identity != account:
+                conflicts.append({"row": record.get("sheet_row"),
+                                  "company": record.get("company_name") or "",
+                                  "reason": "X 链接与 X账号不一致，未同步"})
+                counts["malformed"] += 1
+                continue
+            if status not in self.STATUS_MAP:
+                conflicts.append({"row": record.get("sheet_row"),
+                                  "company": record.get("company_name") or "",
+                                  "reason": f"未知 X 推送状态：{status}"})
+                counts["malformed"] += 1
+                continue
+            if not identity:
+                conflicts.append({"row": record.get("sheet_row"),
+                                  "company": record.get("company_name") or "",
+                                  "reason": "缺少有效 X 链接/账号，未同步"})
+                counts["malformed"] += 1
+                continue
+            grouped[identity].append(record)
+
+        for identity, source_rows in grouped.items():
+            statuses = {row.get("source_status", "").strip() for row in source_rows}
+            source_companies = {
+                normalize_company_name(row.get("company_name")) for row in source_rows
+            }
+            source_domains = {
+                normalize_domain(row.get("website")) for row in source_rows
+                if normalize_domain(row.get("website"))
+            }
+            source_dates = {row.get("source_date") or "" for row in source_rows}
+            if (len(statuses) > 1 or len(source_companies) > 1
+                    or len(source_domains) > 1 or len(source_dates) > 1):
+                conflicts.append({"row": source_rows[0].get("sheet_row"),
+                                  "company": source_rows[0].get("company_name") or "",
+                                  "reason": "同一 X 账号在飞书表出现多个状态或公司归属，未同步"})
+                counts["conflicts"] += 1
+                continue
+            matches = leads.get(identity, [])
+            if not matches:
+                conflicts.append({"row": source_rows[0].get("sheet_row"),
+                                  "company": source_rows[0].get("company_name") or "",
+                                  "reason": "CRM 中未找到该 X 账号"})
+                counts["unmatched"] += 1
+                continue
+            if len(matches) != 1:
+                conflicts.append({"row": source_rows[0].get("sheet_row"),
+                                  "company": source_rows[0].get("company_name") or "",
+                                  "reason": "X 账号命中多个 CRM 线索"})
+                counts["conflicts"] += 1
+                continue
+            source = source_rows[0]
+            lead = matches[0]
+            source_company = normalize_company_name(source.get("company_name"))
+            crm_company = normalize_company_name(lead.get("company_name"))
+            source_domain = normalize_domain(source.get("website"))
+            crm_domain = normalize_domain(lead.get("website"))
+            name_matches = bool(source_company and crm_company and (
+                source_company == crm_company or source_company in crm_company
+                or crm_company in source_company
+            ))
+            domain_matches = bool(source_domain and crm_domain and (
+                source_domain == crm_domain or source_domain.endswith("." + crm_domain)
+                or crm_domain.endswith("." + source_domain)
+            ))
+            if (source_domain and crm_domain and not domain_matches) or (
+                not domain_matches and not name_matches
+            ):
+                conflicts.append({"row": source.get("sheet_row"),
+                                  "company": source.get("company_name") or "",
+                                  "reason": "X 账号匹配但公司名/官网域名不一致，需人工核对"})
+                counts["conflicts"] += 1
+                continue
+
+            desired = self.STATUS_MAP[source["source_status"].strip()]
+            counts["matched"] += len(source_rows)
+            state = {
+                "identity": identity, "lead_id": lead["lead_id"],
+                "source_status": source["source_status"].strip(),
+                "source_date": source.get("source_date") or "",
+                "sheet_row": source.get("sheet_row"),
+            }
+            previous_state = source_states.get(identity)
+            if not previous_state or any(previous_state.get(key) != value for key, value in state.items()):
+                state_actions.append(state)
+            current = latest.get(lead["lead_id"])
+            current_status = current.get("status") if current else "pending"
+            active_any = latest_any.get(lead["lead_id"])
+            if active_any and active_any.get("channel") != "x_dm" and (
+                active_any.get("status") in self.ADVANCED_STAGES | {"lost"}
+            ):
+                counts["preserved"] += 1
+                continue
+            if current and current_status == desired:
+                counts["unchanged"] += 1
+                continue
+            if current_status in self.ADVANCED_STAGES:
+                counts["preserved"] += 1
+                continue
+            if desired == "pending":
+                counts["preserved" if current else "unchanged"] += 1
+                continue
+            if current and current_status == "lost" and desired != "lost":
+                conflicts.append({"row": source.get("sheet_row"),
+                                  "company": source.get("company_name") or "",
+                                  "reason": "CRM 已有 X 渠道不触达/关闭状态，未被普通触达状态覆盖"})
+                counts["conflicts"] += 1
+                continue
+            action = {
+                "lead_id": lead["lead_id"], "previous_id": current.get("id") if current else None,
+                "previous_status": current_status, "status": desired,
+                "source_status": source["source_status"].strip(),
+                "source_date": source.get("source_date") or "",
+                "sheet_row": source.get("sheet_row"),
+                "company_id": lead["company_id"],
+                "previous_latest_id": active_any["id"] if active_any else 0,
+            }
+            actions.append(action)
+            counts[f"update_{desired}" if current else f"create_{desired}"] += 1
+        result = {
+            "total_rows": len(records), "matched_actions": len(actions),
+            "matched_rows": counts["matched"], "source_updates": len(state_actions),
+            "create_sample_sent": counts["create_sample_sent"],
+            "create_contacted": counts["create_contacted"],
+            "create_lost": counts["create_lost"],
+            "update_sample_sent": counts["update_sample_sent"],
+            "update_contacted": counts["update_contacted"],
+            "update_lost": counts["update_lost"],
+            "unchanged": counts["unchanged"], "preserved": counts["preserved"],
+            "unmatched": counts["unmatched"], "malformed": counts["malformed"],
+            "conflict_count": counts["conflicts"],
+            "conflicts": conflicts, "actions": actions, "state_actions": state_actions,
+        }
+        result["fingerprint"] = hashlib.sha256(json.dumps(
+            {"records": records, "plan": result}, sort_keys=True, ensure_ascii=False,
+        ).encode()).hexdigest()
+        return result
+
+    def preview(self):
+        return self.plan(self.fetch_records())
+
+    def apply(self, actor="Vercel Feishu Sync", expected_fingerprint=None):
+        records = self.fetch_records()
+        conn = self.db.connection() if hasattr(self.db, "connection") else None
+        if conn is None:
+            from core.database import get_connection
+            conn = get_connection(self.db.db_path)
+        try:
+            cursor = conn.cursor()
+            if hasattr(conn, "in_transaction"):
+                cursor.execute("BEGIN IMMEDIATE")
+            plan = self.plan(records, cursor=cursor)
+            if expected_fingerprint and expected_fingerprint != plan["fingerprint"]:
+                raise FeishuImportError("飞书表或CRM数据在预览后发生变化，请重新预览再同步")
+            cursor.execute(
+                """CREATE TABLE IF NOT EXISTS feishu_x_states (
+                   spreadsheet_token TEXT NOT NULL, sheet_id TEXT NOT NULL,
+                   identity TEXT NOT NULL, lead_id INTEGER NOT NULL,
+                   source_status TEXT NOT NULL, source_date TEXT NOT NULL,
+                   sheet_row INTEGER, synced_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                   PRIMARY KEY(spreadsheet_token,sheet_id,identity))"""
+            )
+            result = {key: value for key, value in plan.items()
+                      if key not in {"actions", "state_actions"}}
+            result["created_outreach_records"] = 0
+            result["updated_outreach_records"] = 0
+            for state in plan["state_actions"]:
+                cursor.execute(
+                    """INSERT INTO feishu_x_states
+                       (spreadsheet_token,sheet_id,identity,lead_id,source_status,source_date,sheet_row)
+                       VALUES (?,?,?,?,?,?,?) ON CONFLICT(spreadsheet_token,sheet_id,identity)
+                       DO UPDATE SET lead_id=excluded.lead_id,source_status=excluded.source_status,
+                       source_date=excluded.source_date,sheet_row=excluded.sheet_row,
+                       synced_at=CURRENT_TIMESTAMP""",
+                    (self.spreadsheet_token, self.sheet_id, state["identity"],
+                     state["lead_id"], state["source_status"], state["source_date"], state["sheet_row"]),
+                )
+            for action in plan["actions"]:
+                source_date = action["source_date"] or "未填写"
+                note = (
+                    f"飞书 X 推送监控：源表状态「{action['source_status']}」；"
+                    f"源表日期：{source_date}。历史状态同步，记录创建时间为同步时间；"
+                    "未触发任何私信或邮件发送。"
+                )
+                cursor.execute(
+                    """INSERT INTO outreach_records
+                       (lead_id,channel,status,interaction_notes)
+                       SELECT ?,'x_dm',?,?
+                       WHERE coalesce((SELECT max(id) FROM outreach_records
+                                       WHERE lead_id=?),0)=?""",
+                    (action["lead_id"], action["status"], note, action["lead_id"],
+                     action["previous_latest_id"]),
+                )
+                changed = int(cursor.execute("SELECT changes() AS count").fetchone()["count"])
+                result["created_outreach_records"] += changed
+                if not changed:
+                    raise FeishuImportError("CRM 触达记录在同步时发生变化，请重新预览")
+            conn.commit()
+        except Exception:
+            rollback = getattr(conn, "rollback", None)
+            if rollback:
+                rollback()
+            raise
+        finally:
+            conn.close()
+        result.pop("actions", None)
+        return result
