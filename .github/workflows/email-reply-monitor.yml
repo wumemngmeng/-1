@@ -1,0 +1,31 @@
+name: Email reply monitor
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check CRM mailbox replies
+        shell: bash
+        run: |
+          set -euo pipefail
+          token_response="$(
+            curl --fail --silent --show-error \
+              -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=aibubu-email-reply-monitor"
+          )"
+          oidc_token="$(
+            python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])' \
+              <<<"${token_response}"
+          )"
+          curl --fail-with-body --silent --show-error \
+            -H "Authorization: Bearer ${oidc_token}" \
+            "https://www.lsjffdwg.cn/api/email-reply-monitor/run"
