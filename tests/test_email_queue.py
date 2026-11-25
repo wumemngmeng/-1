@@ -101,6 +101,101 @@ class EmailQueueTests(unittest.TestCase):
         self.assertEqual(self.queue.history(), [])
         self.assertEqual(self.queue.packages()[0]["id"], package["id"])
 
+    def test_package_update_and_delivery_batch_details(self):
+        with patch.dict(os.environ, {"MAIL_CONFIG_KEY": Fernet.generate_key().decode()}):
+            self.queue.save_settings({
+                "provider": "smtp", "from_email": "sales@example.com",
+                "smtp_host": "smtp.example.com", "smtp_username": "sales@example.com",
+                "smtp_password": "app-password",
+            })
+            package = self.queue.create_package({
+                "title": "Draft batch", "lead_ids": [self.lead],
+                "subject": "Placeholder", "body": "Placeholder",
+            }, "Admin")
+            package = self.queue.update_package(package["id"], {
+                "title": "November founders", "sender_id": 1,
+                "subject": "Hi {{company}}", "body": "Hello {{name}}",
+            })
+            self.assertEqual(package["subject"], "Hi {{company}}")
+            _, settings, batch_id, messages = self.queue.send_package_rows(package["id"])
+            self.assertEqual(self.queue.get_package(package["id"])["status"], "sending")
+            self.queue.complete(
+                messages[0], messages[0]["subject"], messages[0]["body"],
+                settings["from_email"], "provider-message", "Admin",
+            )
+            self.queue.mark_package_sent(package["id"], batch_id)
+        batches = self.queue.delivery_batches()
+        self.assertEqual(len(batches), 1)
+        self.assertEqual(batches[0]["batch_id"], batch_id)
+        self.assertEqual(batches[0]["title"], "November founders")
+        self.assertEqual(batches[0]["recipient_count"], 1)
+        self.assertEqual(batches[0]["recipients"][0]["company_name"], "Queue Test")
+        self.assertEqual(batches[0]["recipients"][0]["email"], "alex@example.com")
+        with self.assertRaisesRegex(ValueError, "只有草稿"):
+            self.queue.update_package(package["id"], {
+                "sender_id": 1, "subject": "Again", "body": "Again",
+            })
+
+    def test_batch_grouping_preserves_scope_and_uncertain_recipient_status(self):
+        other_company = self.db.insert_company({"name": "Other Owner", "country_type": "domestic"})
+        self.db.update_company(other_company, {"owner": "Other"})
+        other_lead = self.db.insert_lead({
+            "company_id": other_company, "email": "other-batch@example.com"
+        })
+        ids = self.queue.prepare([self.lead, other_lead], "Admin")
+        batch_id = self.queue.claim(ids)
+        row = next(item for item in self.queue.rows() if item["lead_id"] == self.lead)
+        self.queue.complete(row, "Hi", "Body", "sales@example.com", "accepted", "Admin")
+        batch = self.queue.delivery_batches()[0]
+        self.assertEqual((batch["batch_id"], batch["recipient_count"], batch["sent_count"]),
+                         (batch_id, 2, 1))
+        self.assertEqual(batch["status"], "sending")
+        scoped = self.queue.delivery_batches("Rep")[0]
+        self.assertEqual(scoped["recipient_count"], 1)
+        self.assertEqual(scoped["recipients"][0]["email"], "alex@example.com")
+        self.assertEqual(self.queue.delivery_batches("Missing"), [])
+        # A legacy record without a known batch is never guessed into another batch.
+        conn = get_connection(self.db.db_path)
+        conn.execute("UPDATE mail_queue SET batch_id=NULL WHERE id=?", (row["id"],))
+        conn.commit()
+        conn.close()
+        self.assertTrue(any(item["batch_id"].startswith("legacy-")
+                            for item in self.queue.delivery_batches()))
+
+    def test_draft_requires_neither_configuration_nor_automatic_sending(self):
+        with patch.dict(os.environ, {"RESEND_API_KEY": "", "RESEND_FROM_EMAIL": ""}):
+            draft = self.queue.create_package({
+                "title": "Recipients only draft", "lead_ids": [self.lead],
+                "subject": "Default subject", "body": "Default body",
+            }, "Admin")
+            self.assertEqual(draft["status"], "draft")
+            self.assertEqual(self.queue.rows(), [])
+            with self.assertRaisesRegex(ValueError, "尚未配置"):
+                self.queue.send_package_rows(draft["id"])
+
+    def test_changed_email_or_oversized_package_is_blocked_before_claim(self):
+        second = self.db.insert_lead({
+            "company_id": self.company, "email": "second@example.com"
+        })
+        with patch.dict(os.environ, {
+            "RESEND_API_KEY": "unit-test-key", "RESEND_FROM_EMAIL": "sales@example.com"
+        }):
+            self.queue.save_settings({"from_email": "sales@example.com", "batch_limit": 1})
+            package = self.queue.create_package({
+                "title": "Too large", "lead_ids": [self.lead, second],
+                "subject": "Hi", "body": "Body",
+            }, "Admin")
+            with self.assertRaisesRegex(ValueError, "单批最多发送"):
+                self.queue.send_package_rows(package["id"])
+            package = self.queue.create_package({
+                "title": "Changed mailbox", "lead_ids": [self.lead],
+                "subject": "Hi", "body": "Body",
+            }, "Admin")
+            self.db.update_lead(self.lead, {"email": "new@example.com"})
+            with self.assertRaisesRegex(ValueError, "邮箱已变更"):
+                self.queue.send_package_rows(package["id"])
+        self.assertEqual(self.queue.rows(), [])
+
     def test_package_enforces_selected_leads_date_window(self):
         with patch.dict(os.environ, {"MAIL_CONFIG_KEY": Fernet.generate_key().decode()}):
             self.queue.save_settings({
