@@ -29,8 +29,12 @@ class NotesTests(unittest.TestCase):
         html = html_template()
         self.assertIn('id="view-email-pool"', html)
         self.assertIn('id="view-email-settings"', html)
-        self.assertIn('<span>✉️</span> <span>邮件线索池</span>', html)
-        self.assertIn('<span>⚙️</span> <span>邮件发送配置</span>', html)
+        self.assertNotIn('<span>✉️</span> <span>邮件线索池</span>', html)
+        self.assertIn('onclick="switchEmailPoolMarket(\'domestic\', this)"', html)
+        self.assertIn('onclick="switchEmailPoolMarket(\'overseas\', this)"', html)
+        self.assertIn('<span>✉️ 邮件发送配置</span>', html)
+        self.assertIn('<span>📝 筛选策略</span>', html)
+        self.assertIn('<span>🛡️ 组织与权限管理</span>', html)
         self.assertNotIn('id="email-csv-file"', html)
         self.assertIn('id="mail-api-key"', html)
         self.assertIn('id="mail-sending-domain"', html)
@@ -174,11 +178,80 @@ vm.runInContext(SCRIPT, context);
 
     def test_discord_community_dashboard_ui(self):
         html = html_template()
-        self.assertIn("Discord 社群看板", html)
+        self.assertIn("Discord 线索", html)
+        self.assertIn('onclick="switchOverseasDiscord(this)"', html)
+        domestic_nav = html.split('id="domestic-pool-nav"', 1)[1].split("</li>", 1)[0]
+        self.assertNotIn("Discord", domestic_nav)
         self.assertIn('id="view-discord"', html)
         self.assertIn('id="discord-community-grid"', html)
         self.assertIn("fetchDiscordCommunities()", html)
         self.assertIn("/api/discord-communities", html)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js required")
+    def test_market_channel_navigation_and_email_candidates(self):
+        script = html_template().split("<script>", 1)[1].split("</script>", 1)[0]
+        script = script.split("// 初始化加载", 1)[0]
+        harness = r"""
+const vm = require('node:vm');
+const elements = {};
+const document = {
+  addEventListener(){}, querySelectorAll(){return [];}, querySelector(){return null;},
+  getElementById(id) {
+    return elements[id] ||= {
+      value:'', style:{}, textContent:'', innerHTML:'', innerText:'',
+      classList:{add(){},remove(){},toggle(){}},
+      options:[{value:'all'},{value:'active'}], addEventListener(){},
+      replaceChildren(...options){this.options=options;this.value=options[0]?.value;},
+      add(option){this.options.push(option);}
+    };
+  }
+};
+const context=vm.createContext({document,Intl,Date,console,
+  Option:function(text,value){this.text=text;this.value=value;}});
+vm.runInContext(SCRIPT,context);
+vm.runInContext(`
+  const check=(condition,message)=>{if(!condition)throw Error(message);};
+  currentData=[
+    {company_id:1,country_type:'domestic',email:'cn@example.com'},
+    {company_id:2,country_type:'overseas',x_url:'https://x.com/founder'}
+  ];
+  fetchStats=()=>{};
+  renderTable=()=>{visibleData=marketRows();};
+  renderSourceCapsules=()=>{};
+  switchNav=(nav)=>{globalThis.destination=nav;};
+  check(leadMatchesChannel({lead_source:'公开 X 主页'},'x'),'X source classification failed');
+  check(!leadMatchesChannel({lead_source:'example.com'},'x'),'false X source match');
+  check(leadChannelCounts([...currentData,currentData[0]]).email===1,'duplicate company count');
+  currentEmailProspects=[
+    {lead_id:1,country_type:'domestic',company_name:'国内示例',email:'cn@example.com',status:'pending'},
+    {lead_id:2,country_type:'overseas',company_name:'海外示例',email:'global@example.com',status:'pending'},
+    {lead_id:3,country_type:'pending_verification',email:'pending@example.com',status:'pending'}
+  ];
+  packageSelectedIds.add(2);
+  switchEmailPoolMarket('domestic');
+  check(destination==='email-pool' && activeEmailMarket==='domestic','domestic email route');
+  check(document.getElementById('email-market-filter').disabled,'market filter not locked');
+  const domestic=document.getElementById('email-prospect-body').innerHTML;
+  check(domestic.includes('cn@example.com')&&!domestic.includes('global@example.com'),'email markets leaked');
+  togglePackageCandidates(true);
+  check(packageSelectedIds.size===1&&packageSelectedIds.has(1),'cross-market package selection');
+  switchEmailPoolMarket('overseas');
+  check(packageSelectedIds.size===0,'previous selection survived market switch');
+  togglePackageCandidates(true);
+  check(packageSelectedIds.size===1&&packageSelectedIds.has(2),'overseas package scope');
+  switchOverseasDiscord();
+  check(destination==='discord'&&activeCountry==='overseas','discord market route');
+  switchPipelineChannel('domestic','x');
+  check(destination==='pipeline'&&activeCountry==='domestic'&&activeLeadChannel==='x','X market route');
+  switchPipelineMarket('pending_verification',document.getElementById('pending-verification-nav'));
+  check(activeLeadChannel==='all'&&document.getElementById('lead-pool-switcher').hidden,'pending market preservation');
+`,context);
+"""
+        result = subprocess.run(
+            ["node", "-e", harness.replace("SCRIPT", json.dumps(script))],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js required")
     def test_market_navigation_isolates_rows_filters_and_stale_stats(self):
