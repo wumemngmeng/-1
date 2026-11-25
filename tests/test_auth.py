@@ -97,6 +97,53 @@ class AuthTests(unittest.TestCase):
             "company_id": self.owned_id, "updates": {"notes": "blocked"}
         }, observer)[0], 403)
 
+    def test_admin_can_update_own_login_account_and_password(self):
+        admin = self.login("admin", "admin123")
+        self.assertTrue(self.request("POST", "/api/password", {
+            "current_password": "admin123", "new_password": "admin-secure-password"
+        }, admin)[1]["success"])
+        self.assertEqual(self.request("POST", "/api/admin-account", {
+            "username": "renamed-admin", "current_password": "wrong-password",
+            "new_password": "new-secure-password",
+        }, admin)[0], 400)
+        status, result, _ = self.request("POST", "/api/admin-account", {
+            "username": "renamed-admin", "current_password": "admin-secure-password",
+            "new_password": "new-secure-password",
+        }, admin)
+        self.assertEqual((status, result["success"], result["username"]), (200, True, "renamed-admin"))
+        self.assertEqual(self.request("POST", "/api/login", {
+            "username": "admin", "password": "admin-secure-password"
+        })[0], 401)
+        self.assertEqual(self.request("POST", "/api/login", {
+            "username": "renamed-admin", "password": "new-secure-password"
+        })[0], 200)
+        rep = self.login("rep_test", "rep-secure-password")
+        self.assertEqual(self.request("POST", "/api/admin-account", {
+            "username": "should-fail", "current_password": "rep-secure-password",
+        }, rep)[0], 403)
+
+    def test_admin_account_validation_and_duplicate_username(self):
+        admin = self.login("admin", "admin123")
+        self.assertTrue(self.request("POST", "/api/password", {
+            "current_password": "admin123", "new_password": "admin-secure-password"
+        }, admin)[1]["success"])
+        for body in (
+            {"username": "ab", "current_password": "admin-secure-password"},
+            {"username": "rep_test", "current_password": "admin-secure-password"},
+            {"username": "valid-admin", "current_password": "admin-secure-password",
+             "new_password": "short"},
+        ):
+            self.assertEqual(self.request("POST", "/api/admin-account", body, admin)[0], 400)
+        status, result, _ = self.request("POST", "/api/admin-account", {
+            "username": "admin-renamed", "current_password": "admin-secure-password",
+            "new_password": "",
+        }, admin)
+        self.assertEqual((status, result["success"], result["password_changed"]),
+                         (200, True, False))
+        self.assertEqual(self.request("POST", "/api/login", {
+            "username": "admin-renamed", "password": "admin-secure-password"
+        })[0], 200)
+
     def test_sales_rep_only_sees_and_edits_owned_customers(self):
         rep = self.login("rep_test", "rep-secure-password")
         status, rows, _ = self.request("GET", "/api/pipeline", cookie=rep)
@@ -617,6 +664,10 @@ class AuthTests(unittest.TestCase):
             updated = self.request("GET", "/api/email-recipients", cookie=rep)[1]
             self.assertEqual(updated["packages"][0]["status"], "sent")
             self.assertEqual(updated["rows"][0]["status"], "sent")
+            self.assertEqual(updated["batches"][0]["package_id"], result["package"]["id"])
+            self.assertEqual(updated["batches"][0]["title"], "Founder package")
+            self.assertEqual(updated["batches"][0]["recipients"][0]["company_name"], "销售名下客户")
+            self.assertEqual(updated["batches"][0]["recipients"][0]["email"], "package@example.com")
 
 
 if __name__ == "__main__":

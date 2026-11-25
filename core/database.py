@@ -6,6 +6,7 @@ import sqlite3
 import os
 import hashlib
 import hmac
+import re
 import secrets
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -462,6 +463,11 @@ def init_db(db_path: str = DB_PATH):
         cursor.execute("ALTER TABLE sys_users ADD COLUMN password_hash TEXT NOT NULL DEFAULT ''")
     if 'must_change_password' not in cols:
         cursor.execute("ALTER TABLE sys_users ADD COLUMN must_change_password INTEGER DEFAULT 1")
+
+    cursor.execute("PRAGMA table_info(mail_packages)")
+    mail_package_cols = [r['name'] for r in cursor.fetchall()]
+    if 'batch_id' not in mail_package_cols:
+        cursor.execute("ALTER TABLE mail_packages ADD COLUMN batch_id TEXT")
     
     # Auto migrate companies table if client_tier column is missing
     cursor.execute("PRAGMA table_info(companies)")
@@ -1096,6 +1102,43 @@ class DatabaseManager:
         conn.commit()
         conn.close()
         return {"success": True}
+
+    def update_own_admin_credentials(
+        self, user_id: int, current_password: str, username: str, new_password: str = ""
+    ) -> Dict[str, Any]:
+        if not all(isinstance(value, str) for value in (username, current_password, new_password)):
+            return {"success": False, "error": "登录账号和密码格式无效"}
+        username = username.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{3,40}", username):
+            return {"success": False, "error": "管理员账号须为 3–40 位字母、数字、点、下划线或短横线"}
+        if new_password and not 10 <= len(new_password) <= 256:
+            return {"success": False, "error": "新密码需要 10–256 位"}
+        conn = get_connection(self.db_path)
+        row = conn.execute(
+            "SELECT username,password_hash,role FROM sys_users WHERE id=? AND status='active'",
+            (user_id,),
+        ).fetchone()
+        if not row or row["role"] != "admin":
+            conn.close()
+            return {"success": False, "error": "只有管理员可以修改管理员登录凭证"}
+        if not verify_password(current_password, row["password_hash"]):
+            conn.close()
+            return {"success": False, "error": "当前密码不正确"}
+        duplicate = conn.execute(
+            "SELECT id FROM sys_users WHERE username=? AND id!=?", (username, user_id)
+        ).fetchone()
+        if duplicate:
+            conn.close()
+            return {"success": False, "error": "该登录账号已被使用"}
+        password_hash = hash_password(new_password) if new_password else row["password_hash"]
+        conn.execute(
+            """UPDATE sys_users SET username=?,password_hash=?,must_change_password=0
+            WHERE id=?""",
+            (username, password_hash, user_id),
+        )
+        conn.commit()
+        conn.close()
+        return {"success": True, "username": username, "password_changed": bool(new_password)}
 
     def company_owner(self, company_id: int) -> Optional[str]:
         conn = get_connection(self.db_path)
