@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS mail_packages (
     body TEXT NOT NULL,
     recipients_json TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL DEFAULT 'draft',
+    batch_id TEXT,
     sent_at TIMESTAMP,
     created_by TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -225,9 +226,6 @@ class EmailQueue:
             raise ValueError("每个推送包须选择 1–200 位联系人")
         if not subject or not body or len(subject) > 300 or len(body) > 50000:
             raise ValueError("邮件标题和正文不能为空，且不能超过长度限制")
-        sender = self.settings(sender_id=sender_id)
-        if not sender["configured"]:
-            raise ValueError("所选发件邮箱尚未配置完整")
         visible = {row["lead_id"]: row for row in self.recipients(owner)}
         if any(value not in visible for value in lead_ids):
             raise ValueError("推送包包含无权访问或无效的邮箱联系人")
@@ -270,6 +268,34 @@ class EmailQueue:
             conn.close()
         return self.get_package(package_id, owner)
 
+    def update_package(self, package_id, data, owner=None):
+        package = self.get_package(package_id, owner)
+        if not package:
+            raise ValueError("推送包不存在或无权访问")
+        if package["status"] != "draft":
+            raise ValueError("只有草稿批次可以修改")
+        title = str(data.get("title") or package["title"]).strip()
+        subject = str(data.get("subject") or "").strip()
+        body = str(data.get("body") or "").strip()
+        sender_id = int(data.get("sender_id", package["sender_id"]))
+        if not title or len(title) > 120:
+            raise ValueError("批次名称不能为空且最多 120 字")
+        if not subject or not body or len(subject) > 300 or len(body) > 50000:
+            raise ValueError("邮件标题和正文不能为空，且不能超过长度限制")
+        if not self.settings(sender_id=sender_id)["configured"]:
+            raise ValueError("所选发件邮箱尚未配置完整")
+        conn = self.connection()
+        try:
+            conn.execute(
+                """UPDATE mail_packages SET title=?,sender_id=?,subject=?,body=?,
+                updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='draft'""",
+                (title, sender_id, subject, body, int(package_id)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get_package(package_id, owner)
+
     def send_package_rows(self, package_id, owner=None):
         package = self.get_package(package_id, owner)
         if not package:
@@ -279,10 +305,29 @@ class EmailQueue:
         settings = self.settings(private=True, sender_id=int(package["sender_id"]))
         if not settings["configured"]:
             raise ValueError("所选发件邮箱尚未配置完整")
+        if len(package["recipients"]) > int(settings["batch_limit"]):
+            raise ValueError(f'本发件邮箱单批最多发送 {settings["batch_limit"]} 人，请缩小批次后再发送')
+        current = {row["lead_id"]: row for row in self.recipients(owner)}
+        if any(
+            recipient["lead_id"] not in current
+            or current[recipient["lead_id"]]["email"].lower() != recipient["email"].lower()
+            for recipient in package["recipients"]
+        ):
+            raise ValueError("批次中的联系人邮箱已变更，请重新核对并创建批次")
         lead_ids = [int(item["lead_id"]) for item in package["recipients"]]
         ids = self.prepare(lead_ids, package["created_by"], owner)
         rows = self.select(ids, owner, sendable=True)
         batch = self.claim(ids)
+        conn = self.connection()
+        try:
+            conn.execute(
+                """UPDATE mail_packages SET status='sending',batch_id=?,
+                updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='draft'""",
+                (batch, int(package_id)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
         messages = []
         for row in rows:
             fields = {
@@ -297,13 +342,13 @@ class EmailQueue:
             messages.append({**row, "subject": subject, "body": body})
         return package, settings, batch, messages
 
-    def mark_package_sent(self, package_id):
+    def mark_package_sent(self, package_id, batch_id):
         conn = self.connection()
         try:
             conn.execute(
-                """UPDATE mail_packages SET status='sent',sent_at=CURRENT_TIMESTAMP,
-                   updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='draft'""",
-                (int(package_id),),
+                """UPDATE mail_packages SET status='sent',batch_id=?,sent_at=CURRENT_TIMESTAMP,
+                   updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='sending'""",
+                (str(batch_id), int(package_id)),
             )
             conn.commit()
         finally:
@@ -346,6 +391,59 @@ class EmailQueue:
             if package is not None:
                 results.append(package)
         return results
+
+    def delivery_batches(self, owner=None):
+        """Group immutable send records by their queue claim batch."""
+        conn = self.connection()
+        try:
+            rows = [dict(row) for row in conn.execute(
+                """SELECT s.id,s.subject,s.sender,s.sent_by,s.provider_message_id,
+                s.created_at,q.email,q.batch_id,q.status AS queue_status,
+                q.updated_at AS attempted_at,c.name AS company_name,c.country_type,l.contact_name
+                FROM mail_queue q LEFT JOIN mail_queue_sends s ON s.queue_id=q.id
+                JOIN companies c ON c.id=q.company_id JOIN leads l ON l.id=q.lead_id
+                WHERE (? IS NULL OR c.owner=?) AND (s.id IS NOT NULL OR q.batch_id IS NOT NULL)
+                ORDER BY coalesce(s.created_at,q.updated_at) DESC,q.id DESC""",
+                (owner, owner),
+            ).fetchall()]
+        finally:
+            conn.close()
+        packages = {
+            package["batch_id"]: package
+            for package in self.packages(owner)
+            if package.get("batch_id")
+        }
+        batches = {}
+        for row in rows:
+            key = row.get("batch_id") or f'legacy-{row["id"]}'
+            batch = batches.setdefault(key, {
+                "batch_id": key,
+                "package_id": packages.get(key, {}).get("id"),
+                "title": packages.get(key, {}).get("title") or f'发送批次 {str(key)[:8]}',
+                "status": "sent",
+                "sender": row["sender"] or "",
+                "subject": row["subject"] or packages.get(key, {}).get("subject", ""),
+                "sent_by": row["sent_by"] or packages.get(key, {}).get("created_by", ""),
+                "sent_at": row["created_at"] or row["attempted_at"],
+                "recipients": [],
+            })
+            recipient = {
+                field: row.get(field) for field in (
+                    "email", "company_name", "country_type", "contact_name",
+                    "provider_message_id", "created_at",
+                )
+            }
+            recipient["status"] = "sent" if row["id"] is not None else "sending"
+            if recipient["status"] != "sent":
+                batch["status"] = "sending"
+            if row["sender"]:
+                batch["sender"] = row["sender"]
+            batch["recipients"].append(recipient)
+        results = list(batches.values())
+        for batch in results:
+            batch["recipient_count"] = len(batch["recipients"])
+            batch["sent_count"] = sum(row["status"] == "sent" for row in batch["recipients"])
+        return results[:100]
 
     @staticmethod
     def cipher():
