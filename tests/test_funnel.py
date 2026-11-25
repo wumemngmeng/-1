@@ -53,6 +53,7 @@ if (touch.total !== 9 || touch.counts.won !== 4 || touch.counts.pending !== 2) t
 if (touch.counts.lost !== 1 || touch.counts.unknown !== 1) throw Error('touch exclusions');
 if (touch.reached.join(',') !== '7,5,4,4,4,4') throw Error('touch cumulative');
 if (buildTouchFunnelData([{company_id:1,prospect_status:'won'}]).counts.pending !== 1) throw Error('touch must not merge detail stage');
+activeCountry = 'domestic';
 renderTouchFunnel('pipeline-touch-funnel', []);
 if (!document.getElementById('pipeline-touch-funnel').innerHTML.includes('当前筛选范围：0')) throw Error('empty touch row');
 if (document.getElementById('pipeline-touch-funnel').innerHTML.includes('NaN')) throw Error('empty ratio');
