@@ -131,6 +131,8 @@ class EmailQueueTests(unittest.TestCase):
         self.assertEqual(batches[0]["recipient_count"], 1)
         self.assertEqual(batches[0]["recipients"][0]["company_name"], "Queue Test")
         self.assertEqual(batches[0]["recipients"][0]["email"], "alex@example.com")
+        self.assertEqual(batches[0]["recipients"][0]["subject"], "Hi Queue Test")
+        self.assertEqual(batches[0]["recipients"][0]["provider_message_id"], "provider-message")
         with self.assertRaisesRegex(ValueError, "只有草稿"):
             self.queue.update_package(package["id"], {
                 "sender_id": 1, "subject": "Again", "body": "Again",
@@ -150,6 +152,10 @@ class EmailQueueTests(unittest.TestCase):
         self.assertEqual((batch["batch_id"], batch["recipient_count"], batch["sent_count"]),
                          (batch_id, 2, 1))
         self.assertEqual(batch["status"], "sending")
+        uncertain = next(item for item in batch["recipients"]
+                         if item["email"] == "other-batch@example.com")
+        self.assertEqual(uncertain["status"], "sending")
+        self.assertTrue(uncertain["created_at"])
         scoped = self.queue.delivery_batches("Rep")[0]
         self.assertEqual(scoped["recipient_count"], 1)
         self.assertEqual(scoped["recipients"][0]["email"], "alex@example.com")
