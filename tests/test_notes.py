@@ -66,6 +66,10 @@ class NotesTests(unittest.TestCase):
         self.assertNotIn('id="feishu-mail-import-preview"', html)
         self.assertNotIn('id="feishu-mail-import-apply"', html)
         self.assertIn('id="email-status-filter"', html)
+        self.assertIn(
+            'id="email-status-filter" onchange="renderEmailRecipients()"><option value="">全部</option>',
+            html,
+        )
         self.assertIn('id="email-market-filter"', html)
         self.assertIn('id="email-batch-sender"', html)
         self.assertIn('id="mail-edit-sender"', html)
@@ -101,10 +105,14 @@ class NotesTests(unittest.TestCase):
         self.assertNotIn('id="email-subject"', pool)
         self.assertIn('id="email-send-btn"', send)
         self.assertIn('id="email-subject"', send)
-        self.assertIn('id="view-admin-account"', html)
-        self.assertIn('id="admin-account-username"', html)
-        self.assertIn('id="admin-account-current-password"', html)
-        self.assertIn("/api/admin-account", html)
+        self.assertNotIn('id="view-admin-account"', html)
+        self.assertNotIn('id="config-admin-account-nav"', html)
+        self.assertIn('id="user-edit-modal"', html)
+        self.assertIn('id="user-edit-password"', html)
+        self.assertIn("/api/user/update", html)
+        self.assertIn('class="email-recipient-filters"', html)
+        self.assertIn('id="x-outreach-account-heading"', html)
+        self.assertIn("isXClosedDmLead", html)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js required")
     def test_single_button_feishu_sync_flow(self):
@@ -276,7 +284,7 @@ vm.runInContext(SCRIPT, context);
         self.assertNotIn('style="min-width:420px;white-space:pre-wrap;line-height:1.6">${escapeHtml(row.content)}', html)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js required")
-    def test_send_batch_detail_and_admin_account_form_behavior(self):
+    def test_send_batch_detail_and_user_edit_modal_behavior(self):
         script = html_template().split("<script>", 1)[1].split("</script>", 1)[0]
         script = script.split("// 初始化加载", 1)[0]
         harness = r"""
@@ -284,18 +292,20 @@ const vm=require('node:vm');
 const elements={};
 const document={
   addEventListener(){},querySelectorAll(){return [];},
+  createElement(){return {innerHTML:'',appendChild(){},textContent:'',className:'',type:'',title:''};},
   getElementById(id){
     return elements[id]||={
       value:'',innerHTML:'',textContent:'',innerText:'',style:{},hidden:false,
       classList:{add(){},remove(){},toggle(){},contains(){return false;}},
-      reset(){},addEventListener(){}
+      reset(){},addEventListener(){},appendChild(){}
     };
   }
 };
 const requests=[];
 const context=vm.createContext({document,Intl,Date,console,fetch:async(url,options)=>{
   requests.push({url,data:JSON.parse(options.body)});
-  return {ok:true,json:async()=>({success:true,username:'updated-admin',password_changed:true})};
+  return {ok:true,json:async()=>({success:true,user:{id:2,username:'edited-rep',
+    display_name:'Edited Rep',role:'sales_rep'}})};
 }});
 vm.runInContext(SCRIPT,context);
 vm.runInContext(`
@@ -319,21 +329,18 @@ vm.runInContext(`
 `,context);
 (async()=>{
   await vm.runInContext(`(async()=>{
-    currentUser={role:'admin',username:'admin'};
-    loadAdminAccount();
-    document.getElementById('admin-account-username').value='updated-admin';
-    document.getElementById('admin-account-current-password').value='test-current-password';
-    document.getElementById('admin-account-new-password').value='test-new-password';
-    document.getElementById('admin-account-confirm-password').value='different';
-    await saveAdminAccount({preventDefault(){}});
-    check(document.getElementById('admin-account-result').textContent.includes('不一致'),'confirmation check missing');
-    document.getElementById('admin-account-confirm-password').value='test-new-password';
-    await saveAdminAccount({preventDefault(){}});
-    check(currentUser.username==='updated-admin','account identity not updated');
-    check(!document.getElementById('admin-account-current-password').value,'current password retained');
-    check(!document.getElementById('admin-account-new-password').value,'new password retained');
+    currentUser={id:1,role:'admin',username:'admin'};
+    currentUsers=[{id:2,username:'rep',display_name:'Rep',role:'sales_rep',email:'rep@example.com',phone:'123'}];
+    openUserEditModal(2);
+    check(document.getElementById('user-edit-modal').style.display==='flex','user modal not opened');
+    document.getElementById('user-edit-username').value='edited-rep';
+    document.getElementById('user-edit-password').value='new-secure-password';
+    await saveUserEdit({preventDefault(){}});
+    check(document.getElementById('user-edit-modal').style.display==='none','user modal not closed after save');
   })()`,context);
-  if(requests.length!==1||requests[0].url!=='/api/admin-account') throw Error('unexpected credential request');
+  if(requests.length!==1||requests[0].url!=='/api/user/update'||
+      requests[0].data.username!=='edited-rep'||
+      requests[0].data.new_password!=='new-secure-password') throw Error('unexpected user update request');
 })().catch(error=>{console.error(error);process.exitCode=1;});
 """
         result = subprocess.run(
@@ -462,7 +469,7 @@ if(countResult.domestic!==1 || countResult.overseas!==2)
 vm.runInContext('renderLeadPoolNavigation()',ctx);
 if(elements['domestic-email-count'].textContent!==1 ||
    elements['overseas-email-count'].textContent!==2 ||
-   elements['overseas-x-count'].textContent!==1) throw Error('overseas channel attribution');
+   elements['overseas-x-count'].textContent!=='1 (0)') throw Error('overseas channel attribution');
 """
         result = subprocess.run(["node", "-e", harness.replace("SCRIPT", json.dumps(script))],
                                 capture_output=True, text=True, timeout=30)
