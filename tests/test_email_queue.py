@@ -124,6 +124,12 @@ class EmailQueueTests(unittest.TestCase):
                 settings["from_email"], "provider-message", "Admin",
             )
             self.queue.mark_package_sent(package["id"], batch_id)
+        sent_package = self.queue.get_package(package["id"])
+        self.assertEqual(sent_package["sent_count"], 1)
+        self.assertEqual(sent_package["sender"], "sales@example.com")
+        self.assertEqual(sent_package["recipients"][0]["status"], "sent")
+        self.assertEqual(sent_package["recipients"][0]["subject"], "Hi Queue Test")
+        self.assertEqual(sent_package["recipients"][0]["provider_message_id"], "provider-message")
         batches = self.queue.delivery_batches()
         self.assertEqual(len(batches), 1)
         self.assertEqual(batches[0]["batch_id"], batch_id)
@@ -131,6 +137,8 @@ class EmailQueueTests(unittest.TestCase):
         self.assertEqual(batches[0]["recipient_count"], 1)
         self.assertEqual(batches[0]["recipients"][0]["company_name"], "Queue Test")
         self.assertEqual(batches[0]["recipients"][0]["email"], "alex@example.com")
+        self.assertEqual(batches[0]["recipients"][0]["subject"], "Hi Queue Test")
+        self.assertEqual(batches[0]["recipients"][0]["provider_message_id"], "provider-message")
         with self.assertRaisesRegex(ValueError, "只有草稿"):
             self.queue.update_package(package["id"], {
                 "sender_id": 1, "subject": "Again", "body": "Again",
@@ -203,6 +211,10 @@ class EmailQueueTests(unittest.TestCase):
         self.assertEqual((batch["batch_id"], batch["recipient_count"], batch["sent_count"]),
                          (batch_id, 2, 1))
         self.assertEqual(batch["status"], "sending")
+        uncertain = next(item for item in batch["recipients"]
+                         if item["email"] == "other-batch@example.com")
+        self.assertEqual(uncertain["status"], "sending")
+        self.assertTrue(uncertain["created_at"])
         scoped = self.queue.delivery_batches("Rep")[0]
         self.assertEqual(scoped["recipient_count"], 1)
         self.assertEqual(scoped["recipients"][0]["email"], "alex@example.com")
@@ -214,6 +226,32 @@ class EmailQueueTests(unittest.TestCase):
         conn.close()
         self.assertTrue(any(item["batch_id"].startswith("legacy-")
                             for item in self.queue.delivery_batches()))
+
+    def test_package_list_keeps_package_identity_and_partial_progress(self):
+        second = self.db.insert_lead({
+            "company_id": self.company, "email": "second-package@example.com",
+        })
+        with patch.dict(os.environ, {
+            "RESEND_API_KEY": "unit-test-key", "RESEND_FROM_EMAIL": "sales@example.com",
+        }):
+            package = self.queue.create_package({
+                "title": "Today's package", "lead_ids": [self.lead, second],
+                "subject": "Hi {{company}}", "body": "Hello {{name}}",
+            }, "Admin")
+            self.assertEqual(package["sent_count"], 0)
+            _, settings, _, messages = self.queue.send_package_rows(package["id"])
+            first = messages[0]
+            self.queue.complete(
+                first, first["subject"], first["body"], settings["from_email"],
+                "accepted-one", "Admin",
+            )
+        listed = self.queue.packages()[0]
+        self.assertEqual(listed["id"], package["id"])
+        self.assertEqual(listed["status"], "sending")
+        self.assertEqual(listed["recipient_count"], 2)
+        self.assertEqual(listed["sent_count"], 1)
+        self.assertEqual({item["status"] for item in listed["recipients"]}, {"sent", "sending"})
+        self.assertIsNone(self.queue.get_package(package["id"], "Other"))
 
     def test_draft_requires_neither_configuration_nor_automatic_sending(self):
         with patch.dict(os.environ, {"RESEND_API_KEY": "", "RESEND_FROM_EMAIL": ""}):
