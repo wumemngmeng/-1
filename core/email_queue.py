@@ -428,10 +428,11 @@ class EmailQueue:
             recipient = {
                 field: row.get(field) for field in (
                     "email", "company_name", "country_type", "contact_name",
-                    "provider_message_id", "created_at",
+                    "provider_message_id", "created_at", "subject",
                 )
             }
             recipient["status"] = "sent" if row["id"] is not None else "sending"
+            recipient["created_at"] = row["created_at"] or row["attempted_at"]
             if recipient["status"] != "sent":
                 batch["status"] = "sending"
             if row["sender"]:
