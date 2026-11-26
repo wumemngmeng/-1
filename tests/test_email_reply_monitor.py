@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from cryptography.fernet import Fernet
 
-from core.database import DatabaseManager
+from core.database import DatabaseManager, get_connection
 from core.email_queue import EmailQueue
 from core.email_reply_monitor import EmailReplyMonitor, default_imap_host, looks_automated
 
@@ -109,6 +109,22 @@ class EmailReplyMonitorTests(unittest.TestCase):
         self.assertEqual(reply["subject"], "Re: Outbound")
         self.assertEqual(reply["snippet"], "Thanks, this looks interesting.")
         self.assertEqual(monitor.status()["unread"], 1)
+        conn = get_connection(self.db.db_path)
+        event = conn.execute(
+            "SELECT event_type FROM touch_events WHERE source_type='imap'"
+        ).fetchone()
+        state = conn.execute(
+            "SELECT current_status FROM channel_states WHERE lead_id=?",
+            (self.lead,),
+        ).fetchone()
+        outreach = conn.execute(
+            "SELECT status FROM outreach_records WHERE lead_id=? ORDER BY id DESC LIMIT 1",
+            (self.lead,),
+        ).fetchone()
+        conn.close()
+        self.assertEqual(event["event_type"], "replied")
+        self.assertEqual(state["current_status"], "replied")
+        self.assertEqual(outreach["status"], "contacted")
 
     def test_owner_scope_and_internal_read_marker(self):
         FakeImap.messages = {101: self.message()}
