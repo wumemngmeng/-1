@@ -63,6 +63,13 @@ const contactable = buildTouchFunnelData([
  {company_id:5,status:'pending',phone:'13800000000'}
 ]);
 if (contactable.metrics.contactable !== 2) throw Error('contactable exclusions');
+const historical = buildTouchFunnelData([
+ {company_id:1,status:'pending',ever_touched:1},
+ {company_id:2,status:'lost',ever_touched:1},
+ {company_id:3,status:'pending',ever_touched:0},
+ {company_id:4,status:'sample_sent',ever_touched:0}
+]);
+if (historical.metrics.touched !== 3) throw Error('historical touch evidence');
 if (buildTouchFunnelData([{company_id:1,prospect_status:'won'}]).counts.pending !== 1) throw Error('touch must not merge detail stage');
 activeCountry = 'domestic';
 renderTouchFunnel('pipeline-touch-funnel', []);
