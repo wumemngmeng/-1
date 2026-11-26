@@ -700,7 +700,7 @@ class FeishuXStatusSync:
 
     def fetch_records(self):
         importer, token = self._client()
-        values = importer.read_sheet_values(token, self.sheet_id, "L")
+        values = importer.read_sheet_values(token, self.sheet_id, "M")
         if not isinstance(values, list) or not values:
             raise FeishuImportError("飞书 X 推送监控没有可读取的数据")
         headers = [str(value or "").strip() for value in values[0]]
@@ -725,6 +725,10 @@ class FeishuXStatusSync:
                 "source_date": str(row.get("推送日期") or "").strip(),
                 "x_account": str(row.get("X账号") or "").strip(),
                 "channel": str(row.get("渠道") or "").strip(),
+                "outreach_account": str(
+                    row.get("推送人X账号") or row.get("触达账号")
+                    or row.get("X触达账号") or row.get("推送账号") or ""
+                ).strip(),
             })
         return records
 
@@ -1165,7 +1169,8 @@ class FeishuXStatusSync:
                    spreadsheet_token TEXT NOT NULL,sheet_id TEXT NOT NULL,
                    sheet_row INTEGER NOT NULL,lead_id INTEGER,
                    source_status TEXT NOT NULL,source_date TEXT NOT NULL,
-                   source_channel TEXT NOT NULL,payload TEXT NOT NULL,
+                   source_channel TEXT NOT NULL,outreach_account TEXT NOT NULL DEFAULT '',
+                   payload TEXT NOT NULL,
                    resolution TEXT NOT NULL,synced_at TEXT DEFAULT CURRENT_TIMESTAMP,
                    PRIMARY KEY(spreadsheet_token,sheet_id,sheet_row))"""
             )
@@ -1188,15 +1193,18 @@ class FeishuXStatusSync:
                 rows.append((self.spreadsheet_token, self.sheet_id, source["sheet_row"],
                              lead_id, source.get("source_status") or "",
                              source.get("source_date") or "", channel,
+                             source.get("outreach_account") or "",
                              json.dumps(source, ensure_ascii=False, sort_keys=True),
                              reason or "已同步"))
             cursor.executemany(
                 """INSERT INTO feishu_x_source_rows
                    (spreadsheet_token,sheet_id,sheet_row,lead_id,source_status,source_date,
-                    source_channel,payload,resolution) VALUES (?,?,?,?,?,?,?,?,?)
+                    source_channel,outreach_account,payload,resolution)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(spreadsheet_token,sheet_id,sheet_row) DO UPDATE SET
                    lead_id=excluded.lead_id,source_status=excluded.source_status,
                    source_date=excluded.source_date,source_channel=excluded.source_channel,
+                   outreach_account=excluded.outreach_account,
                    payload=excluded.payload,resolution=excluded.resolution,
                    synced_at=CURRENT_TIMESTAMP""", rows,
             )

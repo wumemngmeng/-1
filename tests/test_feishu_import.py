@@ -394,7 +394,7 @@ class FeishuImportTests(unittest.TestCase):
     def test_x_sync_maps_statuses_to_x_dm_and_is_idempotent_without_sending(self):
         self.make_x_lead()
         sync = FeishuXStatusSync(self.db, environ={})
-        records = [self.x_record()]
+        records = [self.x_record(outreach_account="@outreach_handle")]
         with patch.object(sync, "fetch_records", return_value=records):
             first = sync.apply()
             second = sync.apply()
@@ -409,6 +409,8 @@ class FeishuImportTests(unittest.TestCase):
         self.assertEqual(second["created_outreach_records"], 0)
         self.assertEqual(second["unchanged"], 1)
         self.assertEqual(outreach["status"], "sample_sent")
+        self.assertEqual(self.db.query_pipeline(country_type="overseas")[0]["feishu_outreach_account"],
+                         "@outreach_handle")
         self.assertIn("2026-11-02", outreach["interaction_notes"])
         self.assertIn("未触发任何私信或邮件发送", outreach["interaction_notes"])
         self.assertEqual(queue_count, 0)
@@ -420,6 +422,18 @@ class FeishuImportTests(unittest.TestCase):
         self.assertEqual(len(run_rows), 2)
         self.assertEqual(run_rows[0]["actor"], "Vercel Feishu Sync")
         self.assertEqual(json.loads(run_rows[0]["result"])["created_outreach_records"], 1)
+
+    def test_x_fetch_reads_column_m_outreach_account(self):
+        sync = FeishuXStatusSync(self.db, environ={})
+        importer = type("Importer", (), {
+            "read_sheet_values": lambda _self, token, sheet_id, end_column: [
+                ["公司", "X链接", "推送状态", "推送人X账号"],
+                ["Acme", "https://x.com/alex", "已推送未回复", "@outreach_handle"],
+            ]
+        })()
+        with patch.object(sync, "_client", return_value=(importer, "token")):
+            records = sync.fetch_records()
+        self.assertEqual(records[0]["outreach_account"], "@outreach_handle")
 
     def test_x_sync_replies_advance_but_never_downgrade_advanced_stages(self):
         _, lead_id = self.make_x_lead()

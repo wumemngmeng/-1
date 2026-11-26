@@ -950,7 +950,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }
         
         /* Modal 通用弹窗 */
-        #modal, #auth-modal, #edit-company-modal, #edit-lead-modal, #strategy-detail-modal {
+        #modal, #auth-modal, #edit-company-modal, #edit-lead-modal, #strategy-detail-modal, #user-edit-modal {
             display: none;
             position: fixed;
             inset: 0;
@@ -1325,6 +1325,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .email-panel { background:var(--card-bg); border:1px solid var(--border); border-radius:10px; padding:16px; }
         .email-panel h3 { margin:0 0 12px; font-size:15px; }
         .email-panel label { display:block; color:var(--text-muted); font-size:12px; margin:10px 0 5px; }
+        .email-recipient-filters { display:grid; grid-template-columns:minmax(0,.75fr) minmax(0,1fr) minmax(0,1.45fr) minmax(0,.95fr) minmax(0,.95fr) auto auto auto; align-items:end; gap:10px; overflow-x:auto; padding-bottom:2px; }
+        .email-recipient-filters label { min-width:0; margin:0; }
+        .email-recipient-filters select, .email-recipient-filters input { width:100%; min-width:0; height:38px; }
+        .email-recipient-filters button { min-height:38px; padding-inline:10px; white-space:nowrap; }
+        @media (max-width: 900px) {
+            .email-recipient-filters { grid-template-columns:repeat(2,minmax(0,1fr)); overflow:visible; }
+        }
+        @media (max-width: 520px) {
+            .email-recipient-filters { grid-template-columns:1fr; }
+        }
         .email-panel textarea, .email-panel input {
             width:100%; background:#111827; color:var(--text-main); border:1px solid var(--border);
             border-radius:6px; padding:9px;
@@ -1442,9 +1452,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <button class="nav-subitem" id="permissions-nav" onclick="switchConfig('permissions', this)">
                         <span>🛡️ 组织与权限管理</span>
                     </button>
-                    <button class="nav-subitem" id="config-admin-account-nav" onclick="switchConfig('admin-account', this)">
-                        <span>🔐 管理员账号与密码</span>
-                    </button>
                 </li>
                 <li class="nav-item" id="funnel-nav" onclick="switchNav('funnel', this)">
                     <span>📊</span> <span>跟进漏斗与数据</span>
@@ -1537,6 +1544,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                             <th id="company-description-heading">赛道/类目</th>
                             <th>市场</th>
                             <th>创始人 / X 主页</th>
+                            <th id="x-outreach-account-heading" hidden>触达账号</th>
                             <th>直连渠道 (微信/电话/邮箱)</th>
                             <th>线索来源</th>
                             <th>当前状态</th>
@@ -1569,9 +1577,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <section class="email-panel" style="margin-top:16px">
                 <h3>邮箱线索与批次人选</h3>
                 <p class="email-status">按线索入库日期筛选联系人并保存批次人选。保存不会发送邮件；标题、正文、发件邮箱和发送操作统一在左侧“邮件发送”页面完成。</p>
-                <div class="filter-grid">
+                <div class="email-recipient-filters">
                     <label>市场<select id="email-market-filter" onchange="renderEmailRecipients()"><option value="">全部市场</option><option value="domestic">国内</option><option value="overseas">海外</option></select></label>
-                    <label>邮件状态<select id="email-status-filter" onchange="renderEmailRecipients()"><option value="pending">未发送</option><option value="sent">已发送</option><option value="sending">发送中 / 待核实</option><option value="unsubscribed">已退订</option><option value="removed">已移除</option><option value="email_changed">邮箱变更待核实</option><option value="">全部</option></select></label>
+                    <label>邮件状态<select id="email-status-filter" onchange="renderEmailRecipients()"><option value="">全部</option><option value="pending">未发送</option><option value="sent">已发送</option><option value="sending">发送中 / 待核实</option><option value="unsubscribed">已退订</option><option value="removed">已移除</option><option value="email_changed">邮箱变更待核实</option></select></label>
                     <label>公司 / 姓名 / 邮箱<input id="email-search" oninput="renderEmailRecipients()" placeholder="搜索客户"></label>
                     <label>入库日期从<input type="date" id="package-date-from" onchange="renderPackageCandidates()"></label>
                     <label>入库日期至<input type="date" id="package-date-to" onchange="renderPackageCandidates()"></label>
@@ -1705,33 +1713,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             </section>
         </div>
 
-        <div id="view-admin-account" class="view-section">
-            <header>
-                <div>
-                    <h2 class="page-title">管理员账号与密码</h2>
-                    <div class="email-status">修改当前管理员自己的登录账号和密码。必须验证当前密码，密码不会回显。</div>
-                </div>
-            </header>
-            <section class="email-panel" style="max-width:680px">
-                <h3>登录凭证</h3>
-                <p class="email-status">修改成功后，其他已登录设备仍会在会话到期前保持登录。如修改了密码，建议立即退出并使用新凭证重新登录。</p>
-                <form id="admin-account-form" onsubmit="saveAdminAccount(event)">
-                    <label for="admin-account-username">管理员登录账号</label>
-                    <input id="admin-account-username" name="username" minlength="3" maxlength="40" autocomplete="username" required>
-                    <label for="admin-account-current-password">当前密码（必填）</label>
-                    <input id="admin-account-current-password" name="current_password" type="password" autocomplete="current-password" required>
-                    <label for="admin-account-new-password">新密码（可留空，仅修改账号）</label>
-                    <input id="admin-account-new-password" name="new_password" type="password" minlength="10" autocomplete="new-password">
-                    <label for="admin-account-confirm-password">确认新密码</label>
-                    <input id="admin-account-confirm-password" type="password" minlength="10" autocomplete="new-password">
-                    <div class="email-actions">
-                        <button class="btn-save" id="admin-account-save" type="submit">保存管理员登录凭证</button>
-                        <span id="admin-account-result" class="email-status" role="status" aria-live="polite"></span>
-                    </div>
-                </form>
-            </section>
-        </div>
-
         <!-- 视窗 2: 组织与权限管理 -->
         <div id="view-permissions" class="view-section">
             <header>
@@ -1798,7 +1779,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                             <th>电子邮箱</th>
                             <th>联系电话</th>
                             <th>账号状态</th>
-                            <th>角色权限调整 (实时生效)</th>
+                            <th>操作</th>
                         </tr>
                     </thead>
                     <tbody id="users-body">
@@ -2173,6 +2154,26 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         </div>
     </div>
 
+    <div id="user-edit-modal">
+        <div class="modal-content" style="max-width:560px">
+            <div class="modal-header">
+                <h3>编辑团队账号</h3>
+                <button type="button" onclick="closeUserEditModal()">关闭</button>
+            </div>
+            <form id="user-edit-form" onsubmit="saveUserEdit(event)">
+                <input type="hidden" id="user-edit-id">
+                <div class="form-group"><label for="user-edit-username">登录账号</label><input id="user-edit-username" class="form-control" minlength="3" maxlength="40" required></div>
+                <div class="form-group"><label for="user-edit-display-name">显示姓名</label><input id="user-edit-display-name" class="form-control" maxlength="120" required></div>
+                <div class="form-group"><label for="user-edit-role">角色</label><select id="user-edit-role" class="form-control"><option value="admin">超级管理员</option><option value="sales_lead">销售总监</option><option value="sales_rep">销售专员</option><option value="observer">运营观察员</option></select></div>
+                <div class="form-group"><label for="user-edit-email">工作邮箱</label><input id="user-edit-email" class="form-control" type="email" maxlength="254"></div>
+                <div class="form-group"><label for="user-edit-phone">联系电话</label><input id="user-edit-phone" class="form-control" maxlength="40"></div>
+                <div class="form-group"><label for="user-edit-password">重置密码（选填，至少 10 位）</label><input id="user-edit-password" class="form-control" type="password" minlength="10" maxlength="256" autocomplete="new-password" placeholder="留空则不修改密码"></div>
+                <div id="user-edit-message" class="auth-msg" role="status"></div>
+                <div class="modal-actions"><button type="button" onclick="closeUserEditModal()">取消</button><button type="submit" class="btn-save">保存账号</button></div>
+            </form>
+        </div>
+    </div>
+
     <div id="prospect-modal" style="display:none;position:fixed;inset:0;background:#0006;z-index:2000;align-items:stretch;justify-content:flex-end" onclick="if(event.target===this) closeProspectDetails()">
         <div role="dialog" aria-modal="true" aria-labelledby="prospect-name" class="prospect-drawer">
             <div class="prospect-drawer-header">
@@ -2248,6 +2249,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 .map(value => String(value || '').toLowerCase()).join(' ');
             return /\\bx\\b|twitter/.test(source);
         }
+        function isXClosedDmLead(row) {
+            return /私信关闭/.test(String(row.feishu_social_status || ''));
+        }
         function leadMatchesChannel(row, channel) {
             if (channel === 'email') return Boolean(String(row.email || '').trim());
             if (channel === 'x') return isXChannelLead(row);
@@ -2268,18 +2272,22 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         function renderLeadPoolNavigation() {
             const emailCounts = emailContactCounts();
             ['domestic', 'overseas'].forEach(market => {
-                const counts = leadChannelCounts(currentData.filter(row => row.country_type === market));
+                const rows = currentData.filter(row => row.country_type === market);
+                const counts = leadChannelCounts(rows);
+                const closedXCount = new Set(rows.filter(isXClosedDmLead).map(row => row.company_id)).size;
                 Object.keys(LEAD_CHANNEL_META).forEach(channel => {
                     const count = document.getElementById(`${market}-${channel}-count`);
                     if (count && channel !== 'discord') {
                         count.textContent = channel === 'email'
-                            ? emailCounts[market] : counts[channel];
+                            ? emailCounts[market]
+                            : channel === 'x' ? `${counts.x} (${closedXCount})` : counts[channel];
                     }
                 });
             });
             document.getElementById('lead-pool-switcher').hidden = false;
             const rows = marketRows();
             const counts = leadChannelCounts(rows);
+            const closedXCount = new Set(rows.filter(isXClosedDmLead).map(row => row.company_id)).size;
             const channels = Object.entries(LEAD_CHANNEL_META).filter(([channel]) =>
                 activeCountry === 'overseas' || activeCountry === 'domestic' && channel === 'email');
             document.getElementById('lead-pool-title').textContent =
@@ -2291,7 +2299,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 onclick="openLeadChannel('${activeCountry}', '${item.channel}', this)">
                 <span class="lead-pool-card-icon">${item.icon}</span>
                 <span class="lead-pool-card-copy"><strong>${item.label}</strong><small>${item.hint}</small></span>
-                <span class="lead-pool-card-count">${item.channel === 'all' ? new Set(rows.map(row => row.company_id)).size : item.channel === 'email' ? currentEmailProspects.filter(row => row.country_type === activeCountry).length : item.channel === 'discord' ? discordCommunityTotal : counts[item.channel]}</span>
+                <span class="lead-pool-card-count">${item.channel === 'all' ? new Set(rows.map(row => row.company_id)).size : item.channel === 'email' ? currentEmailProspects.filter(row => row.country_type === activeCountry).length : item.channel === 'discord' ? discordCommunityTotal : `${counts[item.channel]} (${closedXCount})`}</span>
             </button>`).join('');
         }
         function highlightMarketChannel(country, channel) {
@@ -2473,7 +2481,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('current-user-avatar').innerText = (currentUser.display_name || currentUser.username)[0].toUpperCase();
             document.getElementById('current-user-role').innerText = `● ${ROLE_NAME_MAP[currentUser.role] || currentUser.role}`;
             document.getElementById('permissions-nav').style.display = currentUser.role === 'admin' ? '' : 'none';
-            document.getElementById('config-admin-account-nav').hidden = currentUser.role !== 'admin';
             document.getElementById('tab-register-btn').style.display = currentUser.role === 'admin' ? '' : 'none';
             document.getElementById('feishu-mail-import-panel').hidden = currentUser.role !== 'admin';
             document.getElementById('feishu-social-panel').hidden = currentUser.role !== 'admin';
@@ -2492,8 +2499,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             } else if (navId === 'email-pool' || navId === 'email-settings' || navId === 'email-send') {
                 fetchEmailProspects();
                 if (navId === 'email-pool' && currentUser?.role === 'admin') loadFeishuMailImportStatus();
-            } else if (navId === 'admin-account') {
-                loadAdminAccount();
             } else if (navId === 'funnel') {
                 renderFunnelView();
             } else if (navId === 'strategy') {
@@ -2503,54 +2508,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             }
         }
         function switchConfig(navId, elem) {
-            if (navId === 'admin-account' && currentUser?.role !== 'admin') return;
             switchNav(navId, elem);
             document.getElementById('config-nav').classList.add('active');
-            const ids = {'email-settings':'config-email-settings-nav', strategy:'config-strategy-nav', permissions:'permissions-nav', 'admin-account':'config-admin-account-nav'};
+            const ids = {'email-settings':'config-email-settings-nav', strategy:'config-strategy-nav', permissions:'permissions-nav'};
             if (ids[navId]) document.getElementById(ids[navId]).classList.add('active');
         }
-        function loadAdminAccount() {
-            if(currentUser?.role!=='admin') return;
-            document.getElementById('admin-account-username').value=currentUser.username||'';
-            document.getElementById('admin-account-form').reset();
-            document.getElementById('admin-account-username').value=currentUser.username||'';
-            document.getElementById('admin-account-result').textContent='';
-        }
-        async function saveAdminAccount(event) {
-            event.preventDefault();
-            if(currentUser?.role!=='admin') return;
-            const username=document.getElementById('admin-account-username').value.trim();
-            const currentPassword=document.getElementById('admin-account-current-password').value;
-            const newPassword=document.getElementById('admin-account-new-password').value;
-            const confirmation=document.getElementById('admin-account-confirm-password').value;
-            const output=document.getElementById('admin-account-result');
-            if(newPassword!==confirmation) {
-                output.textContent='两次输入的新密码不一致';
-                return;
-            }
-            const button=document.getElementById('admin-account-save');
-            button.disabled=true;
-            output.textContent='正在验证并保存…';
-            try {
-                const response=await fetch('/api/admin-account',{
-                    method:'POST',headers:{'Content-Type':'application/json'},
-                    body:JSON.stringify({username,current_password:currentPassword,new_password:newPassword})
-                });
-                const result=await response.json();
-                if(!response.ok||!result.success) throw Error(result.error||'保存失败');
-                currentUser.username=result.username;
-                updateCurrentUserUI();
-                document.getElementById('admin-account-current-password').value='';
-                document.getElementById('admin-account-new-password').value='';
-                document.getElementById('admin-account-confirm-password').value='';
-                output.textContent=`管理员账号已更新为 ${result.username}${result.password_changed?'，新密码已生效':''}。`;
-            } catch(error) {
-                output.textContent=error.message||'保存管理员账号失败';
-            } finally {
-                button.disabled=false;
-            }
-        }
-
         let currentEmailProspects = [];
         let mailSenders = [];
         let emailProviderConfigured = false;
@@ -3350,6 +3312,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         function renderTable() {
             const tbody = document.getElementById('pipeline-body');
             tbody.innerHTML = '';
+            const showXAccount = activeLeadChannel === 'x' && activeCountry === 'overseas';
+            const xAccountHeading = document.getElementById('x-outreach-account-heading');
+            if (xAccountHeading) xAccountHeading.hidden = !showXAccount;
             const heading = document.getElementById('company-description-heading');
             if (heading) heading.textContent = activeCountry === 'overseas' ? '企业描述' : '赛道/类目';
             
@@ -3495,6 +3460,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <td>
                         <span class="editable-cell" onclick="${canEdit && r.lead_id ? `openEditLeadModal(${rJson})` : canEdit ? `alert('暂未录入决策人，请在数据库添加')` : `alert('无权限编辑')`}" title="点击修改决策人姓名">${contact}</span>
                     </td>
+                    ${showXAccount ? `<td><code>${escapeHtml(r.feishu_outreach_account || '—')}</code></td>` : ''}
                     <td>
                         <span class="editable-cell" onclick="${canEdit && r.lead_id ? `openEditLeadModal(${rJson})` : `alert('无权限编辑')`}" title="点击查看字段级证据"><code>${escapeHtml(direct)}</code><small style="display:block;color:${r.verification_status === 'sales_ready' ? '#34d399' : '#fbbf24'}">${escapeHtml(verification)} · ${Number(r.fit_score || 0)}分</small></span>
                     </td>
@@ -3556,37 +3522,69 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             currentUsers.forEach(u => {
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                    <td><strong>${u.username}</strong></td>
-                    <td>${u.display_name}</td>
-                    <td><span class="source-tag">${ROLE_NAME_MAP[u.role] || u.role}</span></td>
-                    <td><code>${u.email || '-'}</code></td>
-                    <td>${u.phone || '-'}</td>
+                    <td><strong>${escapeHtml(u.username)}</strong></td>
+                    <td>${escapeHtml(u.display_name || '')}</td>
+                    <td><span class="source-tag">${escapeHtml(ROLE_NAME_MAP[u.role] || u.role)}</span></td>
+                    <td><code>${escapeHtml(u.email || '-')}</code></td>
+                    <td>${escapeHtml(u.phone || '-')}</td>
                     <td><span style="color:#10b981; font-weight:600;">● 激活启用</span></td>
                     <td>
-                        <select onchange="updateUserRole(${u.id}, this.value)" ${!isAdmin ? 'disabled title="仅超级管理员可调整角色"' : ''}>
-                            <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>👑 超级管理员</option>
-                            <option value="sales_lead" ${u.role === 'sales_lead' ? 'selected' : ''}>💼 销售总监</option>
-                            <option value="sales_rep" ${u.role === 'sales_rep' ? 'selected' : ''}>📞 销售专员</option>
-                            <option value="observer" ${u.role === 'observer' ? 'selected' : ''}>👀 运营观察员</option>
-                        </select>
+                        <button type="button" onclick="openUserEditModal(${Number(u.id)})" ${!isAdmin ? 'disabled title="仅超级管理员可编辑"' : ''}>编辑账号</button>
                     </td>
                 `;
                 tbody.appendChild(tr);
             });
         }
 
-        async function updateUserRole(userId, newRole) {
-            const res = await fetch('/api/user/role', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ user_id: userId, role: newRole })
-            });
-            const result = await res.json();
-            if (result.success) {
-                alert('✅ 权限配置已实时更新生效！');
-                fetchUsers();
-            } else {
-                alert('修改失败: ' + result.error);
+        function openUserEditModal(userId) {
+            if (currentUser?.role !== 'admin') return;
+            const user = currentUsers.find(item => Number(item.id) === Number(userId));
+            if (!user) return;
+            document.getElementById('user-edit-form').reset();
+            document.getElementById('user-edit-id').value = user.id;
+            document.getElementById('user-edit-username').value = user.username || '';
+            document.getElementById('user-edit-display-name').value = user.display_name || '';
+            document.getElementById('user-edit-role').value = user.role || 'sales_rep';
+            document.getElementById('user-edit-email').value = user.email || '';
+            document.getElementById('user-edit-phone').value = user.phone || '';
+            document.getElementById('user-edit-message').textContent = '';
+            document.getElementById('user-edit-modal').style.display = 'flex';
+        }
+        function closeUserEditModal() {
+            document.getElementById('user-edit-modal').style.display = 'none';
+        }
+        async function saveUserEdit(event) {
+            event.preventDefault();
+            if (currentUser?.role !== 'admin') return;
+            const payload = {
+                user_id: Number(document.getElementById('user-edit-id').value),
+                username: document.getElementById('user-edit-username').value.trim(),
+                display_name: document.getElementById('user-edit-display-name').value.trim(),
+                role: document.getElementById('user-edit-role').value,
+                email: document.getElementById('user-edit-email').value.trim(),
+                phone: document.getElementById('user-edit-phone').value.trim(),
+                new_password: document.getElementById('user-edit-password').value
+            };
+            const message = document.getElementById('user-edit-message');
+            try {
+                const response = await fetch('/api/user/update', {
+                    method: 'POST', headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify(payload)
+                });
+                const result = await response.json();
+                if (!response.ok || !result.success) throw new Error(result.error || '保存失败');
+                message.textContent = '账号信息已更新。';
+                currentUsers = currentUsers.map(item =>
+                    Number(item.id) === Number(result.user.id) ? result.user : item
+                );
+                renderUsersTable();
+                if (Number(payload.user_id) === Number(currentUser.id)) {
+                    currentUser = {...currentUser, ...result.user};
+                    updateCurrentUserUI();
+                }
+                closeUserEditModal();
+            } catch (error) {
+                message.textContent = error.message || '保存失败';
             }
         }
 
@@ -5184,7 +5182,7 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
             except Exception as e:
                 self.send_json({"success": False, "error": str(e)}, status=400)
 
-        elif path == "/api/admin-account":
+        elif path == "/api/user/update":
             user = self._require_user(("admin",))
             if not user:
                 return
@@ -5195,9 +5193,11 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                 data = json.loads(self.rfile.read(content_length).decode("utf-8"))
                 if not isinstance(data, dict):
                     raise ValueError("无效请求")
-                result = self.db.update_own_admin_credentials(
-                    user["id"], data.get("current_password", ""),
-                    data.get("username", ""), data.get("new_password", ""),
+                result = self.db.admin_update_user(
+                    user["id"], int(data.get("user_id")),
+                    data.get("username", ""), data.get("display_name", ""),
+                    data.get("role", ""), data.get("email", ""),
+                    data.get("phone", ""), data.get("new_password", ""),
                 )
                 self.send_json(result, status=200 if result.get("success") else 400)
             except (ValueError, TypeError, json.JSONDecodeError) as error:

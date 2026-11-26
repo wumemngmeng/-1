@@ -97,46 +97,49 @@ class AuthTests(unittest.TestCase):
             "company_id": self.owned_id, "updates": {"notes": "blocked"}
         }, observer)[0], 403)
 
-    def test_admin_can_update_own_login_account_and_password(self):
+    def test_admin_can_edit_team_account_and_reset_password(self):
         admin = self.login("admin", "admin123")
         self.assertTrue(self.request("POST", "/api/password", {
             "current_password": "admin123", "new_password": "admin-secure-password"
         }, admin)[1]["success"])
-        self.assertEqual(self.request("POST", "/api/admin-account", {
-            "username": "renamed-admin", "current_password": "wrong-password",
-            "new_password": "new-secure-password",
-        }, admin)[0], 400)
-        status, result, _ = self.request("POST", "/api/admin-account", {
-            "username": "renamed-admin", "current_password": "admin-secure-password",
+        rep_id = self.db.authenticate_user("rep_test", "rep-secure-password")["id"]
+        status, result, _ = self.request("POST", "/api/user/update", {
+            "user_id": rep_id, "username": "renamed-rep", "display_name": "销售小李",
+            "role": "sales_lead", "email": "li@example.com", "phone": "13800000000",
             "new_password": "new-secure-password",
         }, admin)
-        self.assertEqual((status, result["success"], result["username"]), (200, True, "renamed-admin"))
+        self.assertEqual((status, result["success"], result["user"]["username"]),
+                         (200, True, "renamed-rep"))
         self.assertEqual(self.request("POST", "/api/login", {
-            "username": "admin", "password": "admin-secure-password"
+            "username": "rep_test", "password": "rep-secure-password"
         })[0], 401)
         self.assertEqual(self.request("POST", "/api/login", {
-            "username": "renamed-admin", "password": "new-secure-password"
+            "username": "renamed-rep", "password": "new-secure-password"
         })[0], 200)
-        rep = self.login("rep_test", "rep-secure-password")
-        self.assertEqual(self.request("POST", "/api/admin-account", {
-            "username": "should-fail", "current_password": "rep-secure-password",
-        }, rep)[0], 403)
+        observer = self.login("viewer_test", "viewer-secure-password")
+        self.assertEqual(self.request("POST", "/api/user/update", {
+            "user_id": rep_id, "username": "blocked", "display_name": "Blocked",
+            "role": "sales_rep",
+        }, observer)[0], 403)
 
-    def test_admin_account_validation_and_duplicate_username(self):
+    def test_admin_user_update_validation_duplicate_and_self_role_protection(self):
         admin = self.login("admin", "admin123")
         self.assertTrue(self.request("POST", "/api/password", {
             "current_password": "admin123", "new_password": "admin-secure-password"
         }, admin)[1]["success"])
+        admin_id = self.db.authenticate_user("admin", "admin-secure-password")["id"]
         for body in (
-            {"username": "ab", "current_password": "admin-secure-password"},
-            {"username": "rep_test", "current_password": "admin-secure-password"},
-            {"username": "valid-admin", "current_password": "admin-secure-password",
-             "new_password": "short"},
+            {"user_id": admin_id, "username": "ab", "display_name": "Admin", "role": "admin"},
+            {"user_id": admin_id, "username": "rep_test", "display_name": "Admin", "role": "admin"},
+            {"user_id": admin_id, "username": "valid-admin", "display_name": "Admin",
+             "role": "admin", "new_password": "short"},
+            {"user_id": admin_id, "username": "valid-admin", "display_name": "Admin",
+             "role": "observer"},
         ):
-            self.assertEqual(self.request("POST", "/api/admin-account", body, admin)[0], 400)
-        status, result, _ = self.request("POST", "/api/admin-account", {
-            "username": "admin-renamed", "current_password": "admin-secure-password",
-            "new_password": "",
+            self.assertEqual(self.request("POST", "/api/user/update", body, admin)[0], 400)
+        status, result, _ = self.request("POST", "/api/user/update", {
+            "user_id": admin_id, "username": "admin-renamed", "display_name": "Administrator",
+            "role": "admin", "email": "", "phone": "", "new_password": "",
         }, admin)
         self.assertEqual((status, result["success"], result["password_changed"]),
                          (200, True, False))
