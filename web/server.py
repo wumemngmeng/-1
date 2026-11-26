@@ -3610,8 +3610,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     .some(value => String(value || '').trim());
                 return (r.status || 'pending') !== 'lost' && hasContact && !isXClosedDmLead(r);
             }).length;
-            const touched = ['sample_sent', 'contacted', 'negotiation', 'team_trial', 'won']
-                .reduce((total, stage) => total + counts[stage], 0);
+            const touchedStages = new Set(['sample_sent', 'contacted', 'negotiation', 'team_trial', 'won']);
+            const touched = [...unique.values()].filter(r =>
+                Number(r.ever_touched || 0) === 1 || touchedStages.has(r.status || 'pending')
+            ).length;
             const connected = ['contacted', 'negotiation', 'team_trial', 'won']
                 .reduce((total, stage) => total + counts[stage], 0);
             const registered = counts.team_trial + counts.won;
@@ -3635,7 +3637,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <div class="touch-funnel-row">${metricCards.map(([label, count]) =>
                     `<div class="touch-funnel-stage"><span>${label}</span><strong>${count}</strong></div>`
                 ).join('')}</div>
-                <p>企业去重；可触达线索已排除“不触达”、无邮箱/X/LinkedIn/电话/微信等联系方式及 X 私信关闭线索。已触达、已建链、已注册按后续阶段累积统计。</p>`;
+                <p>企业去重；可触达线索已排除“不触达”、无邮箱/X/LinkedIn/电话/微信等联系方式及 X 私信关闭线索。已触达按历史实际发送统计（成功邮件、X“已推送未回复/已回复”及 CRM 历史触达）；已建链、已注册按后续阶段累积统计。</p>`;
         }
         function buildFunnelData(rows, country, tier, today) {
             const aliases = {researching:'pending', trial:'team_trial'};
