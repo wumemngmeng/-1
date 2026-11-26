@@ -983,6 +983,29 @@ class DatabaseManager:
                  WHERE f.lead_id=l.id ORDER BY f.synced_at DESC,f.sheet_row DESC LIMIT 1) AS feishu_social_channel,
                 (SELECT f.outreach_account FROM feishu_x_source_rows f
                  WHERE f.lead_id=l.id ORDER BY f.synced_at DESC,f.sheet_row DESC LIMIT 1) AS feishu_outreach_account,
+                CASE WHEN EXISTS (
+                    SELECT 1
+                    FROM outreach_records historical_outreach
+                    JOIN leads historical_lead
+                      ON historical_lead.id = historical_outreach.lead_id
+                    WHERE historical_lead.company_id = c.id
+                      AND historical_outreach.status IN (
+                          'sample_sent', 'contacted', 'negotiation', 'team_trial', 'won'
+                      )
+                ) OR EXISTS (
+                    SELECT 1
+                    FROM feishu_x_source_rows historical_x
+                    JOIN leads historical_x_lead
+                      ON historical_x_lead.id = historical_x.lead_id
+                    WHERE historical_x_lead.company_id = c.id
+                      AND trim(historical_x.source_status) IN ('已推送未回复', '已回复')
+                ) OR EXISTS (
+                    SELECT 1
+                    FROM mail_queue historical_mail
+                    JOIN mail_queue_sends historical_send
+                      ON historical_send.queue_id = historical_mail.id
+                    WHERE historical_mail.company_id = c.id
+                ) THEN 1 ELSE 0 END AS ever_touched,
                 l.source_method as lead_source,
                 l.identity_source_url,
                 l.identity_evidence,
