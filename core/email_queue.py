@@ -371,52 +371,7 @@ class EmailQueue:
             for recipient in package["recipients"]
         ):
             return None
-        delivery = {}
-        lead_ids = [int(recipient["lead_id"]) for recipient in package["recipients"]]
-        if package.get("batch_id") and lead_ids:
-            marks = ",".join("?" for _ in lead_ids)
-            conn = self.connection()
-            try:
-                rows = conn.execute(
-                    f"""SELECT q.lead_id,q.status AS queue_status,q.updated_at,
-                    (SELECT subject FROM mail_queue_sends s WHERE s.queue_id=q.id ORDER BY s.id DESC LIMIT 1) AS subject,
-                    (SELECT sender FROM mail_queue_sends s WHERE s.queue_id=q.id ORDER BY s.id DESC LIMIT 1) AS sender,
-                    (SELECT provider_message_id FROM mail_queue_sends s WHERE s.queue_id=q.id ORDER BY s.id DESC LIMIT 1) AS provider_message_id,
-                    (SELECT created_at FROM mail_queue_sends s WHERE s.queue_id=q.id ORDER BY s.id DESC LIMIT 1) AS sent_at
-                    FROM mail_queue q WHERE q.batch_id=? AND q.lead_id IN ({marks})""",
-                    (package["batch_id"], *lead_ids),
-                ).fetchall()
-                delivery = {int(item["lead_id"]): dict(item) for item in rows}
-            finally:
-                conn.close()
-        sender = ""
-        enriched = []
-        for recipient in package["recipients"]:
-            item = dict(recipient)
-            status = delivery.get(int(item["lead_id"]), {})
-            if status.get("provider_message_id"):
-                item["status"] = "sent"
-            elif status.get("queue_status") == "sending":
-                item["status"] = "sending"
-            else:
-                item["status"] = package["status"] if package["status"] != "draft" else "draft"
-            item["created_at"] = status.get("sent_at") or status.get("updated_at") or package["created_at"]
-            item["provider_message_id"] = status.get("provider_message_id") or ""
-            fields = {
-                "company": item.get("company_name") or "your team",
-                "name": item.get("contact_name") or "there",
-                "email": item.get("email") or "",
-            }
-            subject = status.get("subject") or package["subject"]
-            for key, value in fields.items():
-                subject = subject.replace("{{" + key + "}}", str(value))
-            item["subject"] = subject
-            sender = sender or status.get("sender") or ""
-            enriched.append(item)
-        package["recipients"] = enriched
         package["recipient_count"] = len(package["recipients"])
-        package["sent_count"] = sum(item["status"] == "sent" for item in package["recipients"])
-        package["sender"] = sender
         return package
 
     def packages(self, owner=None):
@@ -473,11 +428,10 @@ class EmailQueue:
             recipient = {
                 field: row.get(field) for field in (
                     "email", "company_name", "country_type", "contact_name",
-                    "provider_message_id", "created_at", "subject",
+                    "provider_message_id", "created_at",
                 )
             }
             recipient["status"] = "sent" if row["id"] is not None else "sending"
-            recipient["created_at"] = row["created_at"] or row["attempted_at"]
             if recipient["status"] != "sent":
                 batch["status"] = "sending"
             if row["sender"]:
@@ -802,7 +756,7 @@ class EmailQueue:
     def complete(self, row, subject, body, sender, provider_id, actor):
         conn = self.connection()
         try:
-            conn.execute(
+            send = conn.execute(
                 """INSERT INTO mail_queue_sends
                 (queue_id,subject,body,sender,provider_message_id,sent_by) VALUES(?,?,?,?,?,?)""",
                 (row["id"], subject, body, sender, provider_id, actor),
@@ -810,6 +764,16 @@ class EmailQueue:
             conn.execute(
                 "UPDATE mail_queue SET status='sent',updated_at=CURRENT_TIMESTAMP WHERE id=?",
                 (row["id"],),
+            )
+            from core.feishu_sync import record_touch_event, set_channel_state
+            source_key = f"mail-send:{send.lastrowid}"
+            record_touch_event(
+                conn, row["company_id"], row["lead_id"], "cold_email", "sent",
+                "smtp", source_key, payload={"provider_message_id": provider_id},
+            )
+            set_channel_state(
+                conn, row["company_id"], row["lead_id"], "cold_email", "sent",
+                "smtp", source_key,
             )
             conn.commit()
         finally:

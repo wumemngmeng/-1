@@ -10,7 +10,10 @@ import urllib.request
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
-from core.feishu_sync import commit_statements, run_statement, source_statement, synchronized
+from core.feishu_sync import (
+    add_contact_method, commit_statements, link_source, record_touch_event, run_statement,
+    set_channel_state, source_statement, synchronized,
+)
 
 
 DEFAULT_SPREADSHEET_TOKEN = "CuTNs47dqhohkTtGH13cQirdnge"
@@ -166,13 +169,32 @@ class FeishuMailSheetImporter:
 
     def _existing_leads(self, cursor):
         result = defaultdict(list)
-        for row in cursor.execute(
-            """SELECT l.id,l.company_id,l.email,l.market_classification,c.name AS company_name
+        base = [dict(row) for row in cursor.execute(
+            """SELECT l.id,l.company_id,l.email,l.contact_name,l.job_title,l.x_url,
+                      l.linkedin_url,l.source_method,l.market_classification,
+                      c.name AS company_name,c.website
                FROM leads l JOIN companies c ON c.id=l.company_id
                WHERE trim(coalesce(l.email,''))<>''"""
-        ).fetchall():
+        ).fetchall()]
+        by_id = {row["id"]: row for row in base}
+        for row in base:
             result[str(row["email"]).strip().casefold()].append(dict(row))
+        for method in cursor.execute(
+            """SELECT lead_id,normalized_value FROM lead_contact_methods
+               WHERE method_type='email'"""
+        ).fetchall():
+            lead = by_id.get(method["lead_id"])
+            if lead and all(item["id"] != lead["id"]
+                            for item in result[method["normalized_value"]]):
+                result[method["normalized_value"]].append(dict(lead))
         return result
+
+    def _all_existing_leads(self, cursor):
+        return [dict(row) for row in cursor.execute(
+            """SELECT l.id,l.company_id,l.email,l.contact_name,l.job_title,l.x_url,
+                      l.linkedin_url,l.source_method,c.name AS company_name,c.website
+               FROM leads l JOIN companies c ON c.id=l.company_id"""
+        ).fetchall()]
 
     def plan(self, records: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Build a non-mutating import plan with company and email collision checks."""
@@ -184,6 +206,7 @@ class FeishuMailSheetImporter:
             cursor = conn.cursor()
             companies = self._existing_companies(cursor)
             existing_leads = self._existing_leads(cursor)
+            all_existing_leads = self._all_existing_leads(cursor)
             status_sync = self._status_sync_plan(cursor, records)
             self.company_resolutions = {
                     str(row["email"]).strip().casefold(): dict(row)
@@ -230,7 +253,28 @@ class FeishuMailSheetImporter:
                     or (domain and domain == normalize_domain(target_company["website"]))
                 ):
                     duplicates += 1
-                    source_audit.append((record, linked[0]["id"], "existing_duplicate"))
+                    existing_lead = linked[0]
+                    may_enrich = any(
+                        record.get(source_field)
+                        and not str(existing_lead.get(target_field) or "").strip()
+                        for source_field, target_field in (
+                            ("contact_name", "contact_name"),
+                            ("job_title", "job_title"),
+                            ("x_url", "x_url"),
+                            ("source", "source_method"),
+                        ))
+                    if may_enrich:
+                        entry = dict(record)
+                        entry.update(
+                            company_key=("id", target_company["id"]),
+                            company=target_company, action="enrich_contact",
+                            lead_id=existing_lead["id"], creates_company=False,
+                        )
+                        entries.append(entry)
+                        staged_emails[email] = {
+                            "company_key": entry["company_key"], "row": row_no,
+                        }
+                    source_audit.append((record, linked[0]["id"], "matched_existing"))
                 else:
                     conflicts.append({"row": row_no, "company": name, "email": email,
                                       "reason": "邮箱已关联其他CRM公司或归属不唯一，跳过避免误合并"})
@@ -295,14 +339,52 @@ class FeishuMailSheetImporter:
                                       "reason": f"表内重复邮箱，已由第 {prior['row']} 行保留"})
                     source_audit.append((record, None, "duplicate_source_row"))
                 continue
+            lead_matches = []
+            if staged_key[0] == "id":
+                company_leads = [
+                    lead for lead in all_existing_leads
+                    if lead["company_id"] == staged_key[1]
+                ]
+                x_identity = FeishuXStatusSync.normalize_x_identity(record.get("x_url"))
+                if x_identity:
+                    lead_matches = [
+                        lead for lead in company_leads
+                        if FeishuXStatusSync.normalize_x_identity(lead.get("x_url"))
+                        == x_identity
+                    ]
+                elif record.get("contact_name"):
+                    contact_key = normalize_company_name(record["contact_name"])
+                    lead_matches = [
+                        lead for lead in company_leads
+                        if normalize_company_name(lead.get("contact_name")) == contact_key
+                    ]
+            if len(lead_matches) > 1:
+                conflicts.append({
+                    "row": row_no, "company": name, "email": email,
+                    "reason": "同一企业内联系人姓名/X账号命中多条记录，需人工核对",
+                })
+                source_audit.append((record, None, "conflict_contact_ambiguous"))
+                continue
             entry = dict(record)
-            entry.update(company_key=staged_key, company=staged_company, action="create_company" if staged_key[0] == "new" else "reuse_company")
+            entry.update(
+                company_key=staged_key, company=staged_company,
+                action=("enrich_contact" if lead_matches else "create_contact"),
+                lead_id=lead_matches[0]["id"] if lead_matches else None,
+                creates_company=staged_key[0] == "new",
+            )
             entries.append(entry)
             staged_emails[email] = {"company_key": staged_key, "row": row_no}
-            source_audit.append((record, None, "pending_import"))
+            source_audit.append((
+                record, entry["lead_id"],
+                "pending_enrich" if entry["lead_id"] else "pending_import",
+            ))
 
-        new_company_count = len({entry["company_key"] for entry in entries if entry["action"] == "create_company"})
-        matched_company_count = len({entry["company_key"] for entry in entries if entry["action"] == "reuse_company"})
+        new_company_count = len({
+            entry["company_key"] for entry in entries if entry["creates_company"]
+        })
+        matched_company_count = len({
+            entry["company_key"] for entry in entries if not entry["creates_company"]
+        })
         for entry in entries:
             if entry["company_key"][0] == "new":
                 entry["company_records"] = staged_company_contributions[entry["company_key"][1]]
@@ -311,6 +393,7 @@ class FeishuMailSheetImporter:
                 "row": entry.get("sheet_row"), "email": entry.get("email"),
                 "company": entry.get("company_name"), "website": entry.get("website"),
                 "action": entry.get("action"), "company_key": entry.get("company_key"),
+                "lead_id": entry.get("lead_id"),
             }
             for entry in entries
         ]
@@ -323,6 +406,8 @@ class FeishuMailSheetImporter:
         return {
             "total_rows": len(records),
             "eligible_contacts": len(entries),
+            "new_contacts": sum(entry["action"] == "create_contact" for entry in entries),
+            "matched_contacts": sum(entry["action"] == "enrich_contact" for entry in entries),
             "new_companies": new_company_count,
             "matched_companies": matched_company_count,
             "conflict_count": len(conflicts),
@@ -509,7 +594,7 @@ class FeishuMailSheetImporter:
         for action in plan["outreach_actions"]:
             cursor.execute(
                 """INSERT INTO outreach_records(lead_id,channel,status,interaction_notes)
-                   SELECT ?,'cold_email','contacted',?
+                   SELECT ?,'cold_email','sample_sent',?
                    WHERE coalesce((SELECT max(id) FROM outreach_records WHERE lead_id=?),0)=?""",
                 (action["lead_id"],
                  "飞书邮件表：已推送（历史触达状态同步；本记录时间为同步时间，原触达日期未知；未发送新邮件）",
@@ -521,10 +606,13 @@ class FeishuMailSheetImporter:
         return result
 
     @synchronized("mail")
-    def apply(self, actor: str, expected_fingerprint: Optional[str] = None) -> Dict[str, int]:
-        """Reread the source and apply the current plan idempotently."""
-        records = self.fetch_records()
-        plan = self.plan(records)
+    def apply(
+        self, actor: str, expected_fingerprint: Optional[str] = None,
+        records=None, plan=None,
+    ) -> Dict[str, int]:
+        """Apply a pre-read source snapshot, or fetch and plan once if omitted."""
+        records = self.fetch_records() if records is None else records
+        plan = self.plan(records) if plan is None else plan
         if expected_fingerprint and expected_fingerprint != plan["fingerprint"]:
             raise FeishuImportError("飞书表或CRM数据在预览后发生变化，请重新预览再导入")
         conn = self.db.connection() if hasattr(self.db, "connection") else None
@@ -532,14 +620,16 @@ class FeishuMailSheetImporter:
             from core.database import get_connection
             conn = get_connection(self.db.db_path)
         created_companies = created_contacts = updated_companies = suppressed = 0
+        enriched_contacts = touch_events_created = 0
         try:
             cursor = conn.cursor()
             company_ids = {}
+            lead_ids = {}
             for entry in plan["entries"]:
                 key = tuple(entry["company_key"])
                 if key not in company_ids:
                     company = entry["company"]
-                    if entry["action"] == "create_company":
+                    if entry["creates_company"]:
                         contributions = entry.get("company_records") or [entry]
                         websites = list(dict.fromkeys(
                             str(item.get("website") or "").strip()
@@ -589,21 +679,61 @@ class FeishuMailSheetImporter:
                         if changed:
                             updated_companies += 1
                 company_id = company_ids[key]
-                cursor.execute(
-                    """INSERT INTO leads
-                       (company_id,contact_name,job_title,contact_role_category,email,x_url,source_method,
-                        identity_source_url,identity_evidence,verification_status,market_classification)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                    (company_id, entry.get("contact_name") or "官方团队",
-                     entry.get("job_title") or "业务联系人",
-                     entry.get("contact_role_category") or entry.get("job_title") or "",
-                     entry["email"],
-                     entry.get("x_url") or "", entry.get("source") or "飞书邮件表",
-                     entry.get("x_url") or "", "飞书邮件表公开联系人记录",
-                     "pending_review", "verified"),
+                if entry["action"] == "enrich_contact":
+                    lead_id = int(entry["lead_id"])
+                    existing = dict(cursor.execute(
+                        "SELECT * FROM leads WHERE id=?", (lead_id,)
+                    ).fetchone())
+                    additions = {
+                        "contact_name": entry.get("contact_name"),
+                        "job_title": entry.get("job_title"),
+                        "contact_role_category": (
+                            entry.get("contact_role_category") or entry.get("job_title")
+                        ),
+                        "email": entry.get("email"),
+                        "x_url": entry.get("x_url"),
+                        "source_method": entry.get("source"),
+                        "identity_source_url": entry.get("x_url"),
+                        "identity_evidence": "飞书邮件表公开联系人记录",
+                    }
+                    changed = False
+                    for field, value in additions.items():
+                        if value and not str(existing.get(field) or "").strip():
+                            cursor.execute(
+                                f"""UPDATE leads SET {field}=?,updated_at=CURRENT_TIMESTAMP
+                                    WHERE id=? AND trim(coalesce({field},''))=''""",
+                                (value, lead_id),
+                            )
+                            changed = True
+                    enriched_contacts += int(changed)
+                else:
+                    cursor.execute(
+                        """INSERT INTO leads
+                           (company_id,contact_name,job_title,contact_role_category,email,x_url,source_method,
+                            identity_source_url,identity_evidence,verification_status,market_classification)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                        (company_id, entry.get("contact_name") or "官方团队",
+                         entry.get("job_title") or "业务联系人",
+                         entry.get("contact_role_category") or entry.get("job_title") or "",
+                         entry["email"],
+                         entry.get("x_url") or "", entry.get("source") or "飞书邮件表",
+                         entry.get("x_url") or "", "飞书邮件表公开联系人记录",
+                         "pending_review", "verified"),
+                    )
+                    lead_id = cursor.lastrowid
+                    created_contacts += 1
+                lead_ids[entry["email"]] = lead_id
+                add_contact_method(
+                    cursor, lead_id, "email", entry["email"],
+                    entry["email"].strip().casefold(), "feishu_mail",
+                    is_primary=entry["action"] == "create_contact",
                 )
-                lead_id = cursor.lastrowid
-                created_contacts += 1
+                x_identity = FeishuXStatusSync.normalize_x_identity(entry.get("x_url"))
+                if x_identity:
+                    add_contact_method(
+                        cursor, lead_id, "x", entry.get("x_url"), x_identity,
+                        "feishu_mail", is_primary=entry["action"] == "create_contact",
+                    )
 
                 email_status = str(entry.get("mail_status") or "").strip().casefold()
                 queue_status = "sent" if email_status in {"已推送", "已发送", "sent", "pushed"} else (
@@ -622,23 +752,57 @@ class FeishuMailSheetImporter:
                 "created_companies": created_companies,
                 "updated_companies": updated_companies,
                 "created_contacts": created_contacts,
+                "enriched_contacts": enriched_contacts,
                 "market_overrides": 0,
                 "conflicts": plan["conflict_count"], "duplicates": plan["duplicates"],
                 "suppressed_existing_statuses": suppressed, **status_sync,
             }
             imported = {entry["email"] for entry in plan["entries"]}
-            current = self._existing_leads(cursor)
             statements = []
             for record, target_id, resolution in plan["source_audit"]:
                 email = record.get("email", "")
-                if resolution == "pending_import" and email in imported and len(current[email]) == 1:
-                    target_id = current[email][0]["id"]
-                    resolution = "imported"
+                if resolution in {"pending_import", "pending_enrich"} and email in imported:
+                    target_id = lead_ids.get(email) or target_id
+                    resolution = (
+                        "enriched" if resolution == "pending_enrich" else "imported"
+                    )
+                if target_id:
+                    lead = cursor.execute(
+                        "SELECT id,company_id FROM leads WHERE id=?", (target_id,)
+                    ).fetchone()
+                    if lead:
+                        source_key = (
+                            f"{self.spreadsheet_token}:{self.sheet_id}:{email}"
+                        )
+                        link_source(
+                            cursor, "feishu_mail", source_key,
+                            lead["company_id"], lead["id"], record,
+                        )
+                        source_state = self._mail_status(record.get("mail_status")) or "pending"
+                        queue = cursor.execute(
+                            "SELECT status FROM mail_queue WHERE lead_id=?",
+                            (lead["id"],),
+                        ).fetchone()
+                        state = (
+                            queue["status"] if queue and queue["status"] != "pending"
+                            else source_state
+                        )
+                        set_channel_state(
+                            cursor, lead["company_id"], lead["id"], "cold_email",
+                            state, "feishu_mail", source_key,
+                        )
+                        if state == "sent":
+                            touch_events_created += record_touch_event(
+                                cursor, lead["company_id"], lead["id"], "cold_email",
+                                "sent", "feishu_mail", source_key,
+                                payload={"source_status": record.get("mail_status") or ""},
+                            )
                 statements.append(source_statement(
                     "mail", self.spreadsheet_token, self.sheet_id,
                     email or f"row-{record['sheet_row']}", record["sheet_row"],
                     target_id, record, resolution,
                 ))
+            result["touch_events_created"] = touch_events_created
             statements.append(run_statement("mail", actor, result))
             commit_statements(conn, statements)
         except Exception:
@@ -1063,8 +1227,11 @@ class FeishuXStatusSync:
         return self.plan(self.fetch_records())
 
     @synchronized("x")
-    def apply(self, actor="Vercel Feishu Sync", expected_fingerprint=None):
-        records = self.fetch_records()
+    def apply(
+        self, actor="Vercel Feishu Sync", expected_fingerprint=None,
+        records=None, plan=None,
+    ):
+        records = self.fetch_records() if records is None else records
         conn = self.db.connection() if hasattr(self.db, "connection") else None
         if conn is None:
             from core.database import get_connection
@@ -1073,7 +1240,7 @@ class FeishuXStatusSync:
             cursor = conn.cursor()
             if hasattr(conn, "in_transaction"):
                 cursor.execute("BEGIN IMMEDIATE")
-            plan = self.plan(records, cursor=cursor)
+            plan = self.plan(records, cursor=cursor) if plan is None else plan
             if expected_fingerprint and expected_fingerprint != plan["fingerprint"]:
                 raise FeishuImportError("飞书表或CRM数据在预览后发生变化，请重新预览再同步")
             created_companies = created_contacts = linked_contacts = 0
@@ -1178,6 +1345,14 @@ class FeishuXStatusSync:
                 "SELECT * FROM feishu_x_states WHERE spreadsheet_token=? AND sheet_id=?",
                 (self.spreadsheet_token, self.sheet_id),
             ).fetchall()}
+            latest_channel = {}
+            for row in cursor.execute(
+                """SELECT r.lead_id,r.channel,r.status
+                   FROM outreach_records r
+                   WHERE r.id=(SELECT max(r2.id) FROM outreach_records r2
+                               WHERE r2.lead_id=r.lead_id AND r2.channel=r.channel)"""
+            ).fetchall():
+                latest_channel[(row["lead_id"], row["channel"])] = row["status"]
             issues = {item["row"]: item["reason"] for item in plan["conflicts"]}
             rows = []
             for source in records:
@@ -1206,9 +1381,110 @@ class FeishuXStatusSync:
                    source_date=excluded.source_date,source_channel=excluded.source_channel,
                    outreach_account=excluded.outreach_account,
                    payload=excluded.payload,resolution=excluded.resolution,
-                   synced_at=CURRENT_TIMESTAMP""", rows,
+                   synced_at=CURRENT_TIMESTAMP
+                   WHERE coalesce(feishu_x_source_rows.lead_id,0)!=coalesce(excluded.lead_id,0)
+                      OR feishu_x_source_rows.source_status!=excluded.source_status
+                      OR feishu_x_source_rows.source_date!=excluded.source_date
+                      OR feishu_x_source_rows.source_channel!=excluded.source_channel
+                      OR feishu_x_source_rows.outreach_account!=excluded.outreach_account
+                      OR feishu_x_source_rows.payload!=excluded.payload
+                      OR feishu_x_source_rows.resolution!=excluded.resolution""", rows,
             )
             result["archived_source_rows"] = len(rows)
+            result["touch_events_created"] = 0
+            result["enriched_contacts"] = 0
+            result["updated_companies"] = 0
+            for source in records:
+                if issues.get(source["sheet_row"]):
+                    continue
+                channel = (
+                    "linkedin_inmail"
+                    if "linkedin" in str(source.get("channel") or "").casefold()
+                    or "linkedin.com/" in str(source.get("x_url") or "").casefold()
+                    else "x_dm"
+                )
+                identity = self.normalize_identity(
+                    source.get("x_url") or source.get("x_account"), channel
+                )
+                source_key = (
+                    f"{self.spreadsheet_token}:{self.sheet_id}:{source['sheet_row']}"
+                )
+                state = states.get(f"{channel}:{identity}")
+                lead_id = state.get("lead_id") if state else None
+                source_status = str(source.get("source_status") or "").strip()
+                if not lead_id:
+                    continue
+                lead = cursor.execute(
+                    "SELECT company_id FROM leads WHERE id=?", (lead_id,)
+                ).fetchone()
+                if not lead:
+                    continue
+                company_id = lead["company_id"]
+                field = "linkedin_url" if channel == "linkedin_inmail" else "x_url"
+                profile_url = (
+                    "https://www.linkedin.com/" + identity
+                    if channel == "linkedin_inmail" else "https://x.com/" + identity
+                )
+                add_contact_method(
+                    cursor, lead_id,
+                    "linkedin" if channel == "linkedin_inmail" else "x",
+                    profile_url, identity, "feishu_x",
+                    is_primary=False,
+                )
+                additions = {
+                    "contact_name": source.get("contact_name"),
+                    "job_title": source.get("job_title"),
+                    field: profile_url,
+                }
+                changed = False
+                for column, value in additions.items():
+                    if value:
+                        cursor.execute(
+                            f"""UPDATE leads SET {column}=?,updated_at=CURRENT_TIMESTAMP
+                                WHERE id=? AND trim(coalesce({column},''))=''""",
+                            (value, lead_id),
+                        )
+                        changed = changed or bool(
+                            cursor.execute("SELECT changes() AS count").fetchone()["count"]
+                        )
+                result["enriched_contacts"] += int(changed)
+                website = (
+                    source.get("website")
+                    if self.verified_website_candidate(source.get("website")) else ""
+                )
+                if website:
+                    cursor.execute(
+                        """UPDATE companies SET website=?,updated_at=CURRENT_TIMESTAMP
+                           WHERE id=? AND trim(coalesce(website,''))=''""",
+                        (website, company_id),
+                    )
+                    result["updated_companies"] += int(
+                        cursor.execute("SELECT changes() AS count").fetchone()["count"]
+                    )
+                link_source(
+                    cursor, "feishu_x", source_key, company_id, lead_id, source
+                )
+                desired = self.STATUS_MAP.get(source_status, "pending")
+                current = latest_channel.get((lead_id, channel))
+                effective = desired
+                if current in self.ADVANCED_STAGES or (
+                    current == "lost" and desired != "lost"
+                ) or (desired == "pending" and current and current != "pending"):
+                    effective = current
+                set_channel_state(
+                    cursor, company_id, lead_id, channel, effective,
+                    "feishu_x", source_key, source.get("source_date") or "",
+                )
+                event_type = {
+                    "已推送未回复": "sent",
+                    "已回复": "replied",
+                }.get(source_status)
+                if event_type:
+                    result["touch_events_created"] += record_touch_event(
+                        cursor, company_id, lead_id, channel, event_type,
+                        "feishu_x", source_key, source.get("source_date") or "",
+                        {"source_status": source_status},
+                    )
             cursor.execute(*run_statement("x", actor, result))
             conn.commit()
         except Exception:

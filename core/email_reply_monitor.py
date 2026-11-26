@@ -214,16 +214,17 @@ class EmailReplyMonitor:
                 uids = uids[-1000:]
             max_uid = last_uid
             for uid in uids:
-                max_uid = max(max_uid, uid)
                 status, payload = client.uid("fetch", str(uid), "(BODY.PEEK[])")
                 if status != "OK" or not payload:
-                    continue
+                    # Keep the cursor before this UID so the next poll retries it.
+                    break
                 raw = next(
                     (item[1] for item in payload if isinstance(item, tuple) and len(item) > 1),
                     None,
                 )
                 if not raw:
-                    continue
+                    break
+                max_uid = max(max_uid, uid)
                 scanned += 1
                 message = email.message_from_bytes(raw)
                 sender = parseaddr(message.get("From") or "")[1].strip().lower()
@@ -262,6 +263,30 @@ class EmailReplyMonitor:
                         str(message.get("In-Reply-To") or "").strip(), received,
                     ),
                 )
+                from core.feishu_sync import record_touch_event, set_channel_state
+                event_key = f"imap:{sender_id}:{uid}"
+                record_touch_event(
+                    conn, contact["company_id"], contact["lead_id"], "cold_email",
+                    "replied", "imap", event_key, received,
+                    {"message_id": str(message.get("Message-ID") or "").strip()},
+                )
+                set_channel_state(
+                    conn, contact["company_id"], contact["lead_id"], "cold_email",
+                    "replied", "imap", event_key, received,
+                )
+                latest = conn.execute(
+                    """SELECT status FROM outreach_records
+                       WHERE lead_id=? ORDER BY id DESC LIMIT 1""",
+                    (contact["lead_id"],),
+                ).fetchone()
+                if not latest or latest["status"] in {"pending", "sample_sent"}:
+                    conn.execute(
+                        """INSERT INTO outreach_records
+                           (lead_id,channel,status,interaction_notes)
+                           VALUES (?,'cold_email','contacted',?)""",
+                        (contact["lead_id"],
+                         "企业邮箱收到人工回复；由只读 IMAP 监控同步，未修改邮箱邮件状态。"),
+                    )
                 created += 1
             conn.execute(
                 """INSERT INTO mail_reply_monitor_state
