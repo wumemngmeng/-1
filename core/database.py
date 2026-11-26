@@ -360,7 +360,8 @@ CREATE TABLE IF NOT EXISTS feishu_x_source_rows (
     spreadsheet_token TEXT NOT NULL, sheet_id TEXT NOT NULL,
     sheet_row INTEGER NOT NULL, lead_id INTEGER,
     source_status TEXT NOT NULL, source_date TEXT NOT NULL,
-    source_channel TEXT NOT NULL, payload TEXT NOT NULL,
+    source_channel TEXT NOT NULL, outreach_account TEXT NOT NULL DEFAULT '',
+    payload TEXT NOT NULL,
     resolution TEXT NOT NULL, synced_at TEXT DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY(spreadsheet_token,sheet_id,sheet_row)
 );
@@ -490,6 +491,14 @@ def init_db(db_path: str = DB_PATH):
     mail_package_cols = [r['name'] for r in cursor.fetchall()]
     if 'batch_id' not in mail_package_cols:
         cursor.execute("ALTER TABLE mail_packages ADD COLUMN batch_id TEXT")
+
+    cursor.execute("PRAGMA table_info(feishu_x_source_rows)")
+    feishu_x_source_cols = [r['name'] for r in cursor.fetchall()]
+    if feishu_x_source_cols and 'outreach_account' not in feishu_x_source_cols:
+        cursor.execute(
+            "ALTER TABLE feishu_x_source_rows "
+            "ADD COLUMN outreach_account TEXT NOT NULL DEFAULT ''"
+        )
     
     # Auto migrate companies table if client_tier column is missing
     cursor.execute("PRAGMA table_info(companies)")
@@ -972,6 +981,8 @@ class DatabaseManager:
                  WHERE f.lead_id=l.id ORDER BY f.synced_at DESC,f.sheet_row DESC LIMIT 1) AS feishu_social_date,
                 (SELECT f.source_channel FROM feishu_x_source_rows f
                  WHERE f.lead_id=l.id ORDER BY f.synced_at DESC,f.sheet_row DESC LIMIT 1) AS feishu_social_channel,
+                (SELECT f.outreach_account FROM feishu_x_source_rows f
+                 WHERE f.lead_id=l.id ORDER BY f.synced_at DESC,f.sheet_row DESC LIMIT 1) AS feishu_outreach_account,
                 l.source_method as lead_source,
                 l.identity_source_url,
                 l.identity_evidence,
@@ -1114,6 +1125,65 @@ class DatabaseManager:
         conn.commit()
         conn.close()
         return True
+
+    def admin_update_user(
+        self, actor_user_id: int, user_id: int, username: str,
+        display_name: str, role: str, email: str = "", phone: str = "",
+        new_password: str = "",
+    ) -> Dict[str, Any]:
+        username = str(username or "").strip()
+        display_name = str(display_name or "").strip()
+        role = str(role or "").strip()
+        email = str(email or "").strip()
+        phone = str(phone or "").strip()
+        new_password = str(new_password or "")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{3,40}", username):
+            return {"success": False, "error": "登录账号须为 3–40 位字母、数字、点、下划线或短横线"}
+        if not display_name or len(display_name) > 120:
+            return {"success": False, "error": "显示姓名不能为空且最多 120 字"}
+        if role not in ("admin", "sales_lead", "sales_rep", "observer"):
+            return {"success": False, "error": "无效的账号角色"}
+        if len(email) > 254 or len(phone) > 40:
+            return {"success": False, "error": "邮箱或联系电话过长"}
+        if new_password and not 10 <= len(new_password) <= 256:
+            return {"success": False, "error": "新密码需要 10–256 位"}
+        conn = get_connection(self.db_path)
+        row = conn.execute(
+            "SELECT id,username,role,status FROM sys_users WHERE id=?", (user_id,)
+        ).fetchone()
+        if not row:
+            conn.close()
+            return {"success": False, "error": "团队账号不存在"}
+        if user_id == actor_user_id and role != row["role"]:
+            conn.close()
+            return {"success": False, "error": "不能在此修改当前登录账号自己的角色"}
+        duplicate = conn.execute(
+            "SELECT id FROM sys_users WHERE username=? AND id!=?", (username, user_id)
+        ).fetchone()
+        if duplicate:
+            conn.close()
+            return {"success": False, "error": "该登录账号已被使用"}
+        password_sql = ",password_hash=?,must_change_password=0" if new_password else ""
+        values = [username, display_name, role, email, phone]
+        if new_password:
+            values.append(hash_password(new_password))
+        values.append(user_id)
+        conn.execute(
+            f"""UPDATE sys_users
+                SET username=?,display_name=?,role=?,email=?,phone=?{password_sql}
+                WHERE id=?""",
+            values,
+        )
+        conn.commit()
+        updated = conn.execute(
+            """SELECT id,username,display_name,role,email,phone,status,created_at
+               FROM sys_users WHERE id=?""", (user_id,)
+        ).fetchone()
+        conn.close()
+        return {
+            "success": True, "user": dict(updated),
+            "password_changed": bool(new_password),
+        }
 
     def change_password(self, user_id: int, current_password: str, new_password: str) -> Dict[str, Any]:
         if len(new_password) < 10:
