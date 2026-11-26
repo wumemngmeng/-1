@@ -136,6 +136,59 @@ class EmailQueueTests(unittest.TestCase):
                 "sender_id": 1, "subject": "Again", "body": "Again",
             })
 
+    def test_pipeline_projects_cumulative_touch_evidence(self):
+        untouched_company = self.db.insert_company({
+            "name": "Untouched Test", "country_type": "overseas"
+        })
+        untouched_lead = self.db.insert_lead({
+            "company_id": untouched_company, "contact_name": "Pending",
+            "email": "pending@example.com",
+        })
+        x_company = self.db.insert_company({
+            "name": "Historical X Test", "country_type": "overseas"
+        })
+        x_lead = self.db.insert_lead({
+            "company_id": x_company, "contact_name": "X Contact",
+            "x_url": "https://x.com/historical",
+        })
+        conn = get_connection(self.db.db_path)
+        conn.execute(
+            """INSERT INTO outreach_records(lead_id,channel,status)
+               VALUES (?,'x_dm','sample_sent')""",
+            (x_lead,),
+        )
+        conn.execute(
+            """INSERT INTO outreach_records(lead_id,channel,status)
+               VALUES (?,'x_dm','lost')""",
+            (x_lead,),
+        )
+        conn.execute(
+            """INSERT INTO feishu_x_source_rows
+               (spreadsheet_token,sheet_id,sheet_row,lead_id,source_status,
+                source_date,source_channel,payload,resolution)
+               VALUES ('sheet','tab',1,?,'已推送未回复','','x_dm','{}','已同步')""",
+            (x_lead,),
+        )
+        conn.commit()
+        conn.close()
+        ids = self.queue.prepare([self.lead], "Admin")
+        row = self.queue.select(ids)[0]
+        self.queue.claim(ids)
+        self.queue.complete(
+            row, "Hi", "Body", "sales@example.com", "accepted", "Admin"
+        )
+
+        rows = {
+            item["company_id"]: item for item in self.db.query_pipeline(
+                country_type="overseas"
+            )
+        }
+        self.assertEqual(rows[self.company]["ever_touched"], 1)
+        self.assertEqual(rows[x_company]["ever_touched"], 1)
+        self.assertEqual(rows[x_company]["status"], "lost")
+        self.assertEqual(rows[untouched_company]["ever_touched"], 0)
+        self.assertEqual(rows[untouched_company]["lead_id"], untouched_lead)
+
     def test_batch_grouping_preserves_scope_and_uncertain_recipient_status(self):
         other_company = self.db.insert_company({"name": "Other Owner", "country_type": "domestic"})
         self.db.update_company(other_company, {"owner": "Other"})
