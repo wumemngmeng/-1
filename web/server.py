@@ -3605,39 +3605,37 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             });
             const reached = FUNNEL_STAGES.map((s, i) =>
                 FUNNEL_STAGES.slice(i).reduce((n, stage) => n + counts[stage], 0));
-            return {total:unique.size, counts, reached};
+            const contactable = [...unique.values()].filter(r => {
+                const hasContact = [r.email, r.x_url, r.linkedin_url, r.phone, r.wechat]
+                    .some(value => String(value || '').trim());
+                return (r.status || 'pending') !== 'lost' && hasContact && !isXClosedDmLead(r);
+            }).length;
+            const touched = ['sample_sent', 'contacted', 'negotiation', 'team_trial', 'won']
+                .reduce((total, stage) => total + counts[stage], 0);
+            const connected = ['contacted', 'negotiation', 'team_trial', 'won']
+                .reduce((total, stage) => total + counts[stage], 0);
+            const registered = counts.team_trial + counts.won;
+            return {
+                total: unique.size, counts, reached,
+                metrics: {contactable, touched, connected, registered, charged: counts.won},
+            };
         }
         function renderTouchFunnel(target, rows) {
             updateReportDate();
             const data = buildTouchFunnelData(rows);
-            if (activeCountry === 'overseas') {
-                const overseasCards = [
-                    ['海外企业汇总', data.total],
-                    ['待触达', data.counts.pending],
-                    ['不触达', data.counts.lost],
-                    ['已建联', data.counts.contacted],
-                    ['有意向', data.counts.negotiation],
-                    ['已注册', data.counts.team_trial],
-                    ['已充值', data.counts.won],
-                ];
-                document.getElementById(target).innerHTML = `<h3>海外客户汇总</h3>
-                    <div class="touch-funnel-row">${overseasCards.map(([label, count]) =>
-                        `<div class="touch-funnel-stage"><span>${label}</span><strong>${count}</strong></div>`
-                    ).join('')}</div>
-                    <p>企业去重，按当前触达状态统计；已推送未回复 ${data.counts.sample_sent} 家。</p>`;
-                return;
-            }
-            const labels = ['待触达', '已推送未回复', '已建连', '有意向', '已注册', '已充值'];
-            const pct = (n, d) => d ? (100 * n / d).toFixed(1) + '%' : '—';
-            document.getElementById(target).innerHTML = `<h3>触达动作转化漏斗</h3>
-                <p>当前筛选范围：${data.total} 家企业 · 已充值 / 有效客户：${pct(data.counts.won, data.reached[0])}</p>
-                <div class="touch-funnel-row">${FUNNEL_STAGES.map((s, i) =>
-                    `<div class="touch-funnel-stage"><span>${labels[i]}</span><strong>${data.counts[s]}${activeCountry === 'overseas' ? '' : ' <small>家（当前停留）</small>'}</strong>
-                    <small>本阶段及以后：${data.reached[i]} 家</small>
-                    <small>${i ? '较上阶段推进：' + pct(data.reached[i], data.reached[i - 1]) : '有效客户基数'}</small></div>`
-                ).join('')}<div class="touch-funnel-stage"><span>不触达</span><strong>${data.counts.lost} <small>家</small></strong>
-                <small>单列，不计入转化分母</small></div></div>
-                <p>企业去重，仅按“触达动作”统计，不合并客户详情阶段。推进比例由当前阶段推算，并非历史转化率。未识别动作：${data.counts.unknown} 家（不计入转化分母）。</p>`;
+            const metricCards = [
+                ['总线索', data.total],
+                ['可触达线索', data.metrics.contactable],
+                ['已触达线索', data.metrics.touched],
+                ['已建链线索', data.metrics.connected],
+                ['已注册线索', data.metrics.registered],
+                ['已充值线索', data.metrics.charged],
+            ];
+            document.getElementById(target).innerHTML = `<h3>${activeCountry === 'overseas' ? '海外客户汇总' : activeCountry === 'domestic' ? '国内客户汇总' : '客户线索汇总'}</h3>
+                <div class="touch-funnel-row">${metricCards.map(([label, count]) =>
+                    `<div class="touch-funnel-stage"><span>${label}</span><strong>${count}</strong></div>`
+                ).join('')}</div>
+                <p>企业去重；可触达线索已排除“不触达”、无邮箱/X/LinkedIn/电话/微信等联系方式及 X 私信关闭线索。已触达、已建链、已注册按后续阶段累积统计。</p>`;
         }
         function buildFunnelData(rows, country, tier, today) {
             const aliases = {researching:'pending', trial:'team_trial'};
