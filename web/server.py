@@ -1607,14 +1607,45 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <header>
                 <div>
                     <h2 class="page-title">邮件发送</h2>
-                    <div class="email-status">独立管理发送批次、邮件内容和发送记录。点击批次可查看该次发送涉及的企业与邮箱。</div>
+                    <div class="email-status">勾选线索并选择配置，创建推送包。点击批次可查看该次发送涉及的企业与邮箱，以及逐条推送情况。</div>
                 </div>
-                <div id="email-provider-status" class="email-status">正在检查发件配置…</div>
+                <div class="email-actions"><div id="email-provider-status" class="email-status">正在检查发件配置…</div><button class="btn-save" onclick="openMailPackageComposer()">创建推送包</button></div>
             </header>
+            <section id="mail-package-composer" class="email-panel" hidden style="margin-bottom:16px">
+                <h3>创建推送包</h3>
+                <p class="email-status">1. 勾选线索 → 2. 选择发件配置与邮件内容 → 3. 保存推送包。保存不会发送邮件，需在详情中确认发送。</p>
+                <div class="email-recipient-filters">
+                    <label>市场<select id="mail-package-market" onchange="renderMailPackageCandidates()"><option value="">全部市场</option><option value="domestic">国内</option><option value="overseas">海外</option></select></label>
+                    <label>公司 / 姓名 / 邮箱<input id="mail-package-search" oninput="renderMailPackageCandidates()" placeholder="搜索可发送线索"></label>
+                    <label>入库日期从<input id="mail-package-date-from" type="date" onchange="renderMailPackageCandidates()"></label>
+                    <label>入库日期至<input id="mail-package-date-to" type="date" onchange="renderMailPackageCandidates()"></label>
+                    <button onclick="selectMailPackageCandidates(true)">全选当前筛选</button>
+                    <button onclick="selectMailPackageCandidates(false)">取消当前筛选</button>
+                    <button onclick="clearMailPackageSelection()">清空已选线索</button>
+                </div>
+                <div id="mail-package-candidate-count" class="email-status" role="status" aria-live="polite"></div>
+                <div class="table-container" style="max-height:340px;overflow:auto"><table class="email-table">
+                    <thead><tr><th>选择</th><th>入库日期</th><th>企业</th><th>联系人</th><th>邮箱</th><th>市场</th></tr></thead>
+                    <tbody id="mail-package-candidate-body"></tbody>
+                </table></div>
+                <div class="filter-grid" style="margin-top:16px">
+                    <label>推送包名称<input id="mail-package-title" maxlength="120" placeholder="例如：海外创始人首轮触达"></label>
+                    <label>发件配置<select id="mail-package-sender" onchange="renderMailPackageCandidates()"></select></label>
+                    <label>邮件内容配置<select id="mail-package-content" onchange="loadMailPackageContent()"><option value="default">默认首轮触达</option><option value="automation">已保存的自动发送文案</option><option value="custom">自定义文案</option></select></label>
+                </div>
+                <label>邮件标题<input id="mail-package-subject" maxlength="300" oninput="document.getElementById('mail-package-content').value='custom'"></label>
+                <label>邮件正文<textarea id="mail-package-body" rows="7" oninput="document.getElementById('mail-package-content').value='custom'"></textarea></label>
+                <div class="email-status">支持变量：<code>{{name}}</code>、<code>{{company}}</code>、<code>{{email}}</code>。发件服务参数在“配置 → 邮件发送配置”中管理。</div>
+                <div class="email-actions">
+                    <button class="btn-save" id="mail-package-save" onclick="createEmailPackage('send')">保存推送包（不发送）</button>
+                    <button onclick="document.getElementById('mail-package-composer').hidden=true">收起</button>
+                    <span id="mail-package-result" class="email-status" role="status" aria-live="polite"></span>
+                </div>
+            </section>
             <div class="mail-workspace">
                 <section class="email-panel">
                     <div style="display:flex;justify-content:space-between;gap:12px;align-items:center">
-                        <h3 style="margin:0">发送批次</h3>
+                        <h3 style="margin:0">推送包与历史批次</h3>
                         <button onclick="fetchEmailProspects()">刷新</button>
                     </div>
                     <div class="filter-grid" style="margin-top:12px">
@@ -1641,9 +1672,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                             <div id="email-package-preview"></div>
                         </div>
                         <div class="table-container" style="margin-top:16px"><table class="email-table">
-                            <thead><tr><th>企业</th><th>联系人</th><th>邮箱</th><th>市场</th><th>发送状态</th><th>时间</th></tr></thead>
+                            <thead><tr><th>企业</th><th>联系人</th><th>邮箱 / 邮件内容</th><th>市场</th><th>发送状态</th><th>时间（UTC）</th><th>服务商消息 ID</th></tr></thead>
                             <tbody id="email-batch-recipient-body"></tbody>
                         </table></div>
+                        <p class="email-status">“已发送”表示邮件服务器已接受，不代表已送达或已读。“发送中 / 待核实”需核对服务器记录，不要重复发送。</p>
                     </div>
                     <div id="email-send-result" class="email-status" role="status" aria-live="polite"></div>
                 </section>
@@ -2528,7 +2560,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             mailAutomation=result.automation||{};
             mailPackages=result.packages||[];
             mailDeliveryBatches=result.batches||[];
-            for(const id of ['email-batch-sender','mail-edit-sender']) {
+            for(const id of ['email-batch-sender','mail-package-sender','mail-edit-sender']) {
                 const input=document.getElementById(id), previous=input.value;
                 input.innerHTML=mailSenders.map(s=>`<option value="${s.id}">${escapeHtml(s.from_email||'默认邮箱（未配置）')}</option>`).join('');
                 if(id==='mail-edit-sender' && currentUser?.role==='admin') input.innerHTML+='<option value="new">新增发件邮箱</option>';
@@ -2539,6 +2571,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             updateMailSenderStatus();
             renderEmailRecipients();
             renderPackageCandidates();
+            renderMailPackageCandidates();
+            if(!document.getElementById('mail-package-subject').value) loadMailPackageContent();
             renderEmailBatches();
             if(document.getElementById('view-email-send').classList.contains('active')) fetchEmailReplies();
         }
@@ -2579,6 +2613,91 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         let mailPackages = [];
         let mailDeliveryBatches = [];
         let activeMailBatchId = null;
+        let sendPageSelectedIds = new Set();
+        function openMailPackageComposer() {
+            document.getElementById('mail-package-composer').hidden=false;
+            if(!document.getElementById('mail-package-subject').value) loadMailPackageContent();
+            renderMailPackageCandidates();
+        }
+        function loadMailPackageContent() {
+            const choice=document.getElementById('mail-package-content').value;
+            if(choice==='custom') return;
+            const subject=choice==='automation'&&mailAutomation?.subject_template
+                ?mailAutomation.subject_template:'{{company}} × Aibubu：更高效的 AI 图片与视频工作流';
+            const body=choice==='automation'&&mailAutomation?.body_template
+                ?mailAutomation.body_template:'Hi {{name}},\\n\\nI’m reaching out from Aibubu. We provide an AI workspace and API for creating product images and short videos at scale.\\n\\nBest,\\nAibubu Team';
+            document.getElementById('mail-package-subject').value=subject;
+            document.getElementById('mail-package-body').value=body;
+        }
+        function mailPackageCandidateRows() {
+            const market=document.getElementById('mail-package-market').value;
+            const query=document.getElementById('mail-package-search').value.trim().toLowerCase();
+            const from=document.getElementById('mail-package-date-from').value;
+            const to=document.getElementById('mail-package-date-to').value;
+            return currentEmailProspects.filter(row=>isEmailSendable(row)&&
+                (!market||row.country_type===market)&&
+                (!from||String(row.lead_created_at||'').slice(0,10)>=from)&&
+                (!to||String(row.lead_created_at||'').slice(0,10)<=to)&&
+                (!query||[row.email,row.company_name,row.contact_name].some(value=>String(value||'').toLowerCase().includes(query))));
+        }
+        function renderMailPackageCandidates() {
+            const body=document.getElementById('mail-package-candidate-body');
+            if(!body) return;
+            const valid=new Set(currentEmailProspects.filter(isEmailSendable).map(row=>row.lead_id));
+            sendPageSelectedIds=new Set([...sendPageSelectedIds].filter(id=>valid.has(id)));
+            const rows=mailPackageCandidateRows();
+            const sender=mailSenders.find(item=>String(item.id)===document.getElementById('mail-package-sender').value);
+            document.getElementById('mail-package-candidate-count').textContent=
+                `当前筛选 ${rows.length} 位可发送线索，已选择 ${sendPageSelectedIds.size} 位；发件配置：${sender?.from_email||'未选择'}${sender?.configured?'（可发送）':'（配置未完成，可保存草稿）'}`;
+            body.innerHTML=rows.map(row=>`<tr>
+                <td><input type="checkbox" ${sendPageSelectedIds.has(row.lead_id)?'checked':''} onchange="toggleMailPackageCandidate(${row.lead_id},this.checked)"></td>
+                <td>${escapeHtml(String(row.lead_created_at||'').slice(0,10)||'-')}</td>
+                <td>${escapeHtml(row.company_name||'-')}</td><td>${escapeHtml(row.contact_name||'-')}</td>
+                <td>${escapeHtml(row.email)}</td><td>${escapeHtml(marketLabel(row.country_type))}</td>
+            </tr>`).join('')||'<tr><td colspan="6">当前筛选下没有可发送线索</td></tr>';
+        }
+        function toggleMailPackageCandidate(id, checked) {
+            if(checked) sendPageSelectedIds.add(id); else sendPageSelectedIds.delete(id);
+            renderMailPackageCandidates();
+        }
+        function selectMailPackageCandidates(checked) {
+            mailPackageCandidateRows().forEach(row=>checked?sendPageSelectedIds.add(row.lead_id):sendPageSelectedIds.delete(row.lead_id));
+            renderMailPackageCandidates();
+        }
+        function clearMailPackageSelection() {
+            sendPageSelectedIds.clear();
+            renderMailPackageCandidates();
+        }
+        async function createMailPackageFromSendPage() {
+            const output=document.getElementById('mail-package-result');
+            const title=document.getElementById('mail-package-title').value.trim();
+            const subject=document.getElementById('mail-package-subject').value.trim();
+            const body=document.getElementById('mail-package-body').value.trim();
+            const leadIds=[...sendPageSelectedIds];
+            if(!leadIds.length) {output.textContent='请至少勾选一位可发送线索';return;}
+            if(!title) {output.textContent='请填写推送包名称';return;}
+            if(!subject||!body) {output.textContent='请填写邮件标题和正文';return;}
+            const button=document.getElementById('mail-package-save');
+            button.disabled=true; output.textContent='正在保存推送包草稿…';
+            try {
+                const response=await fetch('/api/email-packages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+                    title,lead_ids:leadIds,sender_id:Number(document.getElementById('mail-package-sender').value||1),
+                    subject,body
+                })});
+                const result=await response.json();
+                if(!response.ok||!result.success) throw Error(result.error||'创建推送包失败');
+                mailPackages=[result.package,...mailPackages.filter(item=>item.id!==result.package.id)];
+                sendPageSelectedIds.clear();
+                renderMailPackageCandidates();
+                renderEmailBatches();
+                openEmailBatch(result.package.id);
+                output.textContent=`推送包“${result.package.title}”已保存，共 ${result.package.recipient_count} 位联系人，尚未发送。`;
+            } catch(error) {
+                output.textContent=error.message||'创建推送包失败';
+            } finally {
+                button.disabled=false;
+            }
+        }
         function allMailBatches() {
             const drafts=mailPackages.filter(item=>item.status==='draft').map(item=>({...item,kind:'draft'}));
             return [...drafts,...mailDeliveryBatches.map(item=>({...item,kind:'delivery'}))];
@@ -2618,8 +2737,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('email-batch-empty').hidden=true;
             document.getElementById('email-batch-detail').hidden=false;
             document.getElementById('email-batch-title').textContent=item.title;
+            const sentCount=item.sent_count??(item.status==='sent'?item.recipient_count:0);
+            const pendingCount=Math.max(0,item.recipient_count-sentCount);
+            const pendingLabel=item.status==='draft'?'待发送':'待核实';
             document.getElementById('email-batch-summary').innerHTML=`
                 <span>状态：${emailBatchBadge(item.status)}</span><span>邮箱数：${item.recipient_count}</span>
+                <span>已发送：${sentCount}</span><span>${pendingLabel}：${pendingCount}</span>
                 <span>发件邮箱：${escapeHtml(item.sender||mailSenderLabel(item.sender_id)||'待选择')}</span>
                 <span>操作人：${escapeHtml(item.sent_by||item.created_by||'-')}</span>
                 <span>时间：${escapeHtml(item.sent_at||item.created_at||'-')} UTC</span>
@@ -2635,9 +2758,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             }
             document.getElementById('email-batch-recipient-body').innerHTML=(item.recipients||[]).map(row=>`<tr>
                 <td>${escapeHtml(row.company_name||'-')}</td><td>${escapeHtml(row.contact_name||'-')}</td>
-                <td>${escapeHtml(row.email||'-')}</td><td>${escapeHtml(marketLabel(row.country_type))}</td>
+                <td>${escapeHtml(row.email||'-')}${row.subject?`<br><span class="email-status">${escapeHtml(row.subject)}</span>`:''}</td><td>${escapeHtml(marketLabel(row.country_type))}</td>
                 <td>${emailBatchBadge(row.status||'draft')}</td><td>${escapeHtml(row.created_at||'-')}</td>
-            </tr>`).join('')||'<tr><td colspan="6">该批次暂无邮箱</td></tr>';
+                <td>${escapeHtml(row.provider_message_id||'-')}</td>
+            </tr>`).join('')||'<tr><td colspan="7">该批次暂无邮箱</td></tr>';
             if(rerender) renderEmailBatches();
         }
         function renderPackageCandidates() {
@@ -2657,7 +2781,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 checked?packageSelectedIds.add(row.lead_id):packageSelectedIds.delete(row.lead_id));
             renderPackageCandidates();
         }
-        async function createEmailPackage() {
+        async function createEmailPackage(source='pool') {
+            if(source==='send') return createMailPackageFromSendPage();
             const ids=[...packageSelectedIds], output=document.getElementById('email-package-result');
             const title=document.getElementById('email-package-title').value.trim();
             if(!ids.length) {output.textContent='请先在下方线索列表中选择收件人';return;}
