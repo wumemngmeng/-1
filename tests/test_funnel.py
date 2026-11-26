@@ -52,13 +52,24 @@ const touch = buildTouchFunnelData([...rows, rows[0], {company_id:9,status:'lost
 if (touch.total !== 9 || touch.counts.won !== 4 || touch.counts.pending !== 2) throw Error('touch counts/dedupe');
 if (touch.counts.lost !== 1 || touch.counts.unknown !== 1) throw Error('touch exclusions');
 if (touch.reached.join(',') !== '7,5,4,4,4,4') throw Error('touch cumulative');
+if (touch.metrics.contactable !== 1 || touch.metrics.touched !== 5 ||
+    touch.metrics.connected !== 4 || touch.metrics.registered !== 4 ||
+    touch.metrics.charged !== 4) throw Error('summary metrics');
+const contactable = buildTouchFunnelData([
+ {company_id:1,status:'pending',email:'a@example.com'},
+ {company_id:2,status:'lost',email:'b@example.com'},
+ {company_id:3,status:'pending'},
+ {company_id:4,status:'pending',x_url:'https://x.com/a',feishu_social_status:'无法触达(私信关闭)'},
+ {company_id:5,status:'pending',phone:'13800000000'}
+]);
+if (contactable.metrics.contactable !== 2) throw Error('contactable exclusions');
 if (buildTouchFunnelData([{company_id:1,prospect_status:'won'}]).counts.pending !== 1) throw Error('touch must not merge detail stage');
 activeCountry = 'domestic';
 renderTouchFunnel('pipeline-touch-funnel', []);
-if (!document.getElementById('pipeline-touch-funnel').innerHTML.includes('当前筛选范围：0')) throw Error('empty touch row');
+if (!document.getElementById('pipeline-touch-funnel').innerHTML.includes('总线索')) throw Error('summary dimensions');
 if (document.getElementById('pipeline-touch-funnel').innerHTML.includes('NaN')) throw Error('empty ratio');
 renderTouchFunnel('pipeline-touch-funnel', rows.filter(r=>r.country_type==='domestic' && r.client_tier==='A'));
-if (!document.getElementById('pipeline-touch-funnel').innerHTML.includes('当前筛选范围：6')) throw Error('filtered touch row');
+if (!document.getElementById('pipeline-touch-funnel').innerHTML.includes('国内客户汇总')) throw Error('filtered touch row');
 updateReportDate(new Date('2026-10-20T16:30:00Z'));
 if (document.getElementById('report-date').dateTime !== '2026-10-21') throw Error('Beijing date boundary');
 currentData = rows;
