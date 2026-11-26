@@ -267,12 +267,15 @@ class FeishuImportTests(unittest.TestCase):
         self.assertEqual(preview["status_sync"]["outreach_updates"], 1)
         self.assertEqual(first["synced_outreach_records"], 1)
         self.assertEqual(second["synced_outreach_records"], 0)
-        self.assertEqual(self.db.query_pipeline()[0]["status"], "contacted")
+        self.assertEqual(self.db.query_pipeline()[0]["status"], "sample_sent")
 
     def test_protected_queue_and_advanced_pipeline_states_are_preserved(self):
         importer = FeishuMailSheetImporter(self.db, environ={})
         for index, status in enumerate(("sending", "unsubscribed", "removed"), 1):
-            source = [self.record(email=f"person{index}@acme.example")]
+            source = [self.record(
+                email=f"person{index}@acme.example",
+                x_url=f"https://x.com/person{index}",
+            )]
             with patch.object(importer, "fetch_records", return_value=source):
                 importer.apply("管理员")
             conn = get_connection(self.db.db_path)
@@ -292,6 +295,78 @@ class FeishuImportTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT status FROM outreach_records WHERE lead_id=? ORDER BY id DESC LIMIT 1", (lead["id"],)).fetchone()["status"], "negotiation")
             conn.close()
             self.assertEqual(result["synced_outreach_records"], 0)
+
+    def test_existing_company_and_person_are_enriched_instead_of_duplicated(self):
+        company_id = self.db.insert_company({
+            "name": "Acme Incorporated", "country_type": "overseas",
+            "website": "https://acme.example",
+        })
+        lead_id = self.db.insert_lead({
+            "company_id": company_id, "contact_name": "Alex",
+            "job_title": "Founder", "x_url": "https://x.com/alex",
+        })
+        source = [self.record(
+            company_name="Acme Incorporated", website="https://acme.example",
+            email="new-address@acme.example",
+        )]
+        importer = FeishuMailSheetImporter(self.db, environ={})
+        with patch.object(importer, "fetch_records", return_value=source):
+            preview = importer.preview()
+            first = importer.apply("管理员", preview["fingerprint"])
+            second = importer.apply("管理员")
+        conn = get_connection(self.db.db_path)
+        self.assertEqual(conn.execute("SELECT count(*) FROM companies").fetchone()[0], 1)
+        self.assertEqual(conn.execute("SELECT count(*) FROM leads").fetchone()[0], 1)
+        aliases = conn.execute(
+            """SELECT value FROM lead_contact_methods
+               WHERE lead_id=? AND method_type='email'""", (lead_id,)
+        ).fetchall()
+        link = conn.execute(
+            """SELECT company_id,lead_id FROM source_entity_links
+               WHERE source_type='feishu_mail'"""
+        ).fetchone()
+        conn.close()
+        self.assertEqual(preview["matched_contacts"], 1)
+        self.assertEqual(first["created_contacts"], 0)
+        self.assertEqual(second["created_contacts"], 0)
+        self.assertIn("new-address@acme.example", [row["value"] for row in aliases])
+        self.assertEqual(dict(link), {"company_id": company_id, "lead_id": lead_id})
+
+    def test_existing_company_gets_new_person_only(self):
+        company_id = self.db.insert_company({
+            "name": "Acme Incorporated", "country_type": "overseas",
+            "website": "https://acme.example",
+        })
+        self.db.insert_lead({
+            "company_id": company_id, "contact_name": "Existing",
+            "email": "existing@acme.example",
+        })
+        source = [self.record(
+            company_name="Acme Incorporated", website="https://acme.example",
+            contact_name="Morgan", email="morgan@acme.example",
+            x_url="https://x.com/morgan",
+        )]
+        importer = FeishuMailSheetImporter(self.db, environ={})
+        with patch.object(importer, "fetch_records", return_value=source):
+            result = importer.apply("管理员")
+        conn = get_connection(self.db.db_path)
+        self.assertEqual(conn.execute("SELECT count(*) FROM companies").fetchone()[0], 1)
+        self.assertEqual(conn.execute("SELECT count(*) FROM leads").fetchone()[0], 2)
+        conn.close()
+        self.assertEqual(result["created_companies"], 0)
+        self.assertEqual(result["created_contacts"], 1)
+
+    def test_precomputed_import_plan_does_not_refetch_source(self):
+        importer = FeishuMailSheetImporter(self.db, environ={})
+        records = [self.record()]
+        plan = importer.plan(records)
+        with patch.object(importer, "fetch_records", side_effect=AssertionError("refetched")):
+            result = importer.apply(
+                "Admin", expected_fingerprint=plan["fingerprint"],
+                records=records, plan=plan,
+            )
+        self.assertEqual(result["created_companies"], 1)
+        self.assertEqual(result["created_contacts"], 1)
 
     def test_unsubscribe_overrides_sent_without_removing_send_history(self):
         importer = FeishuMailSheetImporter(self.db, environ={})
@@ -452,6 +527,32 @@ class FeishuImportTests(unittest.TestCase):
         self.assertEqual(result["preserved"], 1)
         self.assertEqual(result["created_outreach_records"], 0)
 
+    def test_x_match_enriches_existing_contact_without_duplicate_company_or_lead(self):
+        company_id = self.db.insert_company({
+            "name": "Acme", "country_type": "overseas",
+        })
+        lead_id = self.db.insert_lead({
+            "company_id": company_id, "contact_name": "",
+            "job_title": "", "x_url": "https://x.com/alex",
+        })
+        sync = FeishuXStatusSync(self.db, environ={})
+        record = self.x_record(
+            contact_name="Alex", job_title="Founder", source_status="已回复",
+        )
+        with patch.object(sync, "fetch_records", return_value=[record]):
+            first = sync.apply()
+            second = sync.apply()
+        conn = get_connection(self.db.db_path)
+        lead = conn.execute(
+            "SELECT contact_name,job_title FROM leads WHERE id=?", (lead_id,)
+        ).fetchone()
+        self.assertEqual(conn.execute("SELECT count(*) FROM companies").fetchone()[0], 1)
+        self.assertEqual(conn.execute("SELECT count(*) FROM leads").fetchone()[0], 1)
+        conn.close()
+        self.assertEqual((lead["contact_name"], lead["job_title"]), ("Alex", "Founder"))
+        self.assertEqual(first["enriched_contacts"], 1)
+        self.assertEqual(second["enriched_contacts"], 0)
+
     def test_x_sync_explicit_suppression_is_lost_and_conflicts_are_reported(self):
         self.make_x_lead()
         sync = FeishuXStatusSync(self.db, environ={})
@@ -600,6 +701,33 @@ class FeishuImportTests(unittest.TestCase):
         self.assertEqual(outreach["status"], "contacted")
         self.assertEqual(archived, 2)
         self.assertEqual(mail_queue, 0)
+
+    def test_x_reply_adds_one_durable_event_and_updates_channel_state(self):
+        company_id, lead_id = self.make_x_lead()
+        sync = FeishuXStatusSync(self.db, environ={})
+        records = [self.x_record(source_status="已回复")]
+        with patch.object(sync, "fetch_records", return_value=records):
+            first = sync.apply()
+            second = sync.apply()
+        conn = get_connection(self.db.db_path)
+        events = conn.execute(
+            """SELECT event_type FROM touch_events
+               WHERE source_type='feishu_x' AND lead_id=?""", (lead_id,)
+        ).fetchall()
+        state = conn.execute(
+            "SELECT current_status FROM channel_states WHERE lead_id=? AND channel='x_dm'",
+            (lead_id,),
+        ).fetchone()
+        link = conn.execute(
+            """SELECT company_id,lead_id FROM source_entity_links
+               WHERE source_type='feishu_x'"""
+        ).fetchone()
+        conn.close()
+        self.assertEqual([row["event_type"] for row in events], ["replied"])
+        self.assertEqual(state["current_status"], "contacted")
+        self.assertEqual(dict(link), {"company_id": company_id, "lead_id": lead_id})
+        self.assertEqual(first["touch_events_created"], 1)
+        self.assertEqual(second["touch_events_created"], 0)
 
     def test_linkedin_channel_status_is_not_written_as_x_dm(self):
         company_id = self.db.insert_company({
