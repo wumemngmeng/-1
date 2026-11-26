@@ -136,8 +136,9 @@ class FeishuDiscordImporter:
         return self.plan(self.fetch_records())
 
     @synchronized("discord")
-    def apply(self, actor, expected_fingerprint=None):
-        plan = self.preview()
+    def apply(self, actor, expected_fingerprint=None, records=None, plan=None):
+        records = self.fetch_records() if records is None else records
+        plan = self.plan(records) if plan is None else plan
         if expected_fingerprint and plan["fingerprint"] != expected_fingerprint:
             raise FeishuImportError("Discord 表或后台记录已变化，请重新检测")
         statements = []
