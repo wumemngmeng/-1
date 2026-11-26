@@ -365,6 +365,8 @@ CREATE TABLE IF NOT EXISTS feishu_x_source_rows (
     resolution TEXT NOT NULL, synced_at TEXT DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY(spreadsheet_token,sheet_id,sheet_row)
 );
+CREATE INDEX IF NOT EXISTS idx_feishu_x_source_rows_latest_lead
+    ON feishu_x_source_rows(lead_id,synced_at DESC,sheet_row DESC);
 CREATE TABLE IF NOT EXISTS feishu_sync_sources (
     source_type TEXT NOT NULL, spreadsheet_token TEXT NOT NULL,
     sheet_id TEXT NOT NULL, source_key TEXT NOT NULL, sheet_row INTEGER NOT NULL,
@@ -379,6 +381,52 @@ CREATE TABLE IF NOT EXISTS feishu_sync_runs (
 CREATE TABLE IF NOT EXISTS feishu_sync_locks (
     source_type TEXT PRIMARY KEY, owner TEXT NOT NULL, expires_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS feishu_sync_snapshots (
+    fingerprint TEXT PRIMARY KEY, payload TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    expires_at TEXT NOT NULL DEFAULT (datetime('now','+30 minutes'))
+);
+CREATE INDEX IF NOT EXISTS idx_feishu_sync_snapshots_expiry
+    ON feishu_sync_snapshots(expires_at);
+CREATE TABLE IF NOT EXISTS app_schema_migrations (
+    migration_key TEXT PRIMARY KEY, applied_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS source_entity_links (
+    source_type TEXT NOT NULL, source_key TEXT NOT NULL,
+    company_id INTEGER NOT NULL, lead_id INTEGER,
+    payload_hash TEXT NOT NULL DEFAULT '', updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(source_type,source_key)
+);
+CREATE INDEX IF NOT EXISTS idx_source_entity_links_company
+    ON source_entity_links(company_id,lead_id);
+CREATE TABLE IF NOT EXISTS lead_contact_methods (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, lead_id INTEGER NOT NULL,
+    method_type TEXT NOT NULL, value TEXT NOT NULL, normalized_value TEXT NOT NULL,
+    source_type TEXT NOT NULL DEFAULT 'crm', is_primary INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(method_type,normalized_value)
+);
+CREATE INDEX IF NOT EXISTS idx_lead_contact_methods_lead
+    ON lead_contact_methods(lead_id,method_type);
+CREATE TABLE IF NOT EXISTS channel_states (
+    company_id INTEGER NOT NULL, lead_id INTEGER NOT NULL, channel TEXT NOT NULL,
+    current_status TEXT NOT NULL, source_type TEXT NOT NULL, source_key TEXT NOT NULL,
+    source_occurred_at TEXT NOT NULL DEFAULT '', updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(lead_id,channel)
+);
+CREATE INDEX IF NOT EXISTS idx_channel_states_company
+    ON channel_states(company_id,channel,current_status);
+CREATE TABLE IF NOT EXISTS touch_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL, lead_id INTEGER,
+    channel TEXT NOT NULL, event_type TEXT NOT NULL,
+    source_type TEXT NOT NULL, source_event_key TEXT NOT NULL,
+    occurred_at TEXT NOT NULL DEFAULT '', recorded_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    UNIQUE(source_type,source_event_key,event_type)
+);
+CREATE INDEX IF NOT EXISTS idx_touch_events_company_type
+    ON touch_events(company_id,event_type);
 CREATE TABLE IF NOT EXISTS feishu_mail_company_resolutions (
     spreadsheet_token TEXT NOT NULL, sheet_id TEXT NOT NULL, email TEXT NOT NULL,
     company_id INTEGER NOT NULL, source_name TEXT NOT NULL, source_domain TEXT NOT NULL,
@@ -441,7 +489,6 @@ def init_db(db_path: str = DB_PATH):
     cursor.executescript(SCHEMA_SQL)
     from core.email_queue import SCHEMA as MAIL_QUEUE_SCHEMA
     cursor.executescript(MAIL_QUEUE_SCHEMA)
-
     cursor.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'outreach_records'"
     )
@@ -535,6 +582,74 @@ def init_db(db_path: str = DB_PATH):
             cursor.execute(f"ALTER TABLE companies ADD COLUMN {field} {definition}")
 
     bootstrap_remote_from_sqlite(conn)
+
+    # One-time evidence/identity backfill. Run after legacy column migrations
+    # and remote bootstrap, rather than rescanning production tables on every
+    # DatabaseManager construction/request.
+    migration_key = "durable_contact_methods_and_touch_events_v1"
+    if not cursor.execute(
+        "SELECT 1 FROM app_schema_migrations WHERE migration_key=?",
+        (migration_key,),
+    ).fetchone():
+        cursor.execute(
+            """INSERT OR IGNORE INTO lead_contact_methods
+               (lead_id,method_type,value,normalized_value,source_type,is_primary)
+               SELECT id,'email',email,lower(trim(email)),'crm',1 FROM leads
+               WHERE trim(coalesce(email,''))<>''"""
+        )
+        cursor.execute(
+            """INSERT OR IGNORE INTO lead_contact_methods
+               (lead_id,method_type,value,normalized_value,source_type,is_primary)
+               SELECT id,'x',x_url,lower(trim(x_url)),'crm',1 FROM leads
+               WHERE trim(coalesce(x_url,''))<>''"""
+        )
+        cursor.execute(
+            """INSERT OR IGNORE INTO lead_contact_methods
+               (lead_id,method_type,value,normalized_value,source_type,is_primary)
+               SELECT id,'linkedin',linkedin_url,lower(trim(linkedin_url)),'crm',1 FROM leads
+               WHERE trim(coalesce(linkedin_url,''))<>''"""
+        )
+        cursor.execute(
+            """INSERT OR IGNORE INTO touch_events
+               (company_id,lead_id,channel,event_type,source_type,source_event_key,
+                occurred_at,payload_json)
+               SELECT c.id,l.id,r.channel,
+                      CASE WHEN r.status='sample_sent' THEN 'sent'
+                           WHEN r.status='contacted' THEN 'replied'
+                           WHEN r.status='team_trial' THEN 'registered'
+                           WHEN r.status='won' THEN 'charged'
+                           ELSE r.status END,
+                      'crm','outreach:'||r.id,r.created_at,
+                      json_object('status',r.status,'interaction_notes',coalesce(r.interaction_notes,''))
+               FROM outreach_records r JOIN leads l ON l.id=r.lead_id
+               JOIN companies c ON c.id=l.company_id
+               WHERE r.status IN ('sample_sent','contacted','negotiation','team_trial','won')"""
+        )
+        cursor.execute(
+            """INSERT OR IGNORE INTO touch_events
+               (company_id,lead_id,channel,event_type,source_type,source_event_key,
+                occurred_at,payload_json)
+               SELECT c.id,l.id,f.source_channel,
+                      CASE WHEN trim(f.source_status)='已推送未回复' THEN 'sent' ELSE 'replied' END,
+                      'feishu_x',f.spreadsheet_token||':'||f.sheet_id||':'||f.sheet_row,
+                      coalesce(f.source_date,''),json_object('source_status',f.source_status)
+               FROM feishu_x_source_rows f JOIN leads l ON l.id=f.lead_id
+               JOIN companies c ON c.id=l.company_id
+               WHERE trim(f.source_status) IN ('已推送未回复','已回复')"""
+        )
+        cursor.execute(
+            """INSERT OR IGNORE INTO touch_events
+               (company_id,lead_id,channel,event_type,source_type,source_event_key,
+                occurred_at,payload_json)
+               SELECT q.company_id,q.lead_id,'cold_email','sent','smtp',
+                      'mail-send:'||s.id,s.created_at,
+                      json_object('provider_message_id',s.provider_message_id)
+               FROM mail_queue_sends s JOIN mail_queue q ON q.id=s.queue_id"""
+        )
+        cursor.execute(
+            "INSERT OR IGNORE INTO app_schema_migrations(migration_key) VALUES(?)",
+            (migration_key,),
+        )
 
     # Pending market was a temporary intake state. All such records now belong
     # to the overseas customer pool; contact verification remains independent.
@@ -807,8 +922,20 @@ class DatabaseManager:
             data.get('fit_score', 0),
             data.get('wechat_same_as_phone_confirmed', 0),
         ))
-        conn.commit()
         lead_id = cur.lastrowid
+        from core.feishu_sync import add_contact_method
+        for method_type, field in (
+            ("email", "email"), ("x", "x_url"), ("linkedin", "linkedin_url"),
+            ("phone", "phone"), ("wechat", "wechat"),
+        ):
+            value = str(data.get(field) or "").strip()
+            normalized = value.casefold()
+            if value:
+                add_contact_method(
+                    cur, lead_id, method_type, value, normalized, "crm",
+                    is_primary=True,
+                )
+        conn.commit()
         conn.close()
         return lead_id
 
@@ -849,8 +976,23 @@ class DatabaseManager:
             data.get('interaction_notes', ''),
             data.get('next_follow_up_date', None)
         ))
-        conn.commit()
         record_id = cur.lastrowid
+        event_type = {
+            "sample_sent": "sent", "contacted": "replied",
+            "negotiation": "connected", "team_trial": "registered", "won": "charged",
+        }.get(data.get("status", "pending"))
+        if event_type:
+            from core.feishu_sync import record_touch_event
+            company = cur.execute(
+                "SELECT company_id FROM leads WHERE id=?", (data["lead_id"],)
+            ).fetchone()
+            if company:
+                record_touch_event(
+                    cur, company["company_id"], data["lead_id"], channel,
+                    event_type, "crm", f"outreach:{record_id}",
+                    payload={"status": data.get("status", "pending")},
+                )
+        conn.commit()
         conn.close()
         return record_id
 
@@ -892,6 +1034,23 @@ class DatabaseManager:
             values,
         )
         updated = cur.rowcount > 0
+        event_type = {
+            "sample_sent": "sent", "contacted": "replied",
+            "negotiation": "connected", "team_trial": "registered", "won": "charged",
+        }.get(status)
+        if updated and event_type:
+            row = cur.execute(
+                """SELECT r.lead_id,r.channel,l.company_id
+                   FROM outreach_records r JOIN leads l ON l.id=r.lead_id
+                   WHERE r.id=?""", (outreach_id,)
+            ).fetchone()
+            if row:
+                from core.feishu_sync import record_touch_event
+                record_touch_event(
+                    cur, row["company_id"], row["lead_id"], row["channel"],
+                    event_type, "crm", f"outreach:{outreach_id}:{status}",
+                    payload={"status": status},
+                )
         conn.commit()
         conn.close()
         return updated
@@ -984,27 +1143,24 @@ class DatabaseManager:
                 (SELECT f.outreach_account FROM feishu_x_source_rows f
                  WHERE f.lead_id=l.id ORDER BY f.synced_at DESC,f.sheet_row DESC LIMIT 1) AS feishu_outreach_account,
                 CASE WHEN EXISTS (
-                    SELECT 1
-                    FROM outreach_records historical_outreach
-                    JOIN leads historical_lead
-                      ON historical_lead.id = historical_outreach.lead_id
-                    WHERE historical_lead.company_id = c.id
-                      AND historical_outreach.status IN (
-                          'sample_sent', 'contacted', 'negotiation', 'team_trial', 'won'
+                    SELECT 1 FROM touch_events historical_touch
+                    WHERE historical_touch.company_id=c.id
+                      AND historical_touch.event_type IN (
+                          'sent','replied','connected','registered','charged'
                       )
                 ) OR EXISTS (
-                    SELECT 1
-                    FROM feishu_x_source_rows historical_x
-                    JOIN leads historical_x_lead
-                      ON historical_x_lead.id = historical_x.lead_id
-                    WHERE historical_x_lead.company_id = c.id
-                      AND trim(historical_x.source_status) IN ('已推送未回复', '已回复')
+                    SELECT 1 FROM outreach_records historical_outreach
+                    JOIN leads historical_lead
+                      ON historical_lead.id=historical_outreach.lead_id
+                    WHERE historical_lead.company_id=c.id
+                      AND historical_outreach.status IN (
+                          'sample_sent','contacted','negotiation','team_trial','won'
+                      )
                 ) OR EXISTS (
-                    SELECT 1
-                    FROM mail_queue historical_mail
-                    JOIN mail_queue_sends historical_send
-                      ON historical_send.queue_id = historical_mail.id
-                    WHERE historical_mail.company_id = c.id
+                    SELECT 1 FROM feishu_x_source_rows historical_x
+                    JOIN leads historical_x_lead ON historical_x_lead.id=historical_x.lead_id
+                    WHERE historical_x_lead.company_id=c.id
+                      AND trim(historical_x.source_status) IN ('已推送未回复','已回复')
                 ) THEN 1 ELSE 0 END AS ever_touched,
                 l.source_method as lead_source,
                 l.identity_source_url,
@@ -1370,6 +1526,17 @@ class DatabaseManager:
         values.append(lead_id)
         sql = f"UPDATE leads SET {', '.join(clauses)} WHERE id = ?"
         cur.execute(sql, tuple(values))
+        from core.feishu_sync import add_contact_method
+        for method_type, field in (
+            ("email", "email"), ("x", "x_url"), ("linkedin", "linkedin_url"),
+            ("phone", "phone"), ("wechat", "wechat"),
+        ):
+            if field in valid_updates and valid_updates[field]:
+                add_contact_method(
+                    cur, lead_id, method_type, valid_updates[field],
+                    str(valid_updates[field]).strip().casefold(), "crm",
+                    is_primary=True,
+                )
         conn.commit()
         conn.close()
         return True
