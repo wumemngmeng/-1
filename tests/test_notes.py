@@ -32,7 +32,7 @@ class NotesTests(unittest.TestCase):
         self.assertIn('id="view-email-settings"', html)
         self.assertNotIn('<span>✉️</span> <span>邮件线索池</span>', html)
         self.assertIn('onclick="switchEmailPoolMarket(\'domestic\', this)"', html)
-        self.assertIn("onclick=\"switchPipelineChannel('overseas', 'email', this)\"", html)
+        self.assertIn('onclick="switchEmailPoolMarket(\'overseas\', this)"', html)
         self.assertIn('<span>✉️ 邮件发送配置</span>', html)
         self.assertIn('<span>📝 筛选策略</span>', html)
         self.assertIn('<span>🛡️ 组织与权限管理</span>', html)
@@ -381,16 +381,19 @@ vm.runInContext(`
   const check=(condition,message)=>{if(!condition)throw Error(message);};
   currentData=[
     {company_id:1,country_type:'domestic',email:'cn@example.com'},
-    {company_id:2,country_type:'overseas',x_url:'https://x.com/founder'},
-    {company_id:3,country_type:'overseas',email:'global@example.com'},
+    {company_id:2,country_type:'overseas',x_url:'https://x.com/founder',source_channel:'X（用户提供）'},
+    {company_id:3,country_type:'overseas',email:'global@example.com',source_channel:'飞书邮件表'},
     {company_id:4,country_type:'overseas'}
   ];
   fetchStats=()=>{};
   renderTable=()=>{visibleData=marketRows();};
   renderSourceCapsules=()=>{};
   switchNav=(nav)=>{globalThis.destination=nav;};
-  check(leadMatchesChannel({x_url:'https://x.com/founder'},'x'),'X homepage classification failed');
-  check(!leadMatchesChannel({lead_source:'公开 X 主页'},'x'),'source-only X classification leaked');
+  check(leadMatchesChannel({source_channel:'X（用户提供）'},'x'),'X source classification failed');
+  check(!leadMatchesChannel({x_url:'https://x.com/founder',source_channel:'飞书邮件表'},'x'),
+    'email-source X homepage was counted as X channel');
+  check(leadMatchesChannel({x_url:'https://x.com/founder',email:'both@example.com',
+    source_channel:'X（用户提供）'},'email'),'email and X channels must overlap');
   check(leadChannelCounts([
     ...currentData.filter(row=>row.country_type==='domestic'),currentData[0]
   ]).email===1,'duplicate company count');
@@ -411,12 +414,12 @@ vm.runInContext(`
   switchPipelineChannel('overseas','x');
   check(destination==='pipeline'&&activeCountry==='overseas'&&activeLeadChannel==='x','X market route');
   check(leadMatchesChannel(currentData[1],'x')&&!leadMatchesChannel(currentData[2],'x'),
-    'overseas X attribution mixed');
+    'overseas X source attribution mixed');
   switchPipelineChannel('overseas','email');
   check(destination==='pipeline'&&activeCountry==='overseas'&&activeLeadChannel==='email',
     'overseas email route');
-  check(leadMatchesChannel(currentData[2],'email')&&leadMatchesChannel(currentData[3],'email')
-    &&!leadMatchesChannel(currentData[1],'email'),'overseas email attribution mixed');
+  check(leadMatchesChannel(currentData[2],'email')&&!leadMatchesChannel(currentData[3],'email'),
+    'overseas email attribution mixed');
   switchPipelineMarket('domestic',document.getElementById('domestic-nav'));
   check(!document.getElementById('lead-pool-cards').innerHTML.includes('X 线索'),'domestic X card exposed');
   check(!document.getElementById('lead-pool-cards').innerHTML.includes('Discord'),'domestic Discord card exposed');
@@ -449,9 +452,9 @@ vm.runInContext(`currentEmailProspects=[
  {lead_id:1,country_type:'domestic'}, {lead_id:2,country_type:'overseas'},
  {lead_id:3,country_type:'overseas'}]; activeCountry='overseas';
  currentData=[
-  {company_id:3,country_type:'overseas',x_url:'https://x.com/founder'},
-  {company_id:4,country_type:'overseas',email:'global@example.com'},
-  {company_id:5,country_type:'overseas'}
+  {company_id:3,country_type:'overseas',x_url:'https://x.com/founder',email:'both@example.com',source_channel:'X（用户提供）'},
+  {company_id:4,country_type:'overseas',email:'global@example.com',source_channel:'飞书邮件表'},
+  {company_id:5,country_type:'overseas',source_channel:'飞书邮件表'}
  ];activeLeadChannel='email';`,ctx);
 const countResult=vm.runInContext('emailContactCounts()',ctx);
 if(countResult.domestic!==1 || countResult.overseas!==2)
@@ -478,8 +481,9 @@ if(elements['domestic-email-count'].textContent!==1 ||
         self.assertIn('id="lead-pool-title">海外客户线索池 · 全部渠道</h3>', html)
         self.assertNotIn('id="pending_verification-x-count"', html)
         self.assertNotIn("pending_verification:'待核验'", html)
-        self.assertIn("if (channel === 'email') return !hasXHomepage;", html)
-        self.assertIn("if (channel === 'x') return hasXHomepage;", html)
+        self.assertIn("if (channel === 'email') return Boolean(String(row.email || '').trim());", html)
+        self.assertIn("if (channel === 'x') return isXChannelLead(row);", html)
+        self.assertIn("function isXChannelLead(row)", html)
         self.assertLess(html.index('id="overseas-nav"'), html.index('id="domestic-nav"'))
         self.assertIn('>推送话术</th>', html)
         self.assertIn('class="company-note-summary"', html)

@@ -1406,7 +1406,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <span>🌐</span> <span>海外客户线索池</span>
                 </li>
                 <li class="nav-sublist" id="overseas-pool-nav">
-                    <button class="nav-subitem" data-market="overseas" data-channel="email" onclick="switchPipelineChannel('overseas', 'email', this)">
+                    <button class="nav-subitem" data-market="overseas" data-channel="email" onclick="switchEmailPoolMarket('overseas', this)">
                         <span>✉️ 邮件组线索</span><span class="nav-subcount" id="overseas-email-count">0</span>
                     </button>
                     <button class="nav-subitem" data-market="overseas" data-channel="x" onclick="switchPipelineChannel('overseas', 'x', this)">
@@ -2243,10 +2243,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             x: {label:'X 线索', icon:'𝕏', hint:'有公开 X / Twitter 主页或 X 核验来源'},
             discord: {label:'Discord 线索', icon:'💬', hint:'进入海外 Discord 社群观察看板'}
         };
+        function isXChannelLead(row) {
+            const source = [row.source_channel, row.lead_source, row.feishu_social_channel]
+                .map(value => String(value || '').toLowerCase()).join(' ');
+            return /\\bx\\b|twitter/.test(source);
+        }
         function leadMatchesChannel(row, channel) {
-            const hasXHomepage = Boolean(String(row.x_url || '').trim());
-            if (channel === 'email') return !hasXHomepage;
-            if (channel === 'x') return hasXHomepage;
+            if (channel === 'email') return Boolean(String(row.email || '').trim());
+            if (channel === 'x') return isXChannelLead(row);
             const source = String(row.lead_source || '').toLowerCase();
             if (channel === 'discord') return source.includes('discord') || String(row.discovery_url || '').toLowerCase().includes('discord');
             return true;
@@ -2268,7 +2272,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 Object.keys(LEAD_CHANNEL_META).forEach(channel => {
                     const count = document.getElementById(`${market}-${channel}-count`);
                     if (count && channel !== 'discord') {
-                        count.textContent = channel === 'email' && market === 'domestic'
+                        count.textContent = channel === 'email'
                             ? emailCounts[market] : counts[channel];
                     }
                 });
@@ -2287,7 +2291,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 onclick="openLeadChannel('${activeCountry}', '${item.channel}', this)">
                 <span class="lead-pool-card-icon">${item.icon}</span>
                 <span class="lead-pool-card-copy"><strong>${item.label}</strong><small>${item.hint}</small></span>
-                <span class="lead-pool-card-count">${item.channel === 'all' ? new Set(rows.map(row => row.company_id)).size : item.channel === 'email' && activeCountry === 'domestic' ? currentEmailProspects.filter(row => row.country_type === activeCountry).length : item.channel === 'discord' ? discordCommunityTotal : counts[item.channel]}</span>
+                <span class="lead-pool-card-count">${item.channel === 'all' ? new Set(rows.map(row => row.company_id)).size : item.channel === 'email' ? currentEmailProspects.filter(row => row.country_type === activeCountry).length : item.channel === 'discord' ? discordCommunityTotal : counts[item.channel]}</span>
             </button>`).join('');
         }
         function highlightMarketChannel(country, channel) {
@@ -2358,7 +2362,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             fetchStats();
         }
         function openLeadChannel(country, channel, elem) {
-            if (channel === 'email' && country === 'domestic') return switchEmailPoolMarket(country, elem);
+            if (channel === 'email') return switchEmailPoolMarket(country, elem);
             if (channel === 'discord' && country === 'overseas') return switchOverseasDiscord(elem);
             switchPipelineChannel(country, channel, elem);
         }
