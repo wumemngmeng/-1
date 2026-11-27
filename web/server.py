@@ -2972,7 +2972,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 input.value=settings[field.replaceAll('-','_')]??'';
                 input.disabled=currentUser?.role!=='admin';
             }
-            document.getElementById('mail-provider').value=settings.provider||'resend';
+            document.getElementById('mail-provider').value=settings.provider||(selected==='new'?'smtp':'resend');
             document.getElementById('mail-smtp-password').value='';
             document.getElementById('mail-save-settings').hidden=currentUser?.role!=='admin';
             document.getElementById('mail-api-key').disabled=currentUser?.role!=='admin'||!settings.encryption_ready;

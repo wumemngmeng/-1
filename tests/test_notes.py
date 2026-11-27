@@ -170,6 +170,7 @@ vm.runInContext(`
   check(!document.getElementById('email-sender-editor').hidden,'new sender editor hidden');
   check(document.getElementById('mail-sender-editor-title').textContent==='新增发件邮箱','new sender heading missing');
   check(document.getElementById('mail-from-email').value==='','new sender inherited an address');
+  check(document.getElementById('mail-provider').value==='smtp','new sender should default to SMTP');
   openMailSenderEditor(2);
   check(document.getElementById('mail-from-email').value==='hello@example.org','existing sender not loaded');
   showMailSenderList();
