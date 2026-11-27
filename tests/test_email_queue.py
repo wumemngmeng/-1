@@ -196,6 +196,34 @@ class EmailQueueTests(unittest.TestCase):
         self.assertEqual(rows[x_company]["status"], "lost")
         self.assertEqual(rows[untouched_company]["ever_touched"], 0)
         self.assertEqual(rows[untouched_company]["lead_id"], untouched_lead)
+        recipients = {row["company_id"]: row for row in self.queue.recipients()}
+        self.assertEqual(recipients[self.company]["ever_touched"], 1)
+        self.assertEqual(recipients[self.company]["crm_status"], "pending")
+        self.assertEqual(recipients[self.company]["status"], "sent")
+        self.assertEqual(recipients[untouched_company]["ever_touched"], 0)
+
+    def test_recipients_include_crm_summary_stage_and_owner_scope(self):
+        conn = get_connection(self.db.db_path)
+        conn.execute(
+            """INSERT INTO outreach_records(lead_id,channel,status)
+               VALUES (?,'cold_email','contacted')""",
+            (self.lead,),
+        )
+        conn.commit()
+        conn.close()
+        recipient = self.queue.recipients("Rep")[0]
+        self.assertEqual(recipient["crm_status"], "contacted")
+        self.assertEqual(recipient["ever_touched"], 1)
+        self.assertEqual(recipient["status"], "pending")
+        self.assertEqual(self.queue.recipients("Other"), [])
+        second = self.db.insert_lead({
+            "company_id": self.company, "email": "second-summary@example.com",
+        })
+        rows = {row["lead_id"]: row for row in self.queue.recipients("Rep")}
+        crm = self.db.query_pipeline(owner="Rep")[0]
+        self.assertEqual(rows[second]["crm_status"], crm["status"])
+        self.assertEqual(rows[self.lead]["crm_status"], crm["status"])
+        self.assertEqual(rows[second]["ever_touched"], 1)
 
     def test_batch_grouping_preserves_scope_and_uncertain_recipient_status(self):
         other_company = self.db.insert_company({"name": "Other Owner", "country_type": "domestic"})
