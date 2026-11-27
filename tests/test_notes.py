@@ -79,6 +79,13 @@ class NotesTests(unittest.TestCase):
         self.assertIn('id="mail-sender-list-panel"', html)
         self.assertIn('id="mail-sender-list"', html)
         self.assertIn('id="email-sender-editor"', html)
+        self.assertIn('id="mail-summary-total"', html)
+        self.assertIn('class="mail-automation-panel"', html)
+        self.assertIn('仅验证 SMTP 登录', html)
+        self.assertIn('/api/email-senders/test', html)
+        self.assertIn('参数齐全 · 未验证', html)
+        self.assertIn('登录密码或单独设置的客户端授权码', html)
+        self.assertNotIn('通常需要使用 SMTP 专用密码或授权码，不要填写网页登录密码', html)
         self.assertIn("openMailSenderEditor('new')", html)
         self.assertIn("+ 新增邮箱", html)
         self.assertIn("返回邮箱列表", html)
@@ -164,7 +171,11 @@ vm.runInContext(`
   renderMailSenderList();
   const list=document.getElementById('mail-sender-list').innerHTML;
   check(list.includes('sales@example.com')&&list.includes('hello@example.org'),'sender list missing accounts');
-  check(list.includes('已配置')&&list.includes('待配置'),'sender list missing status');
+  check(list.includes('参数齐全 · 未验证')&&list.includes('待补充参数'),'sender list status should distinguish completeness from verification');
+  check(list.includes('仅验证 SMTP 登录'),'sender login test action missing');
+  check(document.getElementById('mail-summary-total').textContent===2,'sender count missing');
+  check(document.getElementById('mail-summary-ready').textContent===1,'configured count missing');
+  check(document.getElementById('mail-summary-pending').textContent===1,'incomplete count missing');
   openMailSenderEditor('new');
   check(document.getElementById('mail-sender-list-panel').hidden,'sender list still visible');
   check(!document.getElementById('email-sender-editor').hidden,'new sender editor hidden');
