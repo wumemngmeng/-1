@@ -76,6 +76,12 @@ class NotesTests(unittest.TestCase):
         self.assertIn('id="email-market-filter"', html)
         self.assertIn('id="email-batch-sender"', html)
         self.assertIn('id="mail-edit-sender"', html)
+        self.assertIn('id="mail-sender-list-panel"', html)
+        self.assertIn('id="mail-sender-list"', html)
+        self.assertIn('id="email-sender-editor"', html)
+        self.assertIn("openMailSenderEditor('new')", html)
+        self.assertIn("+ 新增邮箱", html)
+        self.assertIn("返回邮箱列表", html)
         self.assertIn('id="email-package-title"', html)
         self.assertIn('id="email-package-create"', html)
         self.assertIn("/api/email-packages", html)
@@ -128,6 +134,54 @@ class NotesTests(unittest.TestCase):
         self.assertIn('class="email-recipient-filters"', html)
         self.assertIn('id="x-outreach-account-heading"', html)
         self.assertIn("isXClosedDmLead", html)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js required")
+    def test_sender_configuration_uses_list_and_separate_editor(self):
+        script = html_template().split("<script>", 1)[1].split("</script>", 1)[0]
+        script = script.split("// 初始化加载", 1)[0]
+        harness = r"""
+const vm=require('node:vm');
+const elements={};
+const document={
+  addEventListener(){},querySelectorAll(){return [];},
+  getElementById(id){return elements[id]||={
+    value:'',innerHTML:'',textContent:'',hidden:false,disabled:false,
+    className:'',classList:{add(){},remove(){},toggle(){},contains(){return false;}}
+  };}
+};
+const context=vm.createContext({document,Intl,Date,console});
+vm.runInContext(SCRIPT,context);
+vm.runInContext(`
+  const check=(condition,message)=>{if(!condition)throw Error(message);};
+  currentUser={role:'admin'};
+  mailSenders=[
+    {id:1,from_email:'sales@example.com',from_name:'Sales',provider:'smtp',
+      sending_domain:'example.com',batch_limit:50,configured:true,encryption_ready:true},
+    {id:2,from_email:'hello@example.org',from_name:'Hello',provider:'smtp',
+      sending_domain:'example.org',batch_limit:20,configured:false,encryption_ready:true}
+  ];
+  document.getElementById('mail-edit-sender').value='1';
+  renderMailSenderList();
+  const list=document.getElementById('mail-sender-list').innerHTML;
+  check(list.includes('sales@example.com')&&list.includes('hello@example.org'),'sender list missing accounts');
+  check(list.includes('已配置')&&list.includes('待配置'),'sender list missing status');
+  openMailSenderEditor('new');
+  check(document.getElementById('mail-sender-list-panel').hidden,'sender list still visible');
+  check(!document.getElementById('email-sender-editor').hidden,'new sender editor hidden');
+  check(document.getElementById('mail-sender-editor-title').textContent==='新增发件邮箱','new sender heading missing');
+  check(document.getElementById('mail-from-email').value==='','new sender inherited an address');
+  openMailSenderEditor(2);
+  check(document.getElementById('mail-from-email').value==='hello@example.org','existing sender not loaded');
+  showMailSenderList();
+  check(!document.getElementById('mail-sender-list-panel').hidden,'sender list not restored');
+  check(document.getElementById('email-sender-editor').hidden,'editor not closed');
+`,context);
+"""
+        result = subprocess.run(
+            ["node", "-e", harness.replace("SCRIPT", json.dumps(script))],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js required")
     def test_single_button_feishu_sync_flow(self):
