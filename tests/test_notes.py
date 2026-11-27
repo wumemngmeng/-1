@@ -67,6 +67,8 @@ class NotesTests(unittest.TestCase):
         self.assertNotIn('id="feishu-mail-import-preview"', html)
         self.assertNotIn('id="feishu-mail-import-apply"', html)
         self.assertIn('id="email-status-filter"', html)
+        self.assertIn('id="email-touch-funnel"', html)
+        self.assertIn("status:row.crm_status||'pending'", html)
         self.assertIn(
             'id="email-status-filter" onchange="renderEmailRecipients()"><option value="">全部</option>',
             html,
@@ -82,9 +84,21 @@ class NotesTests(unittest.TestCase):
         self.assertIn('id="package-date-to"', html)
         self.assertIn("全选当前筛选", html)
         self.assertIn("发送当前批次", html)
+        self.assertIn('id="mail-package-composer"', html)
+        self.assertIn('id="mail-package-candidate-body"', html)
+        self.assertIn('id="mail-package-mode"', html)
+        self.assertIn('id="mail-package-random-count"', html)
+        self.assertIn('id="email-batch-content"', html)
+        self.assertIn('id="email-package-list-panel"', html)
+        self.assertIn('id="email-package-content-panel"', html)
+        self.assertIn("createEmailPackage('send')", html)
+        self.assertIn("创建推送包（不发送）", html)
+        self.assertIn("已发送：${sentCount}", html)
+        self.assertIn("${pendingLabel}：${pendingCount}", html)
+        self.assertIn("服务商消息 ID", html)
         self.assertIn('id="email-batch-list"', html)
         self.assertIn('id="email-batch-recipient-body"', html)
-        self.assertIn("点击批次可查看该次发送涉及的企业与邮箱", html)
+        self.assertIn("列表、创建与包详情独立展示", html)
         self.assertIn('id="email-replies"', html)
         self.assertIn("/api/email-replies", html)
         self.assertIn("客户邮件回复监控", html)
@@ -314,11 +328,11 @@ vm.runInContext(`
   mailSenders=[{id:1,from_email:'sales@example.com',configured:true}];
   mailPackages=[{id:7,title:'Draft',status:'draft',sender_id:1,subject:'Hi {{company}}',
     body:'Hello {{name}} at {{email}}',recipient_count:1,
-    recipients:[{email:'draft@example.com',company_name:'Draft Co',country_type:'domestic'}]}];
-  mailDeliveryBatches=[{batch_id:'delivery-1',title:'Sent batch',status:'sent',recipient_count:1,
+    recipients:[{email:'draft@example.com',company_name:'Draft Co',country_type:'domestic'}]},
+    {id:8,batch_id:'delivery-1',title:'Sent batch',status:'sent',recipient_count:1,
     sender:'sales@example.com',recipients:[{email:'sent@example.com',
     company_name:'Sent Co',country_type:'overseas',status:'sent'}]}];
-  openEmailBatch('delivery-1');
+  openEmailBatch(8);
   check(document.getElementById('email-batch-editor').hidden,'sent batch editor exposed');
   const details=document.getElementById('email-batch-recipient-body').innerHTML;
   check(details.includes('Sent Co')&&details.includes('sent@example.com'),'batch detail lacks company/email');
@@ -350,6 +364,71 @@ vm.runInContext(`
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    @unittest.skipUnless(shutil.which("node"), "Node.js required")
+    def test_mail_package_manual_and_random_recipient_selection(self):
+        script = html_template().split("<script>", 1)[1].split("</script>", 1)[0]
+        script = script.split("// 初始化加载", 1)[0]
+        harness = r"""
+const vm=require('node:vm');
+const elements={};
+const document={
+  addEventListener(){},querySelectorAll(){return [];},
+  getElementById(id){return elements[id]||={
+    value:'',innerHTML:'',textContent:'',hidden:false,disabled:false,
+    classList:{add(){},remove(){},toggle(){},contains(){return false;}}
+  };}
+};
+const context=vm.createContext({document,Intl,Date,Math,console});
+vm.runInContext(SCRIPT,context);
+vm.runInContext(`
+  const check=(condition,message)=>{if(!condition)throw Error(message);};
+  currentEmailProspects=[
+    {lead_id:1,status:'pending',country_type:'domestic',email:'one@example.com',company_name:'One'},
+    {lead_id:2,status:'pending',country_type:'domestic',email:'two@example.com',company_name:'Two'},
+    {lead_id:3,status:'pending',country_type:'domestic',email:'three@example.com',company_name:'Three'},
+    {lead_id:4,status:'pending',country_type:'overseas',email:'four@example.com',company_name:'Four'},
+    {lead_id:5,status:'sent',country_type:'domestic',email:'sent@example.com',company_name:'Sent'}
+  ];
+  document.getElementById('mail-package-mode').value='manual';
+  document.getElementById('mail-package-market').value='domestic';
+  document.getElementById('mail-package-search').value='';
+  document.getElementById('mail-package-random-count').value='2';
+  renderMailPackageCandidates();
+  check(document.getElementById('mail-package-candidate-body').innerHTML.includes('one@example.com'),'manual domestic list missing');
+  check(!document.getElementById('mail-package-candidate-body').innerHTML.includes('four@example.com'),'manual market leaked');
+  toggleMailPackageCandidate(1,true);
+  check(sendPageSelectedIds.has(1),'manual selection missing');
+  document.getElementById('mail-package-mode').value='random';
+  resetMailPackageSelection();
+  check(sendPageSelectedIds.size===2,'random count incorrect');
+  check([...sendPageSelectedIds].every(id=>[1,2,3].includes(id)),'random market leaked');
+  const stable=[...sendPageSelectedIds].join(',');
+  renderMailPackageCandidates();
+  check([...sendPageSelectedIds].join(',')===stable,'render unexpectedly resampled the package');
+  document.getElementById('mail-package-random-count').value='4';
+  generateRandomMailPackageCandidates();
+  check(sendPageSelectedIds.size===0,'oversized random selection should be blocked');
+  check(document.getElementById('mail-package-result').textContent.includes('仅有 3 位'),'missing random pool warning');
+  document.getElementById('mail-package-market').value='overseas';
+  document.getElementById('mail-package-random-count').value='1';
+  resetMailPackageSelection();
+  check(sendPageSelectedIds.size===1&&sendPageSelectedIds.has(4),'overseas random choice incorrect');
+  mailPackages=[{id:11,title:'Created package',status:'draft',recipient_count:1,created_at:'2026-11-26',
+    recipients:[{country_type:'overseas'}]}];
+  renderEmailBatches();
+  check(document.getElementById('email-batch-list').innerHTML.includes('Created package'),'package list missing');
+  check(!document.getElementById('email-batch-list').innerHTML.includes('<input'),'configuration leaked into package list');
+  showEmailPackageList();
+  check(!document.getElementById('email-package-list-panel').hidden,'package list not restored');
+  check(document.getElementById('email-package-content-panel').hidden,'detail not separated from list');
+`,context);
+"""
+        result = subprocess.run(
+            ["node", "-e", harness.replace("SCRIPT", json.dumps(script))],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_discord_community_dashboard_ui(self):
         html = html_template()
         self.assertIn("Discord 线索", html)
@@ -362,6 +441,70 @@ vm.runInContext(`
         self.assertIn('id="discord-community-grid"', html)
         self.assertIn("fetchDiscordCommunities()", html)
         self.assertIn("/api/discord-communities", html)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js required")
+    def test_email_summary_reuses_crm_metrics_and_tracks_recipient_filters(self):
+        script = html_template().split("<script>", 1)[1].split("</script>", 1)[0]
+        script = script.split("// 初始化加载", 1)[0]
+        harness = r"""
+const assert=require('node:assert/strict');
+const vm=require('node:vm');
+const elements={};
+const document={
+  addEventListener(){},
+  getElementById(id){return elements[id]||={value:'',innerHTML:'',textContent:''};}
+};
+const context=vm.createContext({document,Intl,Date});
+vm.runInContext(SCRIPT,context);
+vm.runInContext(`
+  activeCountry='overseas';activeEmailMarket='overseas';
+  const row=(company_id,crm_status,status='pending',extra={})=>({
+    company_id,lead_id:company_id,country_type:'overseas',crm_status,status,
+    company_name:'Company '+company_id,email:'lead'+company_id+'@example.com',
+    lead_created_at:'2026-11-26',...extra
+  });
+  currentEmailProspects=[
+    row(1,'pending','sent',{ever_touched:1}),
+    row(2,'contacted'),row(3,'team_trial'),row(4,'won'),
+    row(5,'lost','unsubscribed',{ever_touched:1}),
+    row(6,'pending','sending'),
+    row(7,'pending','pending',{feishu_social_status:'无法触达(私信关闭)'}),
+    row(4,'won','pending',{lead_id:40}),
+    row(8,'won','sent',{country_type:'domestic'})
+  ];
+  globalThis.counts=()=>[...document.getElementById('email-touch-funnel').innerHTML
+    .matchAll(/<strong>(\\d+)<\\/strong>/g)].map(match=>Number(match[1]));
+  renderEmailRecipients();
+  globalThis.initial=counts();
+  document.getElementById('email-search').value='lead4@';
+  renderEmailRecipients();
+  globalThis.searched=counts();
+  document.getElementById('email-search').value='';
+  document.getElementById('email-status-filter').value='sending';
+  renderEmailRecipients();
+  globalThis.uncertain=counts();
+  document.getElementById('email-status-filter').value='';
+  document.getElementById('package-date-from').value='2026-11-27';
+  renderPackageCandidates();
+  globalThis.empty=counts();
+  document.getElementById('package-date-from').value='';
+  activeCountry='domestic';activeEmailMarket='domestic';
+  renderEmailRecipients();
+  globalThis.domestic=counts();
+`,context);
+assert.deepEqual(Array.from(context.initial),[7,5,5,3,2,1]);
+assert.deepEqual(Array.from(context.searched),[1,1,1,1,1,1]);
+assert.deepEqual(Array.from(context.uncertain),[1,1,0,0,0,0]);
+assert.deepEqual(Array.from(context.empty),[0,0,0,0,0,0]);
+assert.deepEqual(Array.from(context.domestic),[1,1,1,1,1,1]);
+assert(elements['email-touch-funnel'].innerHTML.includes('国内客户汇总'));
+assert(elements['email-prospect-body'].innerHTML.includes('lead8@example.com'));
+"""
+        result = subprocess.run(
+            ["node", "-e", harness.replace("SCRIPT", json.dumps(script))],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js required")
     def test_market_channel_navigation_and_email_candidates(self):
