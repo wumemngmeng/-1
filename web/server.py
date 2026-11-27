@@ -1341,6 +1341,51 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             width:100%; background:#111827; color:var(--text-main); border:1px solid var(--border);
             border-radius:6px; padding:9px;
         }
+        .mail-settings-shell { display:grid; gap:16px; }
+        .mail-settings-hero {
+            padding:20px; border:1px solid #334155; border-radius:12px;
+            background:linear-gradient(135deg,rgba(30,64,175,.20),rgba(15,23,42,.96) 55%);
+        }
+        .mail-settings-hero h3 { margin:0 0 6px; font-size:17px; }
+        .mail-settings-hero p { margin:0; max-width:760px; color:#cbd5e1; font-size:13px; line-height:1.65; }
+        .mail-settings-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-top:16px; }
+        .mail-settings-stat { padding:12px 14px; border:1px solid #334155; border-radius:9px; background:rgba(15,23,42,.72); }
+        .mail-settings-stat strong { display:block; margin-bottom:3px; color:#f8fafc; font-size:19px; }
+        .mail-settings-stat span { color:var(--text-muted); font-size:11px; }
+        .mail-section-head { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; margin-bottom:14px; }
+        .mail-section-head h3 { margin:0 0 4px; }
+        .mail-section-head p { margin:0; color:var(--text-muted); font-size:12px; line-height:1.55; }
+        .mail-sender-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin-top:14px; }
+        .mail-sender-card { padding:15px; border:1px solid var(--border); border-radius:10px; background:#0f172a; }
+        .mail-sender-card-head { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
+        .mail-sender-card-head strong { overflow-wrap:anywhere; }
+        .mail-sender-meta { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin-top:12px; }
+        .mail-sender-meta div { padding:8px 9px; border-radius:7px; background:#111827; }
+        .mail-sender-meta span { display:block; margin-bottom:2px; color:var(--text-muted); font-size:10px; }
+        .mail-sender-meta b { color:#e2e8f0; font-size:12px; font-weight:600; overflow-wrap:anywhere; }
+        .mail-sender-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; align-items:center; }
+        .mail-test-result { flex-basis:100%; min-height:17px; color:var(--text-muted); font-size:11px; }
+        .mail-guidance { margin:0 0 14px; padding:11px 13px; border-left:3px solid #60a5fa; border-radius:0 8px 8px 0; background:rgba(30,64,175,.14); color:#cbd5e1; font-size:12px; line-height:1.6; }
+        .mail-editor-top { display:flex; justify-content:space-between; gap:16px; align-items:center; margin-bottom:14px; }
+        .mail-editor-selector { max-width:520px; margin-bottom:14px; }
+        .mail-editor-section { margin-top:12px; padding:15px; border:1px solid #334155; border-radius:10px; background:rgba(15,23,42,.58); }
+        .mail-editor-section h4 { margin:0 0 4px; color:#f8fafc; font-size:14px; }
+        .mail-editor-section > p { margin:0 0 12px; color:var(--text-muted); font-size:11px; line-height:1.55; }
+        .mail-form-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+        .mail-field { min-width:0; }
+        .mail-field-full { grid-column:1 / -1; }
+        .mail-field label { margin:0 0 5px; }
+        .mail-field input, .mail-field select, .mail-editor-selector select, .mail-automation-grid input, .mail-automation-grid select, .mail-automation-grid textarea {
+            width:100%; min-height:40px; padding:9px; border:1px solid var(--border); border-radius:7px;
+            background:#111827; color:var(--text-main);
+        }
+        .mail-field-help { margin:5px 0 0; color:var(--text-muted); font-size:10px; line-height:1.5; }
+        .mail-automation-panel { border:1px solid var(--border); border-radius:10px; background:var(--card-bg); }
+        .mail-automation-panel > summary { cursor:pointer; padding:16px; font-weight:700; }
+        .mail-automation-content { padding:0 16px 16px; border-top:1px solid var(--border); }
+        .mail-automation-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+        .mail-automation-grid label { display:block; margin:12px 0 5px; color:var(--text-muted); font-size:12px; }
+        .mail-automation-grid .mail-field-full textarea { min-height:150px; }
         .email-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; align-items:center; }
         .email-status { color:var(--text-muted); font-size:12px; }
         .email-preview { white-space:pre-wrap; background:#0f172a; border:1px solid #334155; border-radius:7px; padding:10px; margin-top:8px; font-size:12px; }
@@ -1394,8 +1439,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         @media (max-width: 900px) {
             .community-stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
             .email-layout { grid-template-columns:1fr; }
+            .mail-sender-grid, .mail-form-grid, .mail-automation-grid { grid-template-columns:1fr; }
+            .mail-field-full { grid-column:auto; }
         }
         @media (max-width: 600px) {
+            .mail-settings-summary { grid-template-columns:1fr; }
+            .mail-section-head, .mail-editor-top { align-items:stretch; flex-direction:column; }
             .email-config-savebar { align-items:stretch; flex-direction:column; }
             .email-config-savebar button { width:100%; }
         }
@@ -1698,70 +1747,77 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <header>
                 <div>
                     <h2 class="page-title">邮件发送配置</h2>
-                    <div class="email-status">这里管理自有 SMTP 发信、备用 Resend 配置和每日自动发送规则，不展示或修改客户线索。</div>
+                    <div class="email-status">集中管理发件账号、登录验证与自动发送规则。保存配置和验证登录均不会发送邮件。</div>
                 </div>
             </header>
+            <div class="mail-settings-shell">
+            <section class="mail-settings-hero">
+                <h3>发件系统概览</h3>
+                <p>先在账号总览中确认参数完整度，再进入单个账号编辑连接参数。只有“登录验证通过”才能证明 SMTP 当前可用；参数齐全本身不代表能够登录或投递。</p>
+                <div class="mail-settings-summary" aria-label="发件账号配置概览">
+                    <div class="mail-settings-stat"><strong id="mail-summary-total">0</strong><span>发件账号</span></div>
+                    <div class="mail-settings-stat"><strong id="mail-summary-ready">0</strong><span>参数齐全</span></div>
+                    <div class="mail-settings-stat"><strong id="mail-summary-pending">0</strong><span>待补充参数</span></div>
+                </div>
+            </section>
             <section class="email-panel">
-                <h3>自有 SMTP 发件服务</h3>
-                <p>选择 SMTP 后，邮件从你自己的企业邮箱服务器发出。腾讯、阿里、网易等企业邮箱通常需要使用 SMTP 专用密码或授权码，不要填写网页登录密码。</p>
-                <p>页面保存的 SMTP 密码会加密保存。服务器必须设置 <code>MAIL_CONFIG_KEY</code>；没有它只能预览，不能保存密码或发送。</p>
                 <div id="mail-sender-list-panel">
-                    <div class="email-actions" style="justify-content:space-between">
-                        <h3 style="margin:0">发件邮箱列表</h3>
+                    <div class="mail-section-head">
+                        <div><h3>1. 发件账号</h3><p>查看每个账号的服务类型、连接账号和单批上限。登录验证为只登录测试，不会向任何收件人发送邮件。</p></div>
                         <button id="mail-add-sender" class="btn-save" onclick="openMailSenderEditor('new')">+ 新增邮箱</button>
                     </div>
-                    <p class="email-status">每个邮箱可单独配置 SMTP、发件人、回复地址和单批上限；新增或保存配置均不会发送邮件。</p>
-                    <div id="mail-sender-list" class="mail-batch-list" role="list"></div>
+                    <div id="mail-sender-list" class="mail-sender-grid" role="list"></div>
                 </div>
                 <div id="email-sender-editor" hidden>
-                    <div class="email-actions" style="justify-content:space-between">
-                        <h3 id="mail-sender-editor-title" style="margin:0">编辑发件邮箱</h3>
+                    <div class="mail-editor-top">
+                        <div><h3 id="mail-sender-editor-title" style="margin:0 0 4px">编辑发件邮箱</h3><span class="email-status">保存只更新当前账号配置，不会发送邮件。</span></div>
                         <button type="button" onclick="showMailSenderList()">返回邮箱列表</button>
                     </div>
-                    <label for="mail-edit-sender">选择要编辑的邮箱</label><select id="mail-edit-sender" onchange="loadMailSender()"></select>
+                    <div class="mail-editor-selector"><label for="mail-edit-sender">正在编辑</label><select id="mail-edit-sender" onchange="loadMailSender()"></select></div>
+                    <p class="mail-guidance">凭据字段支持企业邮箱的登录密码或单独设置的客户端授权码，具体取决于服务商策略。留空会保留已保存凭据；页面不会回显原值。</p>
                     <div id="email-config-fields">
-                    <label for="mail-provider">邮件服务</label><select id="mail-provider" onchange="toggleMailProvider()"><option value="smtp">自有 SMTP</option><option value="resend">Resend（备用）</option></select>
-                    <label for="mail-smtp-host">SMTP 服务器</label><input id="mail-smtp-host" placeholder="smtp.example.com">
-                    <label for="mail-smtp-port">SMTP 端口</label><input id="mail-smtp-port" type="number" min="1" max="65535" value="465">
-                    <label for="mail-smtp-security">SMTP 加密</label><select id="mail-smtp-security"><option value="ssl">SSL/TLS（465）</option><option value="starttls">STARTTLS（587）</option><option value="none">不加密（不推荐）</option></select>
-                    <label for="mail-smtp-username">SMTP 账号</label><input id="mail-smtp-username" type="email" placeholder="sales@example.com">
-                    <label for="mail-smtp-password">SMTP 密码 / 授权码（留空保留原密码）</label><input id="mail-smtp-password" type="password" autocomplete="new-password">
-                    <label for="mail-sending-domain">发件域名</label><input id="mail-sending-domain" type="text" placeholder="mail.your-domain.com" autocomplete="off">
-                    <p>填写发件邮箱域名。SMTP 服务器、发件邮箱和账号应属于同一个企业邮箱服务。</p>
-                    <label>发件邮箱（已验证域名）</label><input id="mail-from-email" type="email" placeholder="sales@your-domain.com">
-                    <label>发件人名称</label><input id="mail-from-name" maxlength="100">
-                    <label>回复邮箱 Reply-To（可选）</label><input id="mail-reply-to" type="email">
-                    <label>单批发送上限（1–50）</label><input id="mail-batch-limit" type="number" min="1" max="50" value="20">
-                    <label>Resend API Key（仅备用 Resend 模式使用）</label><input id="mail-api-key" type="password" autocomplete="new-password">
-                </div>
+                        <div class="mail-editor-section"><h4>连接方式</h4><p>选择邮件服务，并填写建立连接所需的服务器参数。</p><div class="mail-form-grid">
+                            <div class="mail-field"><label for="mail-provider">邮件服务</label><select id="mail-provider" onchange="toggleMailProvider()"><option value="smtp">自有 SMTP</option><option value="resend">Resend（备用）</option></select></div>
+                            <div class="mail-field"><label for="mail-sending-domain">发件域名</label><input id="mail-sending-domain" type="text" placeholder="your-domain.com" autocomplete="off"><p class="mail-field-help">通常填写发件邮箱 @ 后面的企业域名。</p></div>
+                            <div class="mail-field"><label for="mail-smtp-host">SMTP 服务器</label><input id="mail-smtp-host" placeholder="smtp.example.com"></div>
+                            <div class="mail-field"><label for="mail-smtp-port">SMTP 端口</label><input id="mail-smtp-port" type="number" min="1" max="65535" value="465"></div>
+                            <div class="mail-field"><label for="mail-smtp-security">SMTP 加密</label><select id="mail-smtp-security"><option value="ssl">SSL/TLS（常用端口 465）</option><option value="starttls">STARTTLS（常用端口 587）</option><option value="none">不加密（不推荐）</option></select></div>
+                        </div></div>
+                        <div class="mail-editor-section"><h4>登录凭据</h4><p>凭据会加密保存。需要服务器已设置 <code>MAIL_CONFIG_KEY</code>。</p><div class="mail-form-grid">
+                            <div class="mail-field"><label for="mail-smtp-username">SMTP 登录账号</label><input id="mail-smtp-username" type="email" placeholder="sales@example.com"></div>
+                            <div class="mail-field"><label for="mail-smtp-password">登录密码 / 客户端授权码</label><input id="mail-smtp-password" type="password" autocomplete="new-password"><p class="mail-field-help">留空保留原凭据；不会在页面中回显。</p></div>
+                            <div class="mail-field mail-field-full"><label for="mail-api-key">Resend API Key（仅 Resend 模式）</label><input id="mail-api-key" type="password" autocomplete="new-password"></div>
+                        </div></div>
+                        <div class="mail-editor-section"><h4>发件身份与限制</h4><p>这些信息会显示在收件人的邮件客户端中，并控制单次批量发送数量。</p><div class="mail-form-grid">
+                            <div class="mail-field"><label for="mail-from-email">发件邮箱</label><input id="mail-from-email" type="email" placeholder="sales@your-domain.com"></div>
+                            <div class="mail-field"><label for="mail-from-name">发件人名称</label><input id="mail-from-name" maxlength="100"></div>
+                            <div class="mail-field"><label for="mail-reply-to">回复邮箱 Reply-To（可选）</label><input id="mail-reply-to" type="email"></div>
+                            <div class="mail-field"><label for="mail-batch-limit">单批发送上限（1–50）</label><input id="mail-batch-limit" type="number" min="1" max="50" value="20"></div>
+                        </div></div>
+                    </div>
                 <div class="email-config-savebar" role="group" aria-label="保存邮件发件配置">
                     <span class="email-status">参数填写完成后点击保存。保存只更新配置，不会发送邮件。</span>
                     <button id="mail-save-settings" onclick="saveMailSettings()">保存发件配置</button>
                 </div>
                 <div id="email-config-result" class="email-status"></div>
                 </div>
-                <details><summary>第一次配置 SMTP？按这几步完成</summary>
-                    <ol>
-                        <li>从企业邮箱后台获取 SMTP 主机、端口、SSL/STARTTLS 和授权码。</li>
-                        <li>填写 SMTP 账号、发件邮箱和 Reply-To；保存不会发送邮件。</li>
-                        <li>先用 1 个测试收件人预览，确认无误后再批量发送。</li>
-                    </ol>
-                    <p>不要把 SMTP 密码或授权码发到聊天中。自动发送只会在你打开开关后运行。</p>
-                </details>
-                <p>参数齐全不代表 SMTP 已连通；发送成功表示服务器接受，不代表送达或已读。</p>
             </section>
-            <section class="email-panel" style="margin-top:16px">
-                <h3>每日自动发送</h3>
-                <p>自动任务按北京时间运行，每天只取未发送、未退订、未移除的联系人；每日上限 1–50。</p>
-                <label><input id="mail-auto-enabled" type="checkbox"> 开启每日自动发送</label>
-                <label>使用发件邮箱<select id="mail-auto-sender"></select></label>
-                <label>每日上限<input id="mail-auto-limit" type="number" min="1" max="50" value="20"></label>
-                <label>发送时间（小时）<input id="mail-auto-hour" type="number" min="0" max="23" value="9"></label>
-                <label>标题模板<input id="mail-auto-subject"></label>
-                <label>正文模板<textarea id="mail-auto-body" rows="8"></textarea></label>
+            <details class="mail-automation-panel">
+                <summary>2. 高级设置：每日自动发送</summary>
+                <div class="mail-automation-content"><p class="mail-guidance" style="margin-top:16px">自动任务按北京时间运行，只处理未发送、未退订、未移除的联系人。打开开关并保存后才会运行；保存规则本身不会立即发送。</p>
+                <div class="mail-automation-grid">
+                    <div class="mail-field mail-field-full"><label><input id="mail-auto-enabled" type="checkbox" style="width:auto;min-height:0"> 开启每日自动发送</label></div>
+                    <div class="mail-field"><label for="mail-auto-sender">使用发件邮箱</label><select id="mail-auto-sender"></select></div>
+                    <div class="mail-field"><label for="mail-auto-limit">每日上限（1–50）</label><input id="mail-auto-limit" type="number" min="1" max="50" value="20"></div>
+                    <div class="mail-field"><label for="mail-auto-hour">发送时间（北京时间，小时）</label><input id="mail-auto-hour" type="number" min="0" max="23" value="9"></div>
+                    <div class="mail-field mail-field-full"><label for="mail-auto-subject">标题模板</label><input id="mail-auto-subject"></div>
+                    <div class="mail-field mail-field-full"><label for="mail-auto-body">正文模板</label><textarea id="mail-auto-body" rows="8"></textarea></div>
+                </div>
                 <button id="mail-save-automation" onclick="saveMailAutomation()">保存自动发送规则（不会立即发送）</button>
                 <div id="mail-automation-result" class="email-status"></div>
-            </section>
+                </div>
+            </details>
+            </div>
         </div>
 
         <!-- 视窗 2: 组织与权限管理 -->
@@ -2937,15 +2993,40 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             if(!target) return;
             const isAdmin=currentUser?.role==='admin';
             document.getElementById('mail-add-sender').hidden=!isAdmin;
-            target.innerHTML=mailSenders.map(settings=>`<div class="mail-batch-card" role="listitem">
-                <div class="mail-batch-card-head">
+            const configured=mailSenders.filter(settings=>settings.configured).length;
+            document.getElementById('mail-summary-total').textContent=mailSenders.length;
+            document.getElementById('mail-summary-ready').textContent=configured;
+            document.getElementById('mail-summary-pending').textContent=mailSenders.length-configured;
+            target.innerHTML=mailSenders.map(settings=>`<div class="mail-sender-card" role="listitem">
+                <div class="mail-sender-card-head">
                     <strong>${escapeHtml(settings.from_email||'未设置发件邮箱')}</strong>
-                    <span class="email-push-badge ${settings.configured?'email-push-sent':'email-push-warning'}">${settings.configured?'已配置':'待配置'}</span>
+                    <span class="email-push-badge ${settings.configured?'email-push-pending':'email-push-warning'}">${settings.configured?'参数齐全 · 未验证':'待补充参数'}</span>
                 </div>
-                <small>${escapeHtml(settings.from_name||'未设置发件人')} · ${settings.provider==='smtp'?'自有 SMTP':'Resend'}</small>
-                <small>域名：${escapeHtml(settings.sending_domain||'-')} · 单批上限：${Number(settings.batch_limit||0)}</small>
-                ${isAdmin?`<div style="margin-top:8px"><button type="button" onclick="openMailSenderEditor(${settings.id})">编辑配置</button></div>`:''}
+                <div class="mail-sender-meta">
+                    <div><span>发件人</span><b>${escapeHtml(settings.from_name||'未设置')}</b></div>
+                    <div><span>邮件服务</span><b>${settings.provider==='smtp'?'自有 SMTP':'Resend'}</b></div>
+                    <div><span>登录账号</span><b>${escapeHtml(settings.smtp_username||'未设置')}</b></div>
+                    <div><span>单批上限</span><b>${Number(settings.batch_limit||0)} 封</b></div>
+                </div>
+                <div class="mail-sender-actions">
+                    ${isAdmin?`<button type="button" onclick="openMailSenderEditor(${settings.id})">编辑配置</button>
+                    ${settings.provider==='smtp'?`<button type="button" onclick="testMailSenderLogin(${settings.id},this)">仅验证 SMTP 登录</button>`:''}`:''}
+                    <span id="mail-test-result-${settings.id}" class="mail-test-result" aria-live="polite">尚未验证登录</span>
+                </div>
             </div>`).join('')||'<div class="mail-batch-empty">尚未配置发件邮箱</div>';
+        }
+        async function testMailSenderLogin(id, button) {
+            const output=document.getElementById(`mail-test-result-${id}`);
+            button.disabled=true;
+            output.textContent='正在验证 SMTP 登录，不会发送邮件…';
+            try {
+                const response=await fetch('/api/email-senders/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
+                const result=await response.json();
+                if(!response.ok||!result.success) throw Error(result.error||'SMTP 登录验证失败');
+                output.textContent='登录验证通过，未发送邮件。';
+            } catch(error) {
+                output.textContent=`登录验证失败：${error.message||'请检查服务器设置'}`;
+            } finally { button.disabled=false; }
         }
         function openMailSenderEditor(id) {
             if(currentUser?.role!=='admin') return;
