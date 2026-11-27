@@ -1705,8 +1705,21 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <h3>自有 SMTP 发件服务</h3>
                 <p>选择 SMTP 后，邮件从你自己的企业邮箱服务器发出。腾讯、阿里、网易等企业邮箱通常需要使用 SMTP 专用密码或授权码，不要填写网页登录密码。</p>
                 <p>页面保存的 SMTP 密码会加密保存。服务器必须设置 <code>MAIL_CONFIG_KEY</code>；没有它只能预览，不能保存密码或发送。</p>
-                <div id="email-config-fields">
-                    <label for="mail-edit-sender">管理发件邮箱（仅管理员可保存）</label><select id="mail-edit-sender" onchange="loadMailSender()"></select>
+                <div id="mail-sender-list-panel">
+                    <div class="email-actions" style="justify-content:space-between">
+                        <h3 style="margin:0">发件邮箱列表</h3>
+                        <button id="mail-add-sender" class="btn-save" onclick="openMailSenderEditor('new')">+ 新增邮箱</button>
+                    </div>
+                    <p class="email-status">每个邮箱可单独配置 SMTP、发件人、回复地址和单批上限；新增或保存配置均不会发送邮件。</p>
+                    <div id="mail-sender-list" class="mail-batch-list" role="list"></div>
+                </div>
+                <div id="email-sender-editor" hidden>
+                    <div class="email-actions" style="justify-content:space-between">
+                        <h3 id="mail-sender-editor-title" style="margin:0">编辑发件邮箱</h3>
+                        <button type="button" onclick="showMailSenderList()">返回邮箱列表</button>
+                    </div>
+                    <label for="mail-edit-sender">选择要编辑的邮箱</label><select id="mail-edit-sender" onchange="loadMailSender()"></select>
+                    <div id="email-config-fields">
                     <label for="mail-provider">邮件服务</label><select id="mail-provider" onchange="toggleMailProvider()"><option value="smtp">自有 SMTP</option><option value="resend">Resend（备用）</option></select>
                     <label for="mail-smtp-host">SMTP 服务器</label><input id="mail-smtp-host" placeholder="smtp.example.com">
                     <label for="mail-smtp-port">SMTP 端口</label><input id="mail-smtp-port" type="number" min="1" max="65535" value="465">
@@ -1726,6 +1739,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <button id="mail-save-settings" onclick="saveMailSettings()">保存发件配置</button>
                 </div>
                 <div id="email-config-result" class="email-status"></div>
+                </div>
                 <details><summary>第一次配置 SMTP？按这几步完成</summary>
                     <ol>
                         <li>从企业邮箱后台获取 SMTP 主机、端口、SSL/STARTTLS 和授权码。</li>
@@ -2571,6 +2585,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 if(id==='mail-edit-sender' && currentUser?.role==='admin') input.innerHTML+='<option value="new">新增发件邮箱</option>';
                 if([...input.options].some(o=>o.value===previous)) input.value=previous;
             }
+            renderMailSenderList();
             loadMailSender();
             loadMailAutomation();
             updateMailSenderStatus();
@@ -2917,10 +2932,41 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('email-send-btn').disabled=!settings.configured||mailBatchSending;
             document.getElementById('email-package-preview').textContent='';
         }
+        function renderMailSenderList() {
+            const target=document.getElementById('mail-sender-list');
+            if(!target) return;
+            const isAdmin=currentUser?.role==='admin';
+            document.getElementById('mail-add-sender').hidden=!isAdmin;
+            target.innerHTML=mailSenders.map(settings=>`<div class="mail-batch-card" role="listitem">
+                <div class="mail-batch-card-head">
+                    <strong>${escapeHtml(settings.from_email||'未设置发件邮箱')}</strong>
+                    <span class="email-push-badge ${settings.configured?'email-push-sent':'email-push-warning'}">${settings.configured?'已配置':'待配置'}</span>
+                </div>
+                <small>${escapeHtml(settings.from_name||'未设置发件人')} · ${settings.provider==='smtp'?'自有 SMTP':'Resend'}</small>
+                <small>域名：${escapeHtml(settings.sending_domain||'-')} · 单批上限：${Number(settings.batch_limit||0)}</small>
+                ${isAdmin?`<div style="margin-top:8px"><button type="button" onclick="openMailSenderEditor(${settings.id})">编辑配置</button></div>`:''}
+            </div>`).join('')||'<div class="mail-batch-empty">尚未配置发件邮箱</div>';
+        }
+        function openMailSenderEditor(id) {
+            if(currentUser?.role!=='admin') return;
+            document.getElementById('mail-sender-list-panel').hidden=true;
+            document.getElementById('email-sender-editor').hidden=false;
+            const selector=document.getElementById('mail-edit-sender');
+            selector.value=id==='new'?'new':String(id);
+            document.getElementById('mail-sender-editor-title').textContent=id==='new'?'新增发件邮箱':'编辑发件邮箱';
+            loadMailSender();
+        }
+        function showMailSenderList() {
+            document.getElementById('mail-sender-list-panel').hidden=false;
+            document.getElementById('email-sender-editor').hidden=true;
+            renderMailSenderList();
+        }
         function loadMailSender() {
-            const settings=mailSenders.find(s=>String(s.id)===document.getElementById('mail-edit-sender').value)||{
+            const selected=document.getElementById('mail-edit-sender').value;
+            const settings=mailSenders.find(s=>String(s.id)===selected)||{
                 from_name:'Aibubu',batch_limit:20,encryption_ready:mailSenders[0]?.encryption_ready
             };
+            document.getElementById('mail-sender-editor-title').textContent=selected==='new'?'新增发件邮箱':'编辑发件邮箱';
             for(const field of ['sending-domain','from-email','from-name','reply-to','batch-limit','smtp-host','smtp-port','smtp-security','smtp-username']) {
                 const input=document.getElementById('mail-'+field);
                 input.value=settings[field.replaceAll('-','_')]??'';
@@ -3111,7 +3157,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 await fetchEmailProspects();
                 document.getElementById('mail-edit-sender').value=String(result.settings.id);
                 loadMailSender();
-                alert('配置已保存，没有发送任何邮件');
+                document.getElementById('email-config-result').textContent=`${result.settings.from_email||'发件邮箱'} 已保存。配置更新不会发送邮件。`;
+                showMailSenderList();
             } catch(error) {document.getElementById('email-config-result').textContent=error.message;}
         }
         async function saveMailAutomation() {
